@@ -38,9 +38,9 @@ trait HasChisel extends ScalaModule {
 
 trait CommonNS extends SbtModule with CommonModule with HasChisel
 
-object difftest extends CommonNS {
-    override def millSourcePath = pwd / "difftest"
-}
+// object difftest extends CommonNS {
+//     override def millSourcePath = pwd / "difftest"
+// }
 
 object `IonSoC` extends CommonNS {
     override def millSourcePath = pwd
@@ -53,7 +53,7 @@ object `IonSoC` extends CommonNS {
         "-Ymacro-annotations"
     )
 
-    override def moduleDeps = super.moduleDeps ++ Seq(difftest)
+    // override def moduleDeps = super.moduleDeps ++ Seq(difftest)
 	
     object test extends SbtTests with TestModule.ScalaTest
     // object test extends SbtTests with TestModule.ScalaTest {

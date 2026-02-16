@@ -8,7 +8,7 @@ VERILATOR = verilator
 
 SIMULATOR_DIR = simulator
 BUILD_DIR = $(SIMULATOR_DIR)/build
-SYSTEM_VERILOG_DIR = $(BUILD_DIR)/sv
+SYSTEM_VERILOG_DIR = $(BUILD_DIR)/../../build/rtl
 PAYLOAD_BUILD_DIR = $(BUILD_DIR)/payload
 VERILATOR_OBJ_DIR = $(BUILD_DIR)/obj
 FILE_LIST = $(SYSTEM_VERILOG_DIR)/filelist.f
@@ -38,8 +38,8 @@ payload:
 	$(CC) -march=rv$(WORD_LEN)imd -mabi=lp$(WORD_LEN) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $(PAYLOAD_BUILD_DIR)/payload.elf $(PAYLOAD_SRC)
 	$(OBJCOPY) -O binary $(PAYLOAD_BUILD_DIR)/payload.elf $(PAYLOAD)
 
-verilator: payload
-	$(VERILATOR) --cc -I$(SIMULATOR_DIR)/sv_module -I$(SYSTEM_VERILOG_DIR) -f $(FILE_LIST) -f $(SIMULATOR_DIR)/sv_module/filelist.f --exe $(TB) --trace --Mdir $(VERILATOR_OBJ_DIR) --top-module SoC --prefix VSoc
+verilator: payload sim-verilog
+	$(VERILATOR) --cc -I$(SIMULATOR_DIR)/sv_module -I$(SYSTEM_VERILOG_DIR) -f $(FILE_LIST) -f $(SIMULATOR_DIR)/sv_module/filelist.f --exe $(TB) --trace --Mdir $(VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
 	@$(MAKE) -C $(VERILATOR_OBJ_DIR) -f VSoc.mk VSoc
 	./$(VERILATOR_OBJ_DIR)/VSoc $(RUN_ARGS)
 
@@ -50,7 +50,7 @@ clean:
 	@$(MAKE) -C difftest clean NEMU_HOME=$(NEMU_HOME) NOOP_HOME=$(NOOP_HOME)
 	mill -i clean
 	rm -rf $(PAYLOAD_BUILD_DIR)/*
-	rm -rf $(SYSTEM_VERILOG_DIR)/*
+# 	rm -rf $(SYSTEM_VERILOG_DIR)/*
 
 ifeq ($(filter verilator,$(MAKECMDGOALS)),verilator)
 $(RUN_ARGS):
