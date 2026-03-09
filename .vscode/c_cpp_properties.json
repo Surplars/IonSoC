@@ -5,7 +5,7 @@
 			"includePath": [
 				"${workspaceFolder}/**",
 				"${workspaceFolder}/simulator/build/obj",
-				"/usr/local/share/verilator/include/"
+				"/usr/share/verilator/include/"
 			],
 			"defines": [],
 			"compilerPath": "/usr/bin/clang",

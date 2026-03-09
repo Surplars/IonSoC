@@ -1,4 +1,5 @@
 WORD_LEN = 64
+# COMPILER = riscv64-linux-gnu-
 COMPILER = riscv64-unknown-elf-
 CC = $(COMPILER)gcc
 AS = $(COMPILER)as
@@ -35,7 +36,7 @@ sim-verilog:
 # 	mill -i IonSoC.test.runMain $(SIM_TOP) --help
 
 payload:
-	$(CC) -march=rv$(WORD_LEN)imd -mabi=lp$(WORD_LEN) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $(PAYLOAD_BUILD_DIR)/payload.elf $(PAYLOAD_SRC)
+	$(CC) -march=rv$(WORD_LEN)imzicsr -mabi=lp$(WORD_LEN) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $(PAYLOAD_BUILD_DIR)/payload.elf $(PAYLOAD_SRC)
 	$(OBJCOPY) -O binary $(PAYLOAD_BUILD_DIR)/payload.elf $(PAYLOAD)
 
 verilator: payload sim-verilog

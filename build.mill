@@ -8,6 +8,7 @@ import mill.scalalib.TestModule.ScalaTest
 import scalalib._
 // support BSP
 import mill.bsp._
+import $ivy.`org.chipsalliance::firtool-resolver:2.0.1`
 
 // Note: This project requires .mill-jvm-opts file containing:
 //   -Dchisel.project.root=${PWD}
@@ -15,10 +16,11 @@ import mill.bsp._
 // to properly generate and handle test directories and output files.
 // See: https://github.com/com-lihaoyi/mill/issues/3840
 
-val pwd = os.Path(sys.env("MILL_WORKSPACE_ROOT"))
+val pwd                 = os.Path(sys.env("MILL_WORKSPACE_ROOT"))
+val defaultScalaVersion = "2.13.17"
 
 object ivys {
-    val scala         = "2.13.17"
+    val scala         = defaultScalaVersion
     val chiselVersion = "7.3.0"
 
     val chisel       = ivy"org.chipsalliance::chisel:$chiselVersion"
@@ -26,14 +28,14 @@ object ivys {
 }
 
 trait CommonModule extends ScalaModule {
-    override def scalaVersion = ivys.scala
+    override def scalaVersion = T { ivys.scala }
 
     override def scalacOptions = Seq("-Ymacro-annotations")
 }
 
 trait HasChisel extends ScalaModule {
-    override def ivyDeps             = Agg(ivys.chisel)
-    override def scalacPluginIvyDeps = Agg(ivys.chiselPlugin)
+    override def ivyDeps             = T { Agg(ivys.chisel) }
+    override def scalacPluginIvyDeps = T { Agg(ivys.chiselPlugin) }
 }
 
 trait CommonNS extends SbtModule with CommonModule with HasChisel
@@ -53,12 +55,8 @@ object `IonSoC` extends CommonNS {
         "-Ymacro-annotations"
     )
 
-    // override def moduleDeps = super.moduleDeps ++ Seq(difftest)
-	
+    // override def moduleDeps = super.moduleDeps ++ Seq(`rocket-chip`)
+
     object test extends SbtTests with TestModule.ScalaTest
-    // object test extends SbtTests with TestModule.ScalaTest {
-    // override def ivyDeps = m.ivyDeps() ++ Agg(
-    //     ivy"org.scalatest::scalatest::3.2.19"
-    // )
-    // }
+
 }

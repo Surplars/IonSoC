@@ -2,7 +2,7 @@ package soc.core
 
 import chisel3._
 
-class Register(XLEN: Int) extends Module {
+class RegisterFile(XLEN: Int) extends Module {
     val io = IO(new Bundle {
         val write_en   = Input(Bool())
         val write_addr = Input(UInt(5.W))

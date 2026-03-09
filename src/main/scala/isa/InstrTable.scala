@@ -4,76 +4,39 @@ import chisel3._
 import chisel3.util._
 
 import soc.config.Config
+import soc.core.pipeline.ALUOps
+import soc.core.pipeline.OpSel
+import soc.core.pipeline.BranchType
+import soc.core.pipeline.CSROps
 
-case class InstrTableEntry(
-    name: String,
-    opcode: UInt,
-    funct3: Option[UInt] = None,
-    funct7: Option[UInt] = None,
-    requiredExt: Set[Extension.Value],
-    op1_sel: Option[OpSel.Type],
-    op2_sel: Option[OpSel.Type],
-    ctrlGen: () => CtrlSignals
+case class InstrEntry(
+    pattern: BitPat,
+    ctrl: List[Data],
+    ext: Extension.Value = Extension.RV64I // 默认为基础指令集
 )
 
 object InstrTable {
-    val table: Seq[InstrTableEntry] = Seq(
-        InstrTableEntry(
-            name = "ADDI",
-            opcode = Opcode.op_imm,
-            funct3 = Some(Funct3.I.addSub),
-            funct7 = None,
-            requiredExt = Set(Extension.RV64I),
-            op1_sel = Some(OpSel.RS1),
-            op2_sel = Some(OpSel.IMM),
-            ctrlGen = () => {
-                val ctrl = WireInit(0.U.asTypeOf(new CtrlSignals))
-                ctrl.alu_op    := ALUOps.add.asUInt
-                ctrl.reg_write := true.B
-                ctrl.mem_read  := false.B
-                ctrl.mem_write := false.B
-                ctrl.branch    := false.B
-                ctrl.jump_en   := false.B
-                ctrl
-            }
-        ),
-        InstrTableEntry(
-            name = "ADD",
-            opcode = Opcode.op,
-            funct3 = Some(Funct3.I.addSub),
-            funct7 = Some(Funct7.zero),
-            requiredExt = Set(Extension.RV64I),
-            op1_sel = Some(OpSel.RS1),
-            op2_sel = Some(OpSel.RS2),
-            ctrlGen = () => {
-                val ctrl = WireInit(0.U.asTypeOf(new CtrlSignals))
-                ctrl.alu_op    := ALUOps.add.asUInt
-                ctrl.reg_write := true.B
-                ctrl.mem_read  := false.B
-                ctrl.mem_write := false.B
-                ctrl.branch    := false.B
-                ctrl.jump_en   := false.B
-                ctrl
-            }
-        ),
-        InstrTableEntry(
-            name = "SUB",
-            opcode = Opcode.op,
-            funct3 = Some(Funct3.I.addSub),
-            funct7 = Some(Funct7.nzero),
-            requiredExt = Set(Extension.RV64I),
-            op1_sel = Some(OpSel.RS1),
-            op2_sel = Some(OpSel.RS2),
-            ctrlGen = () => {
-                val ctrl = WireInit(0.U.asTypeOf(new CtrlSignals))
-                ctrl.alu_op    := ALUOps.sub.asUInt
-                ctrl.reg_write := true.B
-                ctrl.mem_read  := false.B
-                ctrl.mem_write := false.B
-                ctrl.branch    := false.B
-                ctrl.jump_en   := false.B
-                ctrl
-            }
-        ),
-    )
+    val defaultCtrl = List(false.B, OpSel.ZERO, OpSel.ZERO, ALUOps.NOP, false.B, false.B, false.B, CSROps.None, BranchType.None)
+
+    private val allProviders = Seq(InstrSetZicsr, InstrSetI, InstrSetM)
+
+    private def isFeatureSupported(f: Extension.Value, enabled: Set[Extension.Value]): Boolean = f match {
+        case Extension.RV32I => enabled.contains(Extension.RV64I) || enabled.contains(Extension.RV32I)
+        case Extension.RV32M => enabled.contains(Extension.RV64M) || enabled.contains(Extension.RV32M)
+        case Extension.RV32A => enabled.contains(Extension.RV64A) || enabled.contains(Extension.RV32A)
+        case Extension.RV64I => enabled.contains(Extension.RV64I)
+        case Extension.RV64M => enabled.contains(Extension.RV64M)
+        case Extension.RV64A => enabled.contains(Extension.RV64A)
+        case Extension.Zicsr => enabled.contains(Extension.Zicsr)
+        case other           => enabled.contains(other)
+    }
+
+    def getTable(enabledExt: Set[Extension.Value]): Array[(BitPat, List[Data])] = {
+        val instructions = allProviders.flatMap(_.instructions)
+        instructions
+            .filter { entry => isFeatureSupported(entry.ext, enabledExt) }
+            .map { entry => (entry.pattern -> entry.ctrl) }
+            .toArray
+    }
+
 }

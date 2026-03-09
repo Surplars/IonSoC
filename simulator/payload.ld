@@ -3,7 +3,7 @@ OUTPUT_FORMAT("elf64-littleriscv")
 ENTRY(_start)
 
 MEMORY {
-    ROM (rx)   : ORIGIN = 0x00000000, LENGTH = 0x1000
+    ROM (rx)   : ORIGIN = 0x80000000, LENGTH = 0x1000
     SRAM (rwx) : ORIGIN = 0x1000, LENGTH = 0x4000
     /* SRAM (rwx) : ORIGIN = 0x20000000, LENGTH = 16K */
 }
