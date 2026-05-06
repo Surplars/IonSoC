@@ -10,14 +10,21 @@ object CacheCmd extends ChiselEnum {
 	val Read, Write = Value
 }
 
-class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module {
-    val io = IO(new Bundle {
-        val cpu = new Bundle { // CPU接口
-            val req  = Flipped(Decoupled(new CacheReq(params.addrWidth, params.dataWidth)))
-            val resp = Decoupled(new CacheResp(params.dataWidth))
-        }
-        val bus = new TLBundle(params) // 内存接口
-    })
+class CacheCoreIO(params: TLParams) extends Bundle {
+    val cpu = new Bundle {
+        val req  = Flipped(Decoupled(new CacheReq(params.addrWidth, params.dataWidth)))
+        val resp = Decoupled(new CacheResp(params.dataWidth))
+    }
+    val bus = new TLBundle(params)
+}
+
+trait HasCacheCoreIO { this: Module =>
+    val params: TLParams
+    val io: CacheCoreIO
+}
+
+class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with HasCacheCoreIO {
+    val io = IO(new CacheCoreIO(params))
 
     val offsetBits = log2Ceil(params.dataWidth / 8) // 64位=8字节 -> 3位
     val indexBits  = log2Ceil(nSets)              // 512行 -> 9位
@@ -50,6 +57,7 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module {
 
     // 新增：用于在 Miss 处理后暂存刚拉回来的数据以立刻返回给 CPU
     val refillReg = RegInit(0.U(params.dataWidth.W))
+    val respErrReg = RegInit(false.B)
 
     val hit = validArray(reqIdx) && (readTag === reqTag)
     val dirty = dirtyArray(reqIdx)
@@ -58,6 +66,7 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module {
     io.cpu.req.ready  := state === sIdle
     io.cpu.resp.valid := false.B
     io.cpu.resp.bits.rdata := Mux(state === sResp, refillReg, readData)
+    io.cpu.resp.bits.err   := respErrReg
 
     io.bus.a.valid := false.B
     io.bus.a.bits  := DontCare
@@ -67,6 +76,7 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module {
         is(sIdle) {
             when(io.cpu.req.valid) {
                 reqReg := io.cpu.req.bits
+                respErrReg := false.B
                 assert(!io.cpu.req.bits.device && io.cpu.req.bits.cacheable, "L1Cache: device/uncached request must bypass cache")
                 assert(!io.cpu.req.bits.atomic, "L1Cache: atomic request not supported yet")
                 when(io.cpu.req.bits.fence || io.cpu.req.bits.fencei) {
@@ -117,8 +127,14 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module {
         is(sWriteBackWait) { // 阶段2: 纯等待内存接收完毕吐出 D 响应
             io.bus.d.ready := true.B
             when(io.bus.d.fire) {
-                dirtyArray(reqIdx) := false.B
-                state := sRefillReq
+                when(io.bus.d.bits.denied) {
+                    respErrReg := true.B
+                    refillReg := 0.U
+                    state := sResp
+                }.otherwise {
+                    dirtyArray(reqIdx) := false.B
+                    state := sRefillReq
+                }
             }
         }
         is(sRefillReq) {   // 阶段3: 向总线扔出读新数片请求
@@ -145,14 +161,19 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module {
                 // 如果恰好这是个 Write 请求引起的 Miss，则直接在进缓存前覆盖它
                 val maskedData = (reqReg.wdata & FillInterleaved(8, reqReg.mask)) | (fetchedData & ~FillInterleaved(8, reqReg.mask))
                 val writeToSram = Mux(isWrite, maskedData, fetchedData)
-                
-                validArray(reqIdx) := true.B
-                dirtyArray(reqIdx) := isWrite
-                tagArray.write(reqIdx, reqTag)
-                dataArray.write(reqIdx, writeToSram)
-                
-                // 拦截写入寄存器以支持 Cache Bypass 当拍给流水线返回
-                refillReg := writeToSram
+
+                respErrReg := io.bus.d.bits.denied
+                when(io.bus.d.bits.denied) {
+                    refillReg := 0.U
+                }.otherwise {
+                    validArray(reqIdx) := true.B
+                    dirtyArray(reqIdx) := isWrite
+                    tagArray.write(reqIdx, reqTag)
+                    dataArray.write(reqIdx, writeToSram)
+
+                    // 拦截写入寄存器以支持 Cache Bypass 当拍给流水线返回
+                    refillReg := writeToSram
+                }
                 state := sResp
             }
         }

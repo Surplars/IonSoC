@@ -1,8 +1,10 @@
 #include <cstdio>
 #include <cstring> // Added for strcmp
+#include <string>
 #include <sys/stat.h>
 #include <filesystem>
 #include <elf.h>
+#include <cstdlib>
 #include <verilated.h>
 #include <verilated_vcd_c.h>
 #include "VSoc.h"
@@ -14,25 +16,34 @@
 #define CEND "\033[0m"
 
 #define BROM_BASE 0x80000000
-#define ROM_SIZE 0x1000
-// #define SRAM_BASE 0x20000000
-#define SRAM_BASE 0x1000
-#define SRAM_SIZE 0x4000
+#define ROM_SIZE 0x10000 // 64KB = 16384 words * 4 bytes
+#define SRAM_BASE 0x10000000
+#define SRAM_SIZE 0x10000
 
 #define MAX_SIM_CYCLES 10000
+static const char *kPayloadElfPath = "simulator/build/payload/payload.elf";
+static const char *kWavePath = "simulator/build/wave.vcd";
 vluint64_t sim_time = 0;
 
 void load_elf(VSoc *dut, const char *path);
 bool run_one_test(const std::string &bin_path,
-                  const std::string &test_name, bool trace_en);
+                  const std::string &test_name, bool trace_en,
+                  const std::string &expected_uart = "");
 
 int main(int argc, char **argv, char **env)
 {
     printf("\n\n");
+    bool all_pass = true;
     if (argc < 2)
     {
         // 默认测试 payload (假设无后缀)
-        run_one_test("simulator/build/payload/payload.elf", "payload", true);
+        all_pass &= run_one_test(kPayloadElfPath, "payload", true, "S!!P");
+    }
+    else if (std::string(argv[1]) == "--payload")
+    {
+        std::string name = (argc > 2) ? argv[2] : "payload";
+        std::string expected_uart = (argc > 3) ? argv[3] : "";
+        all_pass &= run_one_test(kPayloadElfPath, name, true, expected_uart);
     }
     else
     {
@@ -61,7 +72,7 @@ int main(int argc, char **argv, char **env)
                 {
                     std::string bin = p.path().string();
                     std::string name = p.path().stem().string();
-                    run_one_test(bin, name, false);
+                    all_pass &= run_one_test(bin, name, false);
                 }
             }
         }
@@ -85,16 +96,17 @@ int main(int argc, char **argv, char **env)
                 else
                 {
                     printf("Test binary for %s not found.\n", t.c_str());
+                    all_pass = false;
                     continue;
                 }
 
-                run_one_test(bin, t, true);
+                all_pass &= run_one_test(bin, t, true);
             }
         }
     }
 
     printf("All simulations finished.\n");
-    return 0;
+    return all_pass ? 0 : 1;
 }
 
 void load_elf(VSoc *dut, const char *path)
@@ -214,8 +226,7 @@ void load_elf(VSoc *dut, const char *path)
         uint64_t offset_in_region = 0;
         const char *region_name = nullptr;
 
-        // if (vaddr >= (uint64_t)BROM_BASE && vaddr < (uint64_t)BROM_BASE + (uint64_t)ROM_SIZE) {
-        if (vaddr < (uint64_t)BROM_BASE + (uint64_t)ROM_SIZE) {
+        if (vaddr >= (uint64_t)BROM_BASE && vaddr < (uint64_t)BROM_BASE + (uint64_t)ROM_SIZE) {
             target_bytes = rom_bytes;
             region_bytes = rom_bytes_size;
             offset_in_region = vaddr - (uint64_t)BROM_BASE;
@@ -256,155 +267,9 @@ void load_elf(VSoc *dut, const char *path)
     fclose(f);
 }
 
-// void load_elf(VSoc *dut, const char *path)
-// {
-//     FILE *f = fopen(path, "rb");
-//     if (!f) { perror("fopen"); exit(1); }
-
-//     // Read ELF header
-//     Elf32_Ehdr ehdr;
-//     if (fread(&ehdr, 1, sizeof(Elf32_Ehdr), f) != sizeof(Elf32_Ehdr)) {
-//         fprintf(stderr, "Read ELF header failed: %s\n", path);
-//         fclose(f); exit(1);
-//     }
-
-//     // Check ELF magic & basic sanity
-//     if (ehdr.e_ident[EI_MAG0] != ELFMAG0 || ehdr.e_ident[EI_MAG1] != ELFMAG1 ||
-//         ehdr.e_ident[EI_MAG2] != ELFMAG2 || ehdr.e_ident[EI_MAG3] != ELFMAG3) {
-//         fprintf(stderr, "Not an ELF file: %s\n", path);
-//         fclose(f); exit(1);
-//     }
-//     if (ehdr.e_ident[EI_CLASS] != ELFCLASS32) {
-//         fprintf(stderr, "Unsupported ELF class (not 32-bit): %s\n", path);
-//         fclose(f); exit(1);
-//     }
-//     if (ehdr.e_ident[EI_DATA] != ELFDATA2LSB) {
-//         fprintf(stderr, "Unsupported ELF endianness (not little-endian): %s\n", path);
-//         fclose(f); exit(1);
-//     }
-
-//     if (ehdr.e_phoff == 0 || ehdr.e_phnum == 0) {
-//         fprintf(stderr, "No program headers in ELF: %s\n", path);
-//         fclose(f); exit(1);
-//     }
-
-//     // read program headers
-//     if (fseek(f, ehdr.e_phoff, SEEK_SET) != 0) {
-//         perror("fseek phoff");
-//         fclose(f); exit(1);
-//     }
-//     Elf32_Phdr *phdrs = new Elf32_Phdr[ehdr.e_phnum];
-//     if (fread(phdrs, sizeof(Elf32_Phdr), ehdr.e_phnum, f) != (size_t)ehdr.e_phnum) {
-//         fprintf(stderr, "Read program headers failed\n");
-//         delete[] phdrs; fclose(f); exit(1);
-//     }
-
-//     // memory pointers: treat DUT mem[] as word array but also provide byte view
-//     uint32_t *rom_words = (uint32_t*)&(dut->rootp->SimTop__DOT__brom__DOT__rom__DOT__mem[0]);
-//     uint32_t *sram_words = (uint32_t*)&(dut->rootp->SimTop__DOT__sram__DOT__mem_ext__DOT__Memory[0]);
-//     uint8_t *rom_bytes = (uint8_t*)rom_words;
-//     uint8_t *sram_bytes = (uint8_t*)sram_words;
-
-//     const size_t rom_bytes_size = (size_t)ROM_SIZE;
-//     const size_t sram_bytes_size = (size_t)SRAM_SIZE;
-
-//     auto write_bytes_to_region = [&](uint8_t *target_bytes, size_t region_bytes,
-//                                     uint32_t offset_byte, uint32_t file_off, uint32_t filesz) {
-//         if (filesz == 0) return;
-//         if ((uint64_t)offset_byte + (uint64_t)filesz > region_bytes) {
-//             size_t can = (offset_byte < region_bytes) ? (region_bytes - offset_byte) : 0;
-//             fprintf(stderr, "Warning: truncating write: offset 0x%x filesz %u -> %zu available\n",
-//                     offset_byte, filesz, can);
-//             filesz = (uint32_t)can;
-//             if (filesz == 0) return;
-//         }
-
-//         if ((offset_byte % 4 == 0) && (filesz % 4 == 0)) {
-//             size_t word_idx = offset_byte / 4;
-//             size_t words = filesz / 4;
-//             if (fseek(f, file_off, SEEK_SET) != 0) { perror("fseek file_off"); return; }
-//             for (size_t w = 0; w < words; ++w) {
-//                 uint8_t buf[4];
-//                 size_t r = fread(buf, 1, 4, f);
-//                 if (r != 4) { fprintf(stderr, "Warning: short read in word copy (%zu/%zu)\n", r, (size_t)4); break; }
-//                 uint32_t word = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
-//                 ((uint32_t*)target_bytes)[word_idx + w] = word;
-//             }
-//         } else {
-//             if (fseek(f, file_off, SEEK_SET) != 0) { perror("fseek file_off"); return; }
-//             size_t to_copy = filesz;
-//             size_t dest = offset_byte;
-//             const size_t CHUNK = 1024;
-//             uint8_t tmp[CHUNK];
-//             while (to_copy > 0) {
-//                 size_t c = (to_copy > CHUNK) ? CHUNK : to_copy;
-//                 size_t r = fread(tmp, 1, c, f);
-//                 if (r == 0) break;
-//                 memcpy(target_bytes + dest, tmp, r);
-//                 dest += r;
-//                 to_copy -= r;
-//             }
-//         }
-//     };
-
-//     for (int i = 0; i < ehdr.e_phnum; ++i) {
-//         Elf32_Phdr &ph = phdrs[i];
-//         printf("PHDR %d: type=%u vaddr=0x%08x off=0x%08x filesz=%u memsz=%u\n",
-//                i, ph.p_type, ph.p_vaddr, ph.p_offset, ph.p_filesz, ph.p_memsz);
-
-//         if (ph.p_type != PT_LOAD) continue;
-
-//         uint32_t vaddr = ph.p_vaddr;
-//         uint32_t filesz = ph.p_filesz;
-//         uint32_t memsz = ph.p_memsz;
-
-//         uint8_t *target_bytes = nullptr;
-//         size_t region_bytes = 0;
-//         uint32_t offset_in_region = 0;
-//         const char *region_name = nullptr;
-
-//         if ( (uint64_t)vaddr >= (uint64_t)BROM_BASE && (uint64_t)vaddr < (uint64_t)BROM_BASE + ROM_SIZE ) {
-//             target_bytes = rom_bytes;
-//             region_bytes = rom_bytes_size;
-//             offset_in_region = (uint32_t)((uint64_t)vaddr - (uint64_t)BROM_BASE);
-//             region_name = "ROM";
-//         } else if ( (uint64_t)vaddr >= (uint64_t)SRAM_BASE && (uint64_t)vaddr < (uint64_t)SRAM_BASE + SRAM_SIZE ) {
-//             target_bytes = sram_bytes;
-//             region_bytes = sram_bytes_size;
-//             offset_in_region = (uint32_t)((uint64_t)vaddr - (uint64_t)SRAM_BASE);
-//             region_name = "SRAM";
-//         } else {
-//             printf("Warning: PT_LOAD at vaddr 0x%08x (filesz=%u) outside ROM/SRAM -> skip\n", vaddr, filesz);
-//             continue;
-//         }
-
-//         if (filesz > 0) {
-//             write_bytes_to_region(target_bytes, region_bytes, offset_in_region, ph.p_offset, filesz);
-//             printf("  -> wrote %u bytes to %s @ offset 0x%x\n", filesz, region_name, offset_in_region);
-//         }
-
-//         if (memsz > filesz) {
-//             uint32_t zero_start = offset_in_region + filesz;
-//             uint32_t zero_len = memsz - filesz;
-//             if ((uint64_t)zero_start < region_bytes) {
-//                 if ((uint64_t)zero_start + (uint64_t)zero_len > region_bytes) {
-//                     zero_len = (uint32_t)(region_bytes - zero_start);
-//                 }
-//                 if (zero_len > 0) {
-//                     memset(target_bytes + zero_start, 0, zero_len);
-//                     printf("  -> zeroed %u bytes in %s @ offset 0x%x\n", zero_len, region_name, zero_start);
-//                 }
-//             }
-//         }
-//     }
-
-//     delete[] phdrs;
-//     fclose(f);
-// }
-
 void ram_init(VSoc *dut)
 {
-    const size_t WORDS = SRAM_SIZE / 4;
+    const size_t WORDS = SRAM_SIZE / 8; // Memory is 64-bit wide
     for (int i = 0; i < WORDS; ++i)
     {
         dut->rootp->SimTop__DOT__sram__DOT__mem_ext__DOT__Memory[i] = 0x0;
@@ -412,7 +277,8 @@ void ram_init(VSoc *dut)
 }
 
 bool run_one_test(const std::string &bin_path,
-                  const std::string &test_name, bool trace_en)
+                  const std::string &test_name, bool trace_en,
+                  const std::string &expected_uart)
 {
     VSoc *dut = new VSoc;
     VerilatedVcdC *tfp = new VerilatedVcdC;
@@ -426,7 +292,7 @@ bool run_one_test(const std::string &bin_path,
     {
         Verilated::traceEverOn(true);
         dut->trace(tfp, 99);
-        tfp->open("simulator/build/wave.vcd");
+        tfp->open(kWavePath);
     }
     else
         Verilated::traceEverOn(false);
@@ -444,30 +310,51 @@ bool run_one_test(const std::string &bin_path,
 
     dut->reset = 0;
 
-    // bool finished = false;
-    // while (sim_time < MAX_SIM_CYCLES && !finished)
+	    bool prev_uart_tx = false;
+	    std::string uart_output;
+	    printf("\n--- UART output ---\n");
+    bool saw_exit = false;
+
     while (sim_time < MAX_SIM_CYCLES)
     {
         dut->clock ^= 1;
         dut->eval();
         tfp->dump(sim_time);
 
-        // if (dut->dbg_exit)
-        //     finished = true;
+        // UART TX: print char when tx_valid rises
+        bool cur_uart_tx = dut->io_uart_tx;
+        if (cur_uart_tx && !prev_uart_tx) {
+            uint8_t ch = (uint8_t)(dut->io_uart_byte & 0xFF);
+            uart_output.push_back((char)ch);
+            putchar(ch);
+            fflush(stdout);
+	        }
+	        prev_uart_tx = cur_uart_tx;
+	
+        int a0_live = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
+        int a7_live = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
+        if (a7_live == 93) {
+            saw_exit = true;
+            sim_time++;
+            break;
+        }
 
-        sim_time++;
+	        sim_time++;
     }
+
+    printf("\n--- UART output end ---\n");
 
     int gp = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[3];
     int a0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
     int a7 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
 
-    bool pass = (a7 == 93 && a0 == 0);
+    bool uart_pass = expected_uart.empty() || (uart_output.find(expected_uart) != std::string::npos);
+    bool pass = (saw_exit && a7 == 93 && a0 == 0 && uart_pass);
 
-    if (a7 == 93 && a0 == 0)
+    if (pass)
         printf("[%s]: gp=%d, a7=%d, a0=%d, test %spassed%s\n", test_name.c_str(), gp, a7, a0, GREEN, CEND);
     else if (a7 == 93)
-        printf("[%s]: gp=%d, a7=%d, a0=%d, test %sfailed%s\n", test_name.c_str(), gp, a7, a0, RED, CEND);
+        printf("[%s]: gp=%d, a7=%d, a0=%d, uart=\"%s\", test %sfailed%s\n", test_name.c_str(), gp, a7, a0, uart_output.c_str(), RED, CEND);
     else
         printf("[%s]: gp=%d, a7=%d, a0=%d, test %sunknown%s\n", test_name.c_str(), gp, a7, a0, YELLOW, CEND);
 
@@ -477,4 +364,3 @@ bool run_one_test(const std::string &bin_path,
     delete tfp;
     return pass;
 }
-

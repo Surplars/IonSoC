@@ -12,10 +12,13 @@ BUILD_DIR = $(SIMULATOR_DIR)/build
 SYSTEM_VERILOG_DIR = $(BUILD_DIR)/../../build/rtl
 PAYLOAD_BUILD_DIR = $(BUILD_DIR)/payload
 VERILATOR_OBJ_DIR = $(BUILD_DIR)/obj
+SIM_HARNESS_DIR = $(SIMULATOR_DIR)/harness
+SIM_RTL_DIR = $(SIMULATOR_DIR)/rtl
+PAYLOAD_SRC_DIR = $(SIMULATOR_DIR)/payloads
 FILE_LIST = $(SYSTEM_VERILOG_DIR)/filelist.f
-TB = $(SIMULATOR_DIR)/test.cpp
-PAYLOAD_SRC = $(SIMULATOR_DIR)/payload.S
-PAYLOAD_LDS = $(SIMULATOR_DIR)/payload.ld
+TB = $(SIM_HARNESS_DIR)/verilator_main.cpp
+PAYLOAD_SRC ?= $(PAYLOAD_SRC_DIR)/timer.S
+PAYLOAD_LDS = $(PAYLOAD_SRC_DIR)/payload.ld
 PAYLOAD = $(PAYLOAD_BUILD_DIR)/payload
 
 RUN_ARGS := $(filter-out verilator,$(MAKECMDGOALS))
@@ -40,9 +43,20 @@ payload:
 	$(OBJCOPY) -O binary $(PAYLOAD_BUILD_DIR)/payload.elf $(PAYLOAD)
 
 verilator: payload sim-verilog
-	$(VERILATOR) --cc -I$(SIMULATOR_DIR)/sv_module -I$(SYSTEM_VERILOG_DIR) -f $(FILE_LIST) -f $(SIMULATOR_DIR)/sv_module/filelist.f --exe $(TB) --trace --Mdir $(VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
-	@$(MAKE) -C $(VERILATOR_OBJ_DIR) -f VSoc.mk VSoc
+	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(SYSTEM_VERILOG_DIR) -f $(FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) --trace --Mdir $(VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
+	@$(MAKE) -C $(VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j 15
 	./$(VERILATOR_OBJ_DIR)/VSoc $(RUN_ARGS)
+
+verilator-clint32:
+	@$(MAKE) verilator PAYLOAD_SRC=$(PAYLOAD_SRC_DIR)/clint32.S RUN_ARGS="--payload clint32 CP"
+
+verilator-tlerror:
+	@$(MAKE) verilator PAYLOAD_SRC=$(PAYLOAD_SRC_DIR)/tlerror.S RUN_ARGS="--payload tlerror EP"
+
+regress:
+	@$(MAKE) verilator
+	@$(MAKE) verilator-clint32
+	@$(MAKE) verilator-tlerror
 
 gtkwave:
 	gtkwave $(BUILD_DIR)/wave.vcd
@@ -57,4 +71,3 @@ ifeq ($(filter verilator,$(MAKECMDGOALS)),verilator)
 $(RUN_ARGS):
 	@:
 endif
-

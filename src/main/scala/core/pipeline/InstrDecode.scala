@@ -152,7 +152,7 @@ class InstrDecode(XLEN: Int = 64) extends Module {
     op2_out := MuxLookup(op2_sel, 0.U)(
         Seq(
             OpSel.ZERO -> 0.U,
-            OpSel.RS1  -> io.reg_rs1_data,
+            OpSel.RS1  -> io.reg_rs2_data,
             OpSel.RS2  -> io.reg_rs2_data,
             OpSel.IMM  -> imm,
             OpSel.PC   -> io.pc_in,

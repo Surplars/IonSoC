@@ -46,10 +46,10 @@ object CSR {
 
 object MCause {
     private def int(code: Int, XLEN: Int = 64): UInt = {
-        (BigInt(0) << (XLEN - 1) | code).U(XLEN.W)
+        (BigInt(1) << (XLEN - 1) | code).U(XLEN.W)
     }
     private def exc(code: Int, XLEN: Int = 64): UInt = {
-        (BigInt(1) << (XLEN - 1) | code).U(XLEN.W)
+        code.U(XLEN.W)
     }
 
     val InstrAddrMisaligned = exc(0)

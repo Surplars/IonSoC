@@ -38,5 +38,5 @@ class CacheReq(val addrWidth: Int, val dataWidth: Int) extends Bundle {
 
 class CacheResp(val dataWidth: Int) extends Bundle {
     val rdata = UInt(dataWidth.W)
+    val err   = Bool()
 }
-

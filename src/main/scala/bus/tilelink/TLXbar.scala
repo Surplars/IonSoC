@@ -32,6 +32,13 @@ class TLXbar(params: TLParams, nMasters: Int, nSlaves: Int, addrMap: Seq[UInt =>
     val routeHits = Seq.tabulate(nMasters, nSlaves) { (m, s) =>
         addrMap(s)(io.masters(m).a.bits.address)
     }
+    val routeHitVecs = Seq.tabulate(nMasters) { m => VecInit(routeHits(m)) }
+    val routeHasHit = routeHitVecs.map(_.asUInt.orR)
+
+    val localErrValid  = RegInit(VecInit(Seq.fill(nMasters)(false.B)))
+    val localErrOpcode = RegInit(VecInit(Seq.fill(nMasters)(TLOpcode.AccessAck)))
+    val localErrSize   = RegInit(VecInit(Seq.fill(nMasters)(0.U(params.sizeBits.W))))
+    val localErrSource = RegInit(VecInit(Seq.fill(nMasters)(0.U(params.sourceBits.W))))
 
     val aArbs = Seq.fill(nSlaves)(Module(new RRArbiter(new TLBundleA(slaveParams), nMasters)))
     for (s <- 0 until nSlaves) {
@@ -51,14 +58,22 @@ class TLXbar(params: TLParams, nMasters: Int, nSlaves: Int, addrMap: Seq[UInt =>
 
     for (m <- 0 until nMasters) {
         val readyVec = (0 until nSlaves).map(s => routeHits(m)(s) && aArbs(s).io.in(m).ready)
-        val hitVec = VecInit(routeHits(m))
         when(io.masters(m).a.valid) {
-            assert(PopCount(hitVec) <= 1.U, "TLXbar: address overlaps multiple slaves")
+            assert(PopCount(routeHitVecs(m)) <= 1.U, "TLXbar: address overlaps multiple slaves")
         }
-        io.masters(m).a.ready := readyVec.reduceOption(_ || _).getOrElse(false.B)
+        val routedReady = readyVec.reduceOption(_ || _).getOrElse(false.B)
+        val localErrReady = !routeHasHit(m) && !localErrValid(m)
+        io.masters(m).a.ready := routedReady || localErrReady
+
+        when(io.masters(m).a.valid && io.masters(m).a.ready && !routeHasHit(m)) {
+            localErrValid(m)  := true.B
+            localErrOpcode(m) := Mux(io.masters(m).a.bits.opcode === TLOpcode.Get, TLOpcode.AccessAckData, TLOpcode.AccessAck)
+            localErrSize(m)   := io.masters(m).a.bits.size
+            localErrSource(m) := io.masters(m).a.bits.source
+        }
     }
 
-    val dArbs = Seq.fill(nMasters)(Module(new RRArbiter(new TLBundleD(params), nSlaves)))
+    val dArbs = Seq.fill(nMasters)(Module(new RRArbiter(new TLBundleD(params), nSlaves + 1)))
     for (m <- 0 until nMasters) {
         for (s <- 0 until nSlaves) {
             val respToMaster = decodeMaster(io.slaves(s).d.bits.source) === m.U
@@ -71,6 +86,18 @@ class TLXbar(params: TLParams, nMasters: Int, nSlaves: Int, addrMap: Seq[UInt =>
             dArbs(m).io.in(s).bits.denied := io.slaves(s).d.bits.denied
             dArbs(m).io.in(s).bits.data := io.slaves(s).d.bits.data
             dArbs(m).io.in(s).bits.corrupt := io.slaves(s).d.bits.corrupt
+        }
+        dArbs(m).io.in(nSlaves).valid := localErrValid(m)
+        dArbs(m).io.in(nSlaves).bits.opcode := localErrOpcode(m)
+        dArbs(m).io.in(nSlaves).bits.param := 0.U
+        dArbs(m).io.in(nSlaves).bits.size := localErrSize(m)
+        dArbs(m).io.in(nSlaves).bits.source := localErrSource(m)
+        dArbs(m).io.in(nSlaves).bits.sink := 0.U
+        dArbs(m).io.in(nSlaves).bits.denied := true.B
+        dArbs(m).io.in(nSlaves).bits.data := 0.U
+        dArbs(m).io.in(nSlaves).bits.corrupt := false.B
+        when(dArbs(m).io.in(nSlaves).fire) {
+            localErrValid(m) := false.B
         }
         io.masters(m).d <> dArbs(m).io.out
     }
@@ -87,14 +114,15 @@ class TLXbar(params: TLParams, nMasters: Int, nSlaves: Int, addrMap: Seq[UInt =>
     }
 }
 
-class TLSystemXbar(params: TLParams) extends Module {
+class TLSystemXbar(params: TLParams, nMasters: Int = 2) extends Module {
+    private val tagBits = log2Ceil(nMasters)
+
     val io = IO(new Bundle {
-        val masters = Vec(2, Flipped(new TLBundle(params))) // [0]=Core, [1]=DMA
-        val slave   = new TLBundle(params.copy(sourceBits = params.sourceBits + 1)) 
-        // 注意：Slave 端的 ID 宽度要 +1位，用来区分是哪个 Master
+        val masters = Vec(nMasters, Flipped(new TLBundle(params)))
+        val slave   = new TLBundle(params.copy(sourceBits = params.sourceBits + tagBits))
     })
 
-    private val xbar = Module(new TLXbar(params, nMasters = 2, nSlaves = 1, addrMap = Seq((_: UInt) => true.B)))
+    private val xbar = Module(new TLXbar(params, nMasters = nMasters, nSlaves = 1, addrMap = Seq((_: UInt) => true.B)))
 
     xbar.io.masters <> io.masters
     io.slave <> xbar.io.slaves(0)

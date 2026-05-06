@@ -5,66 +5,66 @@ import _root_.circt.stage.ChiselStage
 
 import soc.config.Config
 import soc.core._
-
 import soc.device.BROM
-import soc.device.TLRegister
-// import soc.device.Sram
-// import soc.device.SramIO
+import soc.device.UartTx
+import soc.device.CLINT
+import soc.device.TLError
 import soc.bus.tilelink.TLXbar
 import soc.bus.tilelink.TLParams
 import soc.bus.tilelink.TLRAM
-// import difftest._
+import soc.bus.tilelink.TLBundle
 
 class IonSoC extends Module {
     private val tlParams = TLParams()
-    private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + 1)
+    private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + 2)
+    private val slaveCount = Config.MMIORegions.length
 
     val io = IO(new Bundle {
-        val debug = new soc.debug.DebugIO
-        // val logCtrl = new LogCtrlIO
-        // val perfInfo = new PerfCtrlIO
-        // val uart = new UARTIO
+        val debug     = new soc.debug.DebugIO
+        val uart_tx   = Output(Bool())
+        val uart_byte = Output(UInt(8.W))
     })
 
-    val core = Module(new Core(Config.XLEN, hartID = 0))
-    val brom = Module(new BROM(Config.XLEN, Config.romDepth, Config.romInit))
-    // val sram = Module(new Sram(32, Config.XLEN, Config.ramDepth, Config.ramDataBytes))
-    val sram = Module(new TLRAM(dbusParams, Config.ramDepth))
-    val uart = Module(new TLRegister(dbusParams))
+    val core  = Module(new Core(Config.XLEN, hartID = 0))
+    val brom  = Module(new BROM(Config.XLEN, Config.romDepth, Config.romInit))
+    val sram  = Module(new TLRAM(dbusParams, Config.ramDepth))
+    val debugError = Module(new TLError(dbusParams))
+    val romError   = Module(new TLError(dbusParams))
+    val uart  = if (Config.features.uart) Some(Module(new UartTx(dbusParams))) else None
+    val clint = if (Config.features.clint) Some(Module(new CLINT(dbusParams))) else None
 
-    // val sramAXI = Module(new AXI4Seq(Config.AXI_ADDR_WIDTH, Config.AXI_DATA_WIDTH, new SramIO(Config.AXI_ADDR_WIDTH, Config.ramDataBytes)))
-    val TLCrossbar = Module(new TLXbar(dbusParams, 1, Config.MMIOMap.length, Config.addrMap))
+    val TLCrossbar = Module(new TLXbar(dbusParams, 1, slaveCount, Config.addrMap))
 
     brom.io.fetch_en := core.io.fetch_en
     brom.io.addr     := core.io.pc
     core.io.instr    := brom.io.instr
+    core.io.mtip     := clint.map(_.io.mtip).getOrElse(false.B)
 
     TLCrossbar.io.masters(0) <> core.io.DBus
-    TLCrossbar.io.slaves(2) <> sram.io.tl
-    TLCrossbar.io.slaves(3) <> uart.io.tl
 
-    for (i <- Seq(0, 1)) {
-        TLCrossbar.io.slaves(i).a.ready        := false.B
-        TLCrossbar.io.slaves(i).d.valid        := false.B
-        TLCrossbar.io.slaves(i).d.bits.opcode  := 0.U
-        TLCrossbar.io.slaves(i).d.bits.param   := 0.U
-        TLCrossbar.io.slaves(i).d.bits.size    := 0.U
-        TLCrossbar.io.slaves(i).d.bits.source  := 0.U
-        TLCrossbar.io.slaves(i).d.bits.sink    := 0.U
-        TLCrossbar.io.slaves(i).d.bits.denied  := true.B
-        TLCrossbar.io.slaves(i).d.bits.data    := 0.U
-        TLCrossbar.io.slaves(i).d.bits.corrupt := false.B
+    private var slaveIndex = 0
+    private def connectSlave(tl: TLBundle): Unit = {
+        TLCrossbar.io.slaves(slaveIndex) <> tl
+        slaveIndex += 1
     }
+
+    connectSlave(debugError.io.tl)
+    connectSlave(romError.io.tl)
+    connectSlave(sram.io.tl)
+    uart.foreach(device => connectSlave(device.io.tl))
+    clint.foreach(device => connectSlave(device.io.tl))
+    require(slaveIndex == slaveCount, s"connected $slaveIndex slaves, expected $slaveCount")
 
     core.io.IBus <> DontCare
     dontTouch(sram.io)
-    dontTouch(uart.io)
+    uart.foreach(device => dontTouch(device.io))
+    clint.foreach(device => dontTouch(device.io))
 
     // Debug ports
     io.debug.pc    := core.io.pc
     io.debug.instr := core.io.instr
-    // Difftest ports
-    // io.uart.in.valid := false.B
-    // io.uart.out.valid := false.B
-    // io.uart.out.ch := 0.U
+
+    // UART TX outputs
+    io.uart_tx   := uart.map(_.io.tx_valid).getOrElse(false.B)
+    io.uart_byte := uart.map(_.io.tx_byte).getOrElse(0.U)
 }

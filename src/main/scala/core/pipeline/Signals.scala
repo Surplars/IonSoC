@@ -49,6 +49,7 @@ class MemoryAccessInfo(XLEN: Int) extends Bundle {
 
 class MemorySystemConfig(XLEN: Int) extends Bundle {
     val priv    = UInt(2.W)
+    val mmu_en  = Bool()
     val satp    = UInt(XLEN.W)
     val pmpcfg0 = UInt(XLEN.W)
     val pmpaddr0 = UInt(XLEN.W)

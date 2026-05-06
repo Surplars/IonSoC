@@ -25,6 +25,7 @@ object ivys {
 
     val chisel       = ivy"org.chipsalliance::chisel:$chiselVersion"
     val chiselPlugin = ivy"org.chipsalliance:::chisel-plugin:$chiselVersion"
+    val scalatest    = ivy"org.scalatest::scalatest:3.2.19"
 }
 
 trait CommonModule extends ScalaModule {
@@ -57,6 +58,8 @@ object `IonSoC` extends CommonNS {
 
     // override def moduleDeps = super.moduleDeps ++ Seq(`rocket-chip`)
 
-    object test extends SbtTests with TestModule.ScalaTest
+    object test extends SbtTests with TestModule.ScalaTest {
+        override def ivyDeps = T { super.ivyDeps() ++ Agg(ivys.scalatest) }
+    }
 
 }

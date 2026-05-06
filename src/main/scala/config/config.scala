@@ -4,45 +4,66 @@ import chisel3._
 
 import soc.isa.Extension
 
+case class SoCFeatures(
+    mmu: Boolean = false,
+    iCache: Boolean = false,
+    dCache: Boolean = true,
+    uart: Boolean = true,
+    clint: Boolean = true
+)
+
+case class AddressRegion(name: String, base: BigInt, size: BigInt) {
+    def contains(addr: UInt, addrWidth: Int): Bool = {
+        addr >= base.U(addrWidth.W) && addr < (base + size).U(addrWidth.W)
+    }
+}
+
 object Config {
     val XLEN: Int                        = 64
     val enabledExt: Set[Extension.Value] = Set(Extension.RV64I, Extension.Zicsr, Extension.RV64M)
+    val features: SoCFeatures            = SoCFeatures()
 
     val DebugBase: BigInt = 0x00000000L
     val DebugSize: BigInt = 0x4000L
     val RomBase: BigInt   = 0x80000000L
     val RomSize: BigInt   = 0x20000L
     val SramBase: BigInt  = 0x10000000L
-    val UartBase: BigInt  = 0x10001000L
+    val SramSize: BigInt  = 0x10000L  // 64 KB
+    val UartBase: BigInt  = 0x10010000L  // after SRAM region
     val UartSize: BigInt  = 0x1000L
+    val ClintBase: BigInt = 0x2000000L   // CLINT base
+    val ClintSize: BigInt = 0x10000L     // 64 KB
 
     val romDepth: Int     = 16384 // 16 KB
     val ramDepth: Int     = 65536 // 64 KB
     val ramDataBytes: Int = XLEN / 8
     val romInit: Seq[Int] = Seq.fill(romDepth)(0)
 
-    val resetVector: BigInt = 0x00000000
+    val resetVector: BigInt = RomBase
 
-    // val AXI_ADDR_WIDTH: Int = 32
-    // val AXI_DATA_WIDTH: Int = XLEN
+    val DebugRegion: AddressRegion = AddressRegion("debug", DebugBase, DebugSize)
+    val RomRegion: AddressRegion   = AddressRegion("rom", RomBase, RomSize)
+    val SramRegion: AddressRegion  = AddressRegion("sram", SramBase, SramSize)
+    val UartRegion: AddressRegion  = AddressRegion("uart", UartBase, UartSize)
+    val ClintRegion: AddressRegion = AddressRegion("clint", ClintBase, ClintSize)
 
-    val MMIOMap: Seq[(BigInt, BigInt)] = Seq(
-        (DebugBase, DebugSize),
-        // ROM
-        (RomBase, RomSize),
-        // SRAM
-        (SramBase, ramDepth),
-        // UART
-        (UartBase, UartSize)
-    )
-    val addrMap = mkAddrMap(MMIOMap, XLEN)
+    val alwaysOnRegions: Seq[AddressRegion] = Seq(DebugRegion, RomRegion, SramRegion)
+    val optionalRegions: Seq[AddressRegion] =
+        Seq(
+            Option.when(features.uart)(UartRegion),
+            Option.when(features.clint)(ClintRegion)
+        ).flatten
 
-    private def mkAddrMap(ranges: Seq[(BigInt, BigInt)], addrWidth: Int): Seq[UInt => Bool] = {
-        ranges.map { case (base, size) =>
-            val start = base
-            val end   = base + size
-            (addr: UInt) => (addr >= start.U(addrWidth.W)) && (addr < end.U(addrWidth.W))
-        }
+    val MMIORegions: Seq[AddressRegion] = alwaysOnRegions ++ optionalRegions
+    val MMIOMap: Seq[(BigInt, BigInt)]  = MMIORegions.map(region => (region.base, region.size))
+    val addrMap: Seq[UInt => Bool]      = mkAddrMap(MMIORegions, XLEN)
+
+    // Reserved MMIO ranges remain device/uncached even when the device is not
+    // instantiated, so accesses reach TLXbar and receive a denied response.
+    val deviceRegions: Seq[AddressRegion] = Seq(DebugRegion, RomRegion, UartRegion, ClintRegion)
+
+    private def mkAddrMap(ranges: Seq[AddressRegion], addrWidth: Int): Seq[UInt => Bool] = {
+        ranges.map(region => (addr: UInt) => region.contains(addr, addrWidth))
     }
 
 }

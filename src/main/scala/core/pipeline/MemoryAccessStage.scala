@@ -13,17 +13,18 @@ class MemoryAccessStage(XLEN: Int = 64) extends Module {
         val fault = Output(new MemoryFaultInfo(XLEN))
     })
 
-    val inDebug = io.in.vaddr >= Config.DebugBase.U(XLEN.W) && io.in.vaddr < (Config.DebugBase + Config.DebugSize).U(XLEN.W)
-    val inRom   = io.in.vaddr >= Config.RomBase.U(XLEN.W) && io.in.vaddr < (Config.RomBase + Config.RomSize).U(XLEN.W)
-    val inSram  = io.in.vaddr >= Config.SramBase.U(XLEN.W) && io.in.vaddr < (Config.SramBase + Config.ramDepth).U(XLEN.W)
-    val inUart  = io.in.vaddr >= Config.UartBase.U(XLEN.W) && io.in.vaddr < (Config.UartBase + Config.UartSize).U(XLEN.W)
+    private def inRegion(region: soc.config.AddressRegion): Bool = region.contains(io.in.vaddr, XLEN)
 
-    val translateEnabled = io.in.valid && (io.cfg.satp =/= 0.U) && !io.in.attrs.device
+    val inRom    = inRegion(Config.RomRegion)
+    val inSram   = inRegion(Config.SramRegion)
+    val inDevice = Config.deviceRegions.map(inRegion).reduce(_ || _)
+
+    val translateEnabled = io.in.valid && io.cfg.mmu_en && (io.cfg.satp =/= 0.U) && !io.in.attrs.device
 
     io.out := io.in
     io.out.paddr := io.in.vaddr
     io.out.attrs.cacheable  := inSram
-    io.out.attrs.device     := inUart || inDebug
+    io.out.attrs.device     := inDevice
     io.out.attrs.bufferable := inSram
     io.out.attrs.allocate   := inSram
     io.out.attrs.translate  := translateEnabled

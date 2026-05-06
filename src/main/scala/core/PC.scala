@@ -29,23 +29,21 @@ class PC(XLEN: Int, RESET_VECTOR: BigInt) extends Module {
     val pc_p4   = ProgramCounter + 4.U
     val pred_pc = Mux(bpu.io.pred_taken, bpu.io.pred_target, pc_p4)
 
+    io.fetch_en := true.B
+
     when(rst) {
         ProgramCounter := RESET_VECTOR.U
         io.fetch_en    := false.B
         rst            := false.B
     }.elsewhen(redirect) {
         ProgramCounter := Mux(io.trap_ret, io.trap_epc, Mux(io.trap_valid, io.trap_pc, io.br_info.target))
-        io.fetch_en    := true.B
     }.elsewhen(io.stall) {
         ProgramCounter := ProgramCounter
-        io.fetch_en    := true.B
     }.otherwise {
         ProgramCounter := pred_pc
-        io.fetch_en    := true.B
     }
 
     io.pc_out     := ProgramCounter
-    io.fetch_en   := true.B
     io.pred_taken := bpu.io.pred_taken
     io.redirect   := redirect
 

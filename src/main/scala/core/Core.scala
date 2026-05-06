@@ -1,6 +1,7 @@
 package soc.core
 
 import chisel3._
+import chisel3.util._
 
 import csr.CSRFile
 import pipeline._
@@ -8,11 +9,17 @@ import soc.bus.tilelink.TLParams
 import soc.bus.tilelink.TLTransTracker
 import soc.bus.tilelink.TLBundle
 import soc.bus.tilelink.TLSystemXbar
+import soc.memory.cache.HasCacheCoreIO
 import soc.memory.cache.L1Cache
+import soc.memory.cache.UncachedTileLinkBridge
+import soc.config.Config
 
 class Core(XLEN: Int, hartID: Int) extends Module {
     private val tlParams = TLParams()
-    private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + 1)
+    private val hasICache = Config.features.iCache
+    private val hasDCache = Config.features.dCache
+    private val nMasters = 2 + (if (hasICache) 1 else 0) // dcache, tracker, optional icache
+    private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + log2Ceil(nMasters))
 
     val io = IO(new Bundle {
         val instr = Input(UInt(32.W))
@@ -22,12 +29,14 @@ class Core(XLEN: Int, hartID: Int) extends Module {
 
         val IBus = new TLBundle(tlParams)
         val DBus = new TLBundle(dbusParams)
+
+        val mtip = Input(Bool())
     })
 
-    val icache = Module(new L1Cache(tlParams, 256))
-    val dcache = Module(new L1Cache(tlParams, 256))
+    val dcache: HasCacheCoreIO = if (hasDCache) Module(new L1Cache(tlParams, 256)) else Module(new UncachedTileLinkBridge(tlParams))
     val tracker = Module(new TLTransTracker(tlParams, maxInFlight = 1 << tlParams.sourceBits))
-    val dbusXbar = Module(new TLSystemXbar(tlParams))
+    val dbusXbar = Module(new TLSystemXbar(tlParams, nMasters))
+    val icache = if (hasICache) Some(Module(new L1Cache(tlParams, 256))) else None
 
     val pc       = Module(new PC(XLEN, soc.config.Config.resetVector))
     val register = Module(new RegisterFile(XLEN))
@@ -50,17 +59,36 @@ class Core(XLEN: Int, hartID: Int) extends Module {
     lsu.io.mmio <> tracker.io.master
     dbusXbar.io.masters(0) <> dcache.io.bus
     dbusXbar.io.masters(1) <> tracker.io.tl
+
+    // ICache is optional; instruction fetch currently uses the BROM path.
+    icache.foreach { cache =>
+        dbusXbar.io.masters(2) <> cache.io.bus
+        cache.io.cpu.req.valid := false.B
+        cache.io.cpu.req.bits := DontCare
+        cache.io.cpu.resp.ready := true.B
+    }
+
     io.DBus <> dbusXbar.io.slave
     io.IBus <> DontCare
-	icache.io <> DontCare
+
+    // csr mtip
+    csr.io.mtip := io.mtip
+
+	    // Combine pipeline traps with external interrupts
+	    val has_pipeline_trap = lsu.io.trap_info_out.valid
+	    val has_ret           = lsu.io.trap_info_out.is_ret
+	    val ret_redirect      = alu.io.trap_info_out.is_ret || has_ret
+	    val interrupt_taken   = csr.io.interrupt && !global_stall && !has_pipeline_trap && !has_ret
+	    val combined_trap     = has_pipeline_trap || interrupt_taken
+	    val pipeline_flush    = combined_trap || ret_redirect
 
     // pc
     io.pc            := pc.io.pc_out
     io.fetch_en      := pc.io.fetch_en
     pc.io.stall      := global_stall
-    pc.io.trap_valid := lsu.io.trap_info_out.valid
-    pc.io.trap_pc    := csr.io.tvec_out
-    pc.io.trap_ret   := lsu.io.trap_info_out.is_ret
+	    pc.io.trap_valid := combined_trap
+	    pc.io.trap_pc    := csr.io.tvec_out
+	    pc.io.trap_ret   := ret_redirect
     pc.io.trap_epc   := csr.io.epc_out
     pc.io.br_info <> alu.io.br_info
     // register
@@ -75,10 +103,11 @@ class Core(XLEN: Int, hartID: Int) extends Module {
     csr.io.addr       := alu.io.csr_addr
     csr.io.write      := alu.io.csr_write
     csr.io.wdata      := alu.io.csr_wdata
-    csr.io.trap_valid := lsu.io.trap_info_out.valid
-    csr.io.trap_pc    := lsu.io.trap_info_out.pc
-    csr.io.trap_cause := lsu.io.trap_info_out.cause
-    csr.io.trap_value := lsu.io.trap_info_out.value
+    csr.io.trap_valid := combined_trap
+    // Exceptions take priority over interrupts for pc/cause
+    csr.io.trap_pc    := Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, pc.io.pc_out)
+    csr.io.trap_cause := Mux(has_pipeline_trap, lsu.io.trap_info_out.cause, soc.isa.MCause.MachineTimerInt)
+    csr.io.trap_value := Mux(has_pipeline_trap, lsu.io.trap_info_out.value, 0.U)
     csr.io.is_ret     := lsu.io.trap_info_out.is_ret
     csr.io.ie_out     := DontCare
     // ifetch
@@ -87,11 +116,11 @@ class Core(XLEN: Int, hartID: Int) extends Module {
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken
     ifetch.io.redirect      := pc.io.redirect
-    ifetch.io.trap_valid    := wb.io.trap_info.valid
+	    ifetch.io.trap_valid    := pipeline_flush
     // idcode
     idecode.io.valid_in      := ifetch.io.valid
     idecode.io.stall         := global_stall
-    idecode.io.trap_valid    := wb.io.trap_info.valid
+	    idecode.io.trap_valid    := pipeline_flush
     idecode.io.redirect      := ifetch.io.redirect
     idecode.io.pc_in         := ifetch.io.pc_out
     idecode.io.instr_in      := ifetch.io.instr_out
@@ -101,7 +130,7 @@ class Core(XLEN: Int, hartID: Int) extends Module {
     // alu
     alu.io.valid_in       := idecode.io.valid_out
     alu.io.stall          := global_stall
-    alu.io.trap_valid     := wb.io.trap_info.valid
+	    alu.io.trap_valid     := pipeline_flush
     alu.io.pc_in          := idecode.io.pc_out
     alu.io.next_pc_in     := idecode.io.pc_in
     alu.io.pred_taken_in  := idecode.io.pred_taken_out
@@ -117,7 +146,7 @@ class Core(XLEN: Int, hartID: Int) extends Module {
     // mem
     lsu.io.pc_in        := alu.io.pc_out
     lsu.io.valid_in     := alu.io.valid_out
-    lsu.io.trap_valid   := wb.io.trap_info.valid
+	    lsu.io.trap_valid   := wb.io.trap_info.valid
     lsu.io.alu_out      := alu.io.alu_out
     lsu.io.trap_info_in := alu.io.trap_info_out
     lsu.io.mem_cfg      := csr.io.mem_cfg_out

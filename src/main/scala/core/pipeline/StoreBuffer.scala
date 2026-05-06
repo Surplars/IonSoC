@@ -5,18 +5,24 @@ import chisel3.util._
 
 class StoreBufferEntry(val AW: Int, val DW: Int) extends Bundle {
     val valid = Bool()
+    val pc    = UInt(AW.W)
+    val vaddr = UInt(AW.W)
     val addr  = UInt(AW.W)
     val data  = UInt(DW.W)
     val mask  = UInt((DW / 8).W)
+    val size  = UInt(3.W)
 }
 
 class StoreBuffer(val entries: Int, val AW: Int, val DW: Int) extends Module {
     val io = IO(new Bundle {
         // Enq (来自 LSU Core 逻辑)
         val enq_valid = Input(Bool())
+        val enq_pc    = Input(UInt(AW.W))
+        val enq_vaddr = Input(UInt(AW.W))
         val enq_addr  = Input(UInt(AW.W))
         val enq_data  = Input(UInt(DW.W))
         val enq_mask  = Input(UInt((DW / 8).W))
+        val enq_size  = Input(UInt(3.W))
         val enq_ready = Output(Bool())
         // Search (来自 Load 指令 Forwarding)
         val search_addr = Input(UInt(AW.W))
@@ -25,9 +31,12 @@ class StoreBuffer(val entries: Int, val AW: Int, val DW: Int) extends Module {
         val search_data = Output(UInt(DW.W))
         // Deq (发往 Memory/Bus)
         val deq_valid = Output(Bool())
+        val deq_pc    = Output(UInt(AW.W))
+        val deq_vaddr = Output(UInt(AW.W))
         val deq_addr  = Output(UInt(AW.W))
         val deq_data  = Output(UInt(DW.W))
         val deq_mask  = Output(UInt((DW / 8).W))
+        val deq_size  = Output(UInt(3.W))
         val deq_ready = Input(Bool())
     })
 
@@ -49,15 +58,21 @@ class StoreBuffer(val entries: Int, val AW: Int, val DW: Int) extends Module {
 
     when(enq_fire) {
         buffer(tail).valid := true.B
+        buffer(tail).pc    := io.enq_pc
+        buffer(tail).vaddr := io.enq_vaddr
         buffer(tail).addr  := io.enq_addr
         buffer(tail).data  := io.enq_data
         buffer(tail).mask  := io.enq_mask
+        buffer(tail).size  := io.enq_size
         tail               := ptrNext(tail)
     }
 
+    io.deq_pc    := buffer(head).pc
+    io.deq_vaddr := buffer(head).vaddr
     io.deq_addr  := buffer(head).addr
     io.deq_data  := buffer(head).data
     io.deq_mask  := buffer(head).mask
+    io.deq_size  := buffer(head).size
 
     when(deq_fire) {
         buffer(head).valid := false.B
@@ -73,13 +88,25 @@ class StoreBuffer(val entries: Int, val AW: Int, val DW: Int) extends Module {
         }
     }
 
-	val hit_vec = Wire(Vec(entries, Bool()))
-	val data_vec = Wire(Vec(entries, UInt(DW.W)))
+    def ptrPrev(ptr: UInt): UInt = Mux(ptr === 0.U, (entries - 1).U, ptr - 1.U)
+    def ptrMinus(ptr: UInt, steps: Int): UInt = {
+        var result = ptr
+        for (_ <- 0 until steps) {
+            result = ptrPrev(result)
+        }
+        result
+    }
 
-	for (i <- 0 until entries) {
-        hit_vec(i) := buffer(i).valid && (buffer(i).addr === io.search_addr) && ((buffer(i).mask & io.search_mask) === io.search_mask)
-		data_vec(i) := buffer(i).data
-	}
-	io.search_hit  := hit_vec.asUInt.orR
-	io.search_data := Mux1H(hit_vec, data_vec)
+    val hitByAge  = Wire(Vec(entries, Bool()))
+    val dataByAge = Wire(Vec(entries, UInt(DW.W)))
+
+    for (age <- 0 until entries) {
+        val idx = ptrMinus(tail, age + 1)
+        hitByAge(age) := buffer(idx).valid && (buffer(idx).addr === io.search_addr) && ((buffer(idx).mask & io.search_mask) === io.search_mask)
+        dataByAge(age) := buffer(idx).data
+    }
+
+    val newestHitOH = PriorityEncoderOH(hitByAge.asUInt)
+    io.search_hit  := hitByAge.asUInt.orR
+    io.search_data := Mux1H(newestHitOH, dataByAge)
 }

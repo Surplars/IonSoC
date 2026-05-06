@@ -29,16 +29,15 @@ class TLTransTracker(params: TLParams, maxInFlight: Int = 1) extends Module {
     }
     val inflight = RegInit(VecInit(Seq.fill(maxInFlight)(0.U.asTypeOf(new InflightEntry))))
 
-    // 分配source
+    // 分配source (PriorityEncoder消除组合环)
     val allocIdx = Wire(UInt(sourceIdxBits.W))
     val allocValid = Wire(Bool())
-    allocIdx := 0.U
-    allocValid := false.B
-    for(i <- 0 until maxInFlight) {
-        when(sourcePool(i) && !allocValid) {
-            allocIdx := i.U
-            allocValid := true.B
-        }
+    val freeVec = sourcePool.asUInt
+    allocValid := freeVec.orR
+    if (maxInFlight == 1) {
+        allocIdx := 0.U
+    } else {
+        allocIdx := PriorityEncoder(freeVec)
     }
 
     // 请求发射条件遵循Decoupled：valid不能依赖ready
