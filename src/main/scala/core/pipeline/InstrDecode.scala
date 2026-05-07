@@ -75,13 +75,16 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     val op1_out = WireInit(0.U(XLEN.W))
     val op2_out = WireInit(0.U(XLEN.W))
 
+    val isShiftImm64 = opcode === Opcode.OP_IMM &&
+        (funct3 === "b001".U || funct3 === "b101".U)
+
     imm := MuxLookup(opcode, 0.U(XLEN.W))(
         Seq(
             Opcode.LUI       -> imm_u,
             Opcode.AUIPC     -> imm_u,
             Opcode.JAL       -> imm_j,
             Opcode.JALR      -> imm_i,
-            Opcode.OP_IMM    -> imm_i,
+            Opcode.OP_IMM    -> Mux(isShiftImm64, shamt6, imm_i),
             Opcode.OP_IMM_32 -> imm_i,
             Opcode.BRANCH    -> imm_b,
             Opcode.LOAD      -> imm_i,

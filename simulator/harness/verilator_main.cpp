@@ -310,6 +310,18 @@ bool run_one_test(const std::string &bin_path,
 
     ram_init(dut);
     load_elf(dut, bin_path.c_str());
+#define CLEAR_EXT_IRQ_SOURCES(DUT) do { \
+    (DUT)->io_ext_irq_sources_0 = 0;  (DUT)->io_ext_irq_sources_1 = 0;  (DUT)->io_ext_irq_sources_2 = 0;  (DUT)->io_ext_irq_sources_3 = 0; \
+    (DUT)->io_ext_irq_sources_4 = 0;  (DUT)->io_ext_irq_sources_5 = 0;  (DUT)->io_ext_irq_sources_6 = 0;  (DUT)->io_ext_irq_sources_7 = 0; \
+    (DUT)->io_ext_irq_sources_8 = 0;  (DUT)->io_ext_irq_sources_9 = 0;  (DUT)->io_ext_irq_sources_10 = 0; (DUT)->io_ext_irq_sources_11 = 0; \
+    (DUT)->io_ext_irq_sources_12 = 0; (DUT)->io_ext_irq_sources_13 = 0; (DUT)->io_ext_irq_sources_14 = 0; (DUT)->io_ext_irq_sources_15 = 0; \
+    (DUT)->io_ext_irq_sources_16 = 0; (DUT)->io_ext_irq_sources_17 = 0; (DUT)->io_ext_irq_sources_18 = 0; (DUT)->io_ext_irq_sources_19 = 0; \
+    (DUT)->io_ext_irq_sources_20 = 0; (DUT)->io_ext_irq_sources_21 = 0; (DUT)->io_ext_irq_sources_22 = 0; (DUT)->io_ext_irq_sources_23 = 0; \
+    (DUT)->io_ext_irq_sources_24 = 0; (DUT)->io_ext_irq_sources_25 = 0; (DUT)->io_ext_irq_sources_26 = 0; (DUT)->io_ext_irq_sources_27 = 0; \
+    (DUT)->io_ext_irq_sources_28 = 0; (DUT)->io_ext_irq_sources_29 = 0; (DUT)->io_ext_irq_sources_30 = 0; (DUT)->io_ext_irq_sources_31 = 0; \
+} while (0)
+
+    CLEAR_EXT_IRQ_SOURCES(dut);
 
     if (trace_en)
     {
@@ -325,6 +337,7 @@ bool run_one_test(const std::string &bin_path,
 
     for (int i = 0; i < 6; ++i)
     {
+        CLEAR_EXT_IRQ_SOURCES(dut);
         dut->clock ^= 1;
         dut->eval();
         tfp->dump(sim_time);
@@ -344,12 +357,16 @@ bool run_one_test(const std::string &bin_path,
 
     while (sim_time < MAX_SIM_CYCLES)
     {
+        CLEAR_EXT_IRQ_SOURCES(dut);
+        dut->io_ext_irq_sources_1 = (test_name == "plic" && sim_time >= 80) ? 1 : 0;
+
         dut->clock ^= 1;
         dut->eval();
         tfp->dump(sim_time);
 
         uint64_t cur_mtimecmp = dut->rootp->SimTop__DOT__clint__DOT__mtimecmp;
-        uint8_t cur_mtip = dut->rootp->SimTop__DOT___clint_io_mtip;
+        uint8_t cur_mtip = (dut->rootp->SimTop__DOT__clint__DOT__mtimecmp != 0) &&
+                            (dut->rootp->SimTop__DOT__clint__DOT__mtime >= dut->rootp->SimTop__DOT__clint__DOT__mtimecmp);
         bool trace_state_change = cur_mtip != last_mtip || cur_mtimecmp != last_mtimecmp;
 
         if (trace_cpu && dut->clock && (sim_time < 150 || dut->io_debug_pc != last_pc || trace_state_change)) {
@@ -363,7 +380,7 @@ bool run_one_test(const std::string &bin_path,
             printf("[trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x t0=0x%016" PRIx64 " t3=0x%016" PRIx64 " a0=0x%016" PRIx64 " a7=0x%016" PRIx64
                    " lsu_stall=%u load_valid=%u load=0x%016" PRIx64 " alu_rd=%u alu_w=%u alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
                    " br_v=%u br_t=%u br_target=0x%016" PRIx64 " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
-                   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
+                   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " plic_src1=%u plic_pend1=%u plic_prio1=%u plic_en=0x%08x plic_th=%u mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
                    sim_time,
                    (uint64_t)dut->io_debug_pc,
                    (uint32_t)dut->io_debug_instr,
@@ -391,6 +408,11 @@ bool run_one_test(const std::string &bin_path,
                    (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause,
                    (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mstatus,
                    (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mie,
+                   (uint32_t)dut->rootp->io_ext_irq_sources_1,
+                   (uint32_t)dut->rootp->SimTop__DOT__plic__DOT__pending_1,
+                   (uint32_t)dut->rootp->SimTop__DOT__plic__DOT__priority_1,
+                   (uint32_t)dut->rootp->SimTop__DOT__plic__DOT__enable,
+                   (uint32_t)dut->rootp->SimTop__DOT__plic__DOT__threshold,
                    (uint32_t)cur_mtip,
                    (uint64_t)dut->rootp->SimTop__DOT__clint__DOT__mtime,
                    cur_mtimecmp);

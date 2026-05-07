@@ -3,6 +3,7 @@ package soc.core.csr
 import chisel3._
 import chisel3.util._
 import soc.isa.CSR
+import soc.isa.InterruptCauseCode
 import soc.core.pipeline.CSROps
 import soc.core.pipeline.MemorySystemConfig
 import soc.isa.PrivilegeLevel
@@ -29,6 +30,12 @@ object MStatus {
 	    }
 }
 
+object SStatus {
+    val SIE  = 1
+    val SPIE = 5
+    val SPP  = 8
+}
+
 class CSRFile(
     XLEN: Int = 64,
     hartID: Int,
@@ -51,12 +58,18 @@ class CSRFile(
         val trap_value = Input(UInt(XLEN.W))
         val is_ret     = Input(Bool())
         // 中断信号
+        val msip = Input(Bool())
         val mtip = Input(Bool())
+        val meip = Input(Bool())
+        val ssip = Input(Bool())
+        val stip = Input(Bool())
+        val seip = Input(Bool())
         // 输出给Core的状态
-        val epc_out     = Output(UInt(XLEN.W))
-        val tvec_out    = Output(UInt(XLEN.W))
-        val ie_out      = Output(Bool()) // MIE全局中断使能
-        val interrupt   = Output(Bool()) // 是否有待处理的中断
+        val epc_out         = Output(UInt(XLEN.W))
+        val tvec_out        = Output(UInt(XLEN.W))
+        val interrupt_cause = Output(UInt(XLEN.W))
+        val ie_out          = Output(Bool()) // MIE全局中断使能
+        val interrupt       = Output(Bool()) // 是否有待处理的中断
         val mem_cfg_out = Output(new MemorySystemConfig(XLEN))
     })
 
@@ -91,12 +104,51 @@ class CSRFile(
     val mnstatus  = RegInit(0.U(XLEN.W))
     val satp      = RegInit(0.U(XLEN.W))
     val mie       = RegInit(0.U(XLEN.W))       // 中断使能寄存器 (MSIE=3, MTIE=7, MEIE=11)
+    val stvec     = RegInit(0.U(XLEN.W))
+    val sepc      = RegInit(0.U(XLEN.W))
+    val scause    = RegInit(0.U(XLEN.W))
+    val stval     = RegInit(0.U(XLEN.W))
+    val sscratch  = RegInit(0.U(XLEN.W))
+    val ssipSw    = RegInit(false.B)
     val mip       = WireInit(0.U(XLEN.W))      // 中断 pending，部分由硬件连线
 
-    // mip: MTIP(bit7) 来自 CLINT, 其余位为 0
-    mip := Cat(0.U((XLEN - 8).W), io.mtip.asUInt, 0.U(3.W), 0.U(1.W), 0.U(3.W))
+    private def bitMask(bit: Int): UInt = (BigInt(1) << bit).U(XLEN.W)
+    private def interruptCause(code: Int): UInt = ((BigInt(1) << (XLEN - 1)) | code).U(XLEN.W)
+
+    val supervisorInterruptMask =
+        bitMask(InterruptCauseCode.SupervisorSoft) |
+            bitMask(InterruptCauseCode.SupervisorTimer) |
+            bitMask(InterruptCauseCode.SupervisorExt)
+    val writableMieMask =
+        supervisorInterruptMask |
+            bitMask(InterruptCauseCode.MachineSoft) |
+            bitMask(InterruptCauseCode.MachineTimer) |
+            bitMask(InterruptCauseCode.MachineExt)
+
+    mip :=
+        Mux(io.ssip || ssipSw, bitMask(InterruptCauseCode.SupervisorSoft), 0.U) |
+            Mux(io.msip, bitMask(InterruptCauseCode.MachineSoft), 0.U) |
+            Mux(io.stip, bitMask(InterruptCauseCode.SupervisorTimer), 0.U) |
+            Mux(io.mtip, bitMask(InterruptCauseCode.MachineTimer), 0.U) |
+            Mux(io.seip, bitMask(InterruptCauseCode.SupervisorExt), 0.U) |
+            Mux(io.meip, bitMask(InterruptCauseCode.MachineExt), 0.U)
+
+    val sstatus =
+        (mstatus & (bitMask(SStatus.SIE) | bitMask(SStatus.SPIE) | bitMask(SStatus.SPP))) |
+            (mstatus & (bitMask(13) | bitMask(14) | bitMask(15) | bitMask(18) | bitMask(19))) |
+            (mstatus & (bitMask(63)))
+    val sie = mie & mideleg & supervisorInterruptMask
+    val sip = mip & mideleg & supervisorInterruptMask
 
     val mapping = Map(
+        CSR.SSTATUS   -> sstatus,
+        CSR.SIE       -> sie,
+        CSR.STVEC     -> stvec,
+        CSR.SSCRATCH  -> sscratch,
+        CSR.SEPC      -> sepc,
+        CSR.SCAUSE    -> scause,
+        CSR.STVAL     -> stval,
+        CSR.SIP       -> sip,
         CSR.MVENDORID  -> 0.U(XLEN.W),
         CSR.MARCHID    -> 0.U(XLEN.W),
         CSR.MIMPID     -> 0.U(XLEN.W),
@@ -149,29 +201,56 @@ class CSRFile(
             is(CSR.MSTATUS) {
                 mstatus := wdata_final
             }
+            is(CSR.SSTATUS) {
+                val sMask = bitMask(SStatus.SIE) | bitMask(SStatus.SPIE) | bitMask(SStatus.SPP)
+                mstatus := (mstatus & ~sMask) | (wdata_final & sMask)
+            }
             is(CSR.MEDELEG) {
                 medeleg := wdata_final
             }
             is(CSR.MIDELEG) {
-                mideleg := wdata_final
+                mideleg := wdata_final & supervisorInterruptMask
             }
             is(CSR.MIE) {
-                mie := wdata_final
+                mie := wdata_final & writableMieMask
+            }
+            is(CSR.SIE) {
+                mie := (mie & ~(mideleg & supervisorInterruptMask)) | (wdata_final & mideleg & supervisorInterruptMask)
             }
             is(CSR.MTVEC) {
                 mtvec := wdata_final
             }
+            is(CSR.STVEC) {
+                stvec := wdata_final
+            }
             is(CSR.MEPC) {
                 mepc := wdata_final
+            }
+            is(CSR.SEPC) {
+                sepc := wdata_final
             }
             is(CSR.MCAUSE) {
                 mcause := wdata_final
             }
+            is(CSR.SCAUSE) {
+                scause := wdata_final
+            }
             is(CSR.MTVAL) {
                 mtval := wdata_final
             }
+            is(CSR.STVAL) {
+                stval := wdata_final
+            }
             is(CSR.MSCRATCH) {
                 mscratch := wdata_final
+            }
+            is(CSR.SSCRATCH) {
+                sscratch := wdata_final
+            }
+            is(CSR.SIP) {
+                when(mideleg(InterruptCauseCode.SupervisorSoft)) {
+                    ssipSw := wdata_final(InterruptCauseCode.SupervisorSoft)
+                }
             }
             is(CSR.PMPcfg0) {
                 pmpcfg0 := wdata_final
@@ -191,10 +270,40 @@ class CSRFile(
         }
     }
 
+    val pendingEnabled = mie & mip
+    val machineVisiblePending = pendingEnabled & ~mideleg
+    val machineInterruptCause = Wire(UInt(XLEN.W))
+    machineInterruptCause := 0.U
+    when(machineVisiblePending(InterruptCauseCode.MachineExt)) {
+        machineInterruptCause := interruptCause(InterruptCauseCode.MachineExt)
+    }.elsewhen(machineVisiblePending(InterruptCauseCode.MachineSoft)) {
+        machineInterruptCause := interruptCause(InterruptCauseCode.MachineSoft)
+    }.elsewhen(machineVisiblePending(InterruptCauseCode.MachineTimer)) {
+        machineInterruptCause := interruptCause(InterruptCauseCode.MachineTimer)
+    }.elsewhen(machineVisiblePending(InterruptCauseCode.SupervisorExt)) {
+        machineInterruptCause := interruptCause(InterruptCauseCode.SupervisorExt)
+    }.elsewhen(machineVisiblePending(InterruptCauseCode.SupervisorSoft)) {
+        machineInterruptCause := interruptCause(InterruptCauseCode.SupervisorSoft)
+    }.elsewhen(machineVisiblePending(InterruptCauseCode.SupervisorTimer)) {
+        machineInterruptCause := interruptCause(InterruptCauseCode.SupervisorTimer)
+    }
+    val machineInterruptGlobalEnable = (CurrentPrivLevel < PrivilegeLevel.Machine) || mstatus(MStatus.MIE)
+    val machineInterruptPending = machineVisiblePending =/= 0.U
+    val machineInterrupt = machineInterruptPending && machineInterruptGlobalEnable
+
+    val mtvecBase = mtvec & ~3.U(XLEN.W)
+    val mtvecMode = mtvec(1, 0)
+    val machineInterruptCode = machineInterruptCause(XLEN - 2, 0)
+    val machineTrapVector = Mux(
+        machineInterrupt && mtvecMode === 1.U,
+        mtvecBase + (machineInterruptCode << 2),
+        mtvecBase
+    )
+
     // 处理中断和异常
     when(io.trap_valid) {
-        val curMie = (mstatus(MStatus.MIE)) & 1.U
-        val trapMstatus = MStatus.setMPP(MStatus.setMIE(MStatus.setMPIE(mstatus, curMie.asBool), false.B), CurrentPrivLevel)
+        val curMie = mstatus(MStatus.MIE)
+        val trapMstatus = MStatus.setMPP(MStatus.setMIE(MStatus.setMPIE(mstatus, curMie), false.B), CurrentPrivLevel)
         mepc   := io.trap_pc
         mcause := io.trap_cause
         mtval  := io.trap_value
@@ -207,9 +316,10 @@ class CSRFile(
 	    }
 
     io.epc_out  := mepc
-    io.tvec_out := mtvec
+    io.tvec_out := machineTrapVector
+    io.interrupt_cause := machineInterruptCause
     io.ie_out   := mstatus(MStatus.MIE)
-    io.interrupt := mstatus(MStatus.MIE) && (mie & mip) =/= 0.U
+    io.interrupt := machineInterrupt
     io.mem_cfg_out.priv := CurrentPrivLevel
     io.mem_cfg_out.mmu_en := features.mmu.B
     io.mem_cfg_out.satp := satp

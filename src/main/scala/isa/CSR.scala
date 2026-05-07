@@ -10,6 +10,16 @@ object PrivilegeLevel {
 }
 
 object CSR {
+    // Supervisor Trap Setup
+    val SSTATUS = 0x100.U(12.W)
+    val SIE     = 0x104.U(12.W)
+    val STVEC   = 0x105.U(12.W)
+    // Supervisor Trap Handling
+    val SSCRATCH = 0x140.U(12.W)
+    val SEPC     = 0x141.U(12.W)
+    val SCAUSE   = 0x142.U(12.W)
+    val STVAL    = 0x143.U(12.W)
+    val SIP      = 0x144.U(12.W)
     // Supervisor Protection and Translation
     val SATP = 0x180.U(12.W)
     // Machine Information Registers
@@ -73,4 +83,13 @@ object MCause {
     val MachineSoftInt     = int(3)
     val MachineTimerInt    = int(7)
     val MachineExtInt      = int(11)
+}
+
+object InterruptCauseCode {
+    val SupervisorSoft  = 1
+    val MachineSoft     = 3
+    val SupervisorTimer = 5
+    val MachineTimer    = 7
+    val SupervisorExt   = 9
+    val MachineExt      = 11
 }

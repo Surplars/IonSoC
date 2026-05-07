@@ -15,6 +15,7 @@ class UncachedTileLinkBridge(val params: TLParams) extends Module with HasCacheC
     val respErr = RegInit(false.B)
 
     io.cpu.req.ready := !reqValid && !respValid
+    io.invalidate.ready := true.B
     when(io.cpu.req.fire) {
         reqValid := true.B
         reqReg := io.cpu.req.bits

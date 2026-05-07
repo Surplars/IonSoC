@@ -7,6 +7,7 @@ import soc.bus.tilelink._
 class CLINT(params: TLParams) extends Module {
     val io = IO(new Bundle {
         val tl   = Flipped(new TLBundle(params))
+        val msip = Output(Bool())
         val mtip = Output(Bool())
     })
 
@@ -18,9 +19,11 @@ class CLINT(params: TLParams) extends Module {
 
     // mtimecmp: 64-bit compare register, writable via bus
     val mtimecmp = RegInit(0.U(64.W))
+    val msip = RegInit(false.B)
 
     val cond = Wire(UInt(2.W))
     cond := Cat(mtime >= mtimecmp, mtimecmp.orR)
+    io.msip := msip
     io.mtip := cond.andR
 
     // TL request handling
@@ -50,7 +53,9 @@ class CLINT(params: TLParams) extends Module {
 
         when(is_read) {
             resp_opcode := TLOpcode.AccessAckData
-            when(beat_offset === 0x4000.U) {
+            when(beat_offset === 0x0000.U) {
+                resp_data := msip.asUInt
+            }.elsewhen(beat_offset === 0x4000.U) {
                 resp_data := mtimecmp
             }.elsewhen(beat_offset === 0xBFF8.U) {
                 resp_data := mtime
@@ -60,11 +65,15 @@ class CLINT(params: TLParams) extends Module {
         }.elsewhen(is_write) {
             resp_opcode := TLOpcode.AccessAck
             resp_data   := 0.U
-            when(beat_offset === 0x4000.U) {
+            val maskBits = Cat((0 until beatBytes).reverse.map { i =>
+                Fill(8, io.tl.a.bits.mask(i))
+            })
+            when(beat_offset === 0x0000.U) {
+                when(io.tl.a.bits.mask(0)) {
+                    msip := io.tl.a.bits.data(0)
+                }
+            }.elsewhen(beat_offset === 0x4000.U) {
                 // Write to mtimecmp with byte mask
-                val maskBits = Cat((0 until beatBytes).reverse.map { i =>
-                    Fill(8, io.tl.a.bits.mask(i))
-                })
                 mtimecmp := (mtimecmp & ~maskBits) | (io.tl.a.bits.data & maskBits)
             }
         }.otherwise {

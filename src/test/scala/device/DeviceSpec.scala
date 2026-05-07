@@ -100,6 +100,14 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
 
             val fromHighAddress = clintRead(dut, 0x4004)
             assert(fromHighAddress == BigInt("12345678deadbeef", 16))
+
+            dut.io.msip.expect(false.B)
+            clintWrite(dut, address = 0x0000, mask = 0x01, data = 1)
+            dut.io.msip.expect(true.B)
+            assert((clintRead(dut, 0x0000) & 1) == 1)
+            clintWrite(dut, address = 0x0000, mask = 0x01, data = 0)
+            dut.io.msip.expect(false.B)
+            assert((clintRead(dut, 0x0000) & 1) == 0)
         }
 
         simulate(new TLError(params)) { dut =>

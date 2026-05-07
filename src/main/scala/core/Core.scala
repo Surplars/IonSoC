@@ -37,7 +37,12 @@ class Core(
         val IBus = new TLBundle(tlParams)
         val DBus = new TLBundle(dbusParams)
 
+        val msip = Input(Bool())
         val mtip = Input(Bool())
+        val meip = Input(Bool())
+        val ssip = Input(Bool())
+        val stip = Input(Bool())
+        val seip = Input(Bool())
     })
 
     val dcache: HasCacheCoreIO = if (hasDCache) Module(new L1Cache(tlParams, 256)) else Module(new UncachedTileLinkBridge(tlParams))
@@ -64,7 +69,20 @@ class Core(
     dontTouch(idecode.io)
     dontTouch(wb.io)
 
+    val fenceIReq = alu.io.valid_out && alu.io.alu_out.mem.valid && alu.io.alu_out.mem.op === MemOpType.FenceI
+    val fenceIPending = RegInit(false.B)
+    val fenceIAck = WireInit(false.B)
+    when(fenceIReq) {
+        fenceIPending := true.B
+    }.elsewhen(fenceIAck) {
+        fenceIPending := false.B
+    }
+    val fenceIActive = fenceIPending || fenceIReq
+    val fenceIHold = fenceIActive && !fenceIAck
+
     dcache.io.cpu <> lsu.io.dcache
+    dcache.io.invalidate.valid := false.B
+    dcache.io.invalidate.bits := false.B
     lsu.io.mmio <> tracker.io.master
     dbusXbar.io.masters(0) <> dcache.io.bus
     dbusXbar.io.masters(1) <> tracker.io.tl
@@ -73,21 +91,31 @@ class Core(
         val cache = icache.get
         dbusXbar.io.masters(2) <> cache.io.bus
         cache.io.cpu <> ifetch.io.cache
+        cache.io.invalidate.valid := fenceIPending || fenceIReq
+        cache.io.invalidate.bits := true.B
+        fenceIAck := cache.io.invalidate.fire
     } else {
         ifetch.io.cache.req.ready := false.B
         ifetch.io.cache.resp.valid := false.B
         ifetch.io.cache.resp.bits.rdata := 0.U
         ifetch.io.cache.resp.bits.err := false.B
+        fenceIAck := fenceIPending || fenceIReq
     }
 
     io.DBus <> dbusXbar.io.slave
     io.IBus <> DontCare
 
     pipe_stall := lsu.io.stall_req
-    global_stall := pipe_stall || ifetch.io.fetch_stall
+    global_stall := pipe_stall || ifetch.io.fetch_stall || fenceIHold
 
-    // csr mtip
+    // Interrupt inputs. Supervisor-level lines are reserved for the future
+    // S-mode trap path and can be tied off by the SoC until a controller exists.
+    csr.io.msip := io.msip
     csr.io.mtip := io.mtip
+    csr.io.meip := io.meip
+    csr.io.ssip := io.ssip
+    csr.io.stip := io.stip
+    csr.io.seip := io.seip
 
 	    // Combine pipeline traps with external interrupts. External interrupts are
 	    // latched before redirect so CSR and PC consume the same trap PC.
@@ -102,6 +130,8 @@ class Core(
         }
         val interruptPending = RegInit(false.B)
         val interruptPc      = RegInit(0.U(XLEN.W))
+        val interruptCause   = RegInit(0.U(XLEN.W))
+        val interruptTarget  = RegInit(0.U(XLEN.W))
         val interrupt_fire   = interruptPending && !pipe_stall && !has_pipeline_trap && !ret_redirect
         val interrupt_detect = csr.io.interrupt && !pipe_stall && !has_pipeline_trap && !ret_redirect && !interruptPending
         when(interrupt_fire) {
@@ -109,16 +139,18 @@ class Core(
         }.elsewhen(interrupt_detect) {
             interruptPending := true.B
             interruptPc      := pc.io.pc_out
+            interruptCause   := csr.io.interrupt_cause
+            interruptTarget  := csr.io.tvec_out
         }
 	    val combined_trap     = has_pipeline_trap || interrupt_fire
-	    val pipeline_flush    = combined_trap || ret_redirect
+	    val pipeline_flush    = combined_trap || ret_redirect || fenceIActive
 
     // pc
     io.pc            := pc.io.pc_out
     io.fetch_en      := pc.io.fetch_en
     pc.io.stall      := global_stall
 	    pc.io.trap_valid := combined_trap
-	    pc.io.trap_pc    := csr.io.tvec_out
+	    pc.io.trap_pc    := Mux(has_pipeline_trap, csr.io.tvec_out, interruptTarget)
 	    pc.io.trap_ret   := ret_redirect
     pc.io.trap_epc   := csr.io.epc_out
     pc.io.br_info <> alu.io.br_info
@@ -137,7 +169,7 @@ class Core(
     csr.io.trap_valid := combined_trap
     // Exceptions take priority over interrupts for pc/cause
     csr.io.trap_pc    := Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, interruptPc)
-    csr.io.trap_cause := Mux(has_pipeline_trap, lsu.io.trap_info_out.cause, soc.isa.MCause.MachineTimerInt)
+    csr.io.trap_cause := Mux(has_pipeline_trap, lsu.io.trap_info_out.cause, interruptCause)
     csr.io.trap_value := Mux(has_pipeline_trap, lsu.io.trap_info_out.value, 0.U)
     csr.io.is_ret     := ret_redirect
     csr.io.ie_out     := DontCare

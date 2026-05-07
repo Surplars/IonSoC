@@ -15,6 +15,9 @@ class CacheCoreIO(params: TLParams) extends Bundle {
         val req  = Flipped(Decoupled(new CacheReq(params.addrWidth, params.dataWidth)))
         val resp = Decoupled(new CacheResp(params.dataWidth))
     }
+    // Whole-cache invalidation is intended for ICache/fence.i. DCache dirty
+    // writeback flushing is a separate operation and is not implemented here.
+    val invalidate = Flipped(Decoupled(Bool()))
     val bus = new TLBundle(params)
 }
 
@@ -64,10 +67,11 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
     val dirty = dirtyArray(reqIdx)
 
     // 接口默认值
-    io.cpu.req.ready  := state === sIdle
+    io.cpu.req.ready  := state === sIdle && !io.invalidate.valid
     io.cpu.resp.valid := false.B
     io.cpu.resp.bits.rdata := Mux(state === sResp, refillReg, readData)
     io.cpu.resp.bits.err   := respErrReg
+    io.invalidate.ready := state === sIdle
 
     io.bus.a.valid := false.B
     io.bus.a.bits  := DontCare
@@ -75,12 +79,18 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
 
     switch(state) {
         is(sIdle) {
-            when(io.cpu.req.valid) {
+            when(io.invalidate.fire) {
+                validArray.foreach(_ := false.B)
+                dirtyArray.foreach(_ := false.B)
+                respErrReg := false.B
+            }.elsewhen(io.cpu.req.valid) {
                 reqReg := io.cpu.req.bits
                 respErrReg := false.B
                 assert(!io.cpu.req.bits.device && io.cpu.req.bits.cacheable, "L1Cache: device/uncached request must bypass cache")
                 assert(!io.cpu.req.bits.atomic, "L1Cache: atomic request not supported yet")
                 when(io.cpu.req.bits.fence || io.cpu.req.bits.fencei) {
+                    validArray.foreach(_ := false.B)
+                    dirtyArray.foreach(_ := false.B)
                     refillReg := 0.U
                     state := sResp
                 }.otherwise {

@@ -130,17 +130,17 @@ object InstrSetI extends InstrProvider {
             Extension.RV64I
         ),
         InstrEntry( // SLLI
-            genPat(Funct3.I.SLLI, Opcode.OP_IMM),
+            genPatShiftImm64(Funct6.Z, Funct3.I.SLLI, Opcode.OP_IMM),
             ALU(ALUOps.SLL, OpSel.RS1, OpSel.IMM),
             Extension.RV64I
         ),
         InstrEntry( // SRLI
-            genPat(Funct7.Z, Funct3.I.SRLI_SRAI, Opcode.OP_IMM),
+            genPatShiftImm64(Funct6.Z, Funct3.I.SRLI_SRAI, Opcode.OP_IMM),
             ALU(ALUOps.SRL, OpSel.RS1, OpSel.IMM),
             Extension.RV64I
         ),
         InstrEntry( // SRAI
-            genPat(Funct7.NZ, Funct3.I.SRLI_SRAI, Opcode.OP_IMM),
+            genPatShiftImm64(Funct6.NZ, Funct3.I.SRLI_SRAI, Opcode.OP_IMM),
             ALU(ALUOps.SRA, OpSel.RS1, OpSel.IMM),
             Extension.RV64I
         ),

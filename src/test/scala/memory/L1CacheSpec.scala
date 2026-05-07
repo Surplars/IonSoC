@@ -19,6 +19,8 @@ class CacheDeniedHarness(params: TLParams) extends Module {
 
     cache.io.cpu.req <> io.req
     io.resp <> cache.io.cpu.resp
+    cache.io.invalidate.valid := false.B
+    cache.io.invalidate.bits := false.B
     error.io.tl <> cache.io.bus
 }
 
@@ -33,6 +35,8 @@ class UncachedDeniedHarness(params: TLParams) extends Module {
 
     bridge.io.cpu.req <> io.req
     io.resp <> bridge.io.cpu.resp
+    bridge.io.invalidate.valid := false.B
+    bridge.io.invalidate.bits := false.B
     error.io.tl <> bridge.io.bus
 }
 
@@ -40,6 +44,7 @@ class CacheRamHarness(params: TLParams) extends Module {
     val io = IO(new Bundle {
         val req  = Flipped(Decoupled(new soc.memory.CacheReq(params.addrWidth, params.dataWidth)))
         val resp = Decoupled(new soc.memory.CacheResp(params.dataWidth))
+        val invalidate = Flipped(Decoupled(Bool()))
     })
 
     val cache = Module(new L1Cache(params, nSets = 4))
@@ -47,6 +52,7 @@ class CacheRamHarness(params: TLParams) extends Module {
 
     cache.io.cpu.req <> io.req
     io.resp <> cache.io.cpu.resp
+    cache.io.invalidate <> io.invalidate
     ram.io.tl <> cache.io.bus
 }
 
@@ -58,7 +64,9 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
         addr: BigInt,
         cmd: CacheCmd.Type,
         data: BigInt = 0,
-        mask: BigInt = 0xff
+        mask: BigInt = 0xff,
+        fence: Boolean = false,
+        fencei: Boolean = false
     ): Unit = {
         dut.io.req.bits.addr.poke(addr.U)
         dut.io.req.bits.vaddr.poke(addr.U)
@@ -67,11 +75,33 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
         dut.io.req.bits.mask.poke(mask.U)
         dut.io.req.bits.size.poke(3.U)
         dut.io.req.bits.signed.poke(false.B)
-        dut.io.req.bits.fence.poke(false.B)
-        dut.io.req.bits.fencei.poke(false.B)
+        dut.io.req.bits.fence.poke(fence.B)
+        dut.io.req.bits.fencei.poke(fencei.B)
         dut.io.req.bits.atomic.poke(false.B)
         dut.io.req.bits.cacheable.poke(true.B)
         dut.io.req.bits.device.poke(false.B)
+    }
+
+    private def issueReq(dut: CacheRamHarness): Unit = {
+        dut.io.req.valid.poke(true.B)
+        dut.io.req.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.req.valid.poke(false.B)
+    }
+
+    private def waitResp(dut: CacheRamHarness, maxCycles: Int = 30): BigInt = {
+        var sawResp = false
+        var data = BigInt(0)
+        for (_ <- 0 until maxCycles if !sawResp) {
+            if (dut.io.resp.valid.peek().litToBoolean) {
+                dut.io.resp.bits.err.expect(false.B)
+                data = dut.io.resp.bits.rdata.peek().litValue
+                sawResp = true
+            }
+            dut.clock.step()
+        }
+        assert(sawResp, "cache response was not observed")
+        data
     }
 
     test("Cache hit response remains stable under CPU backpressure") {
@@ -119,6 +149,37 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.resp.ready.poke(true.B)
             dut.clock.step()
+        }
+    }
+
+    test("Cache invalidate forces a later refill") {
+        simulate(new CacheRamHarness(params)) { dut =>
+            dut.io.req.valid.poke(false.B)
+            dut.io.invalidate.valid.poke(false.B)
+            dut.io.invalidate.bits.poke(false.B)
+            dut.io.resp.ready.poke(true.B)
+
+            pokeReq(dut, addr = 0x100, cmd = CacheCmd.Write, data = BigInt("aaaabbbbccccdddd", 16))
+            issueReq(dut)
+            waitResp(dut)
+
+            pokeReq(dut, addr = 0x100, cmd = CacheCmd.Read)
+            issueReq(dut)
+            assert(waitResp(dut) == BigInt("aaaabbbbccccdddd", 16))
+
+            pokeReq(dut, addr = 0x900, cmd = CacheCmd.Write, data = BigInt("1111222233334444", 16))
+            issueReq(dut)
+            waitResp(dut)
+
+            dut.io.invalidate.valid.poke(true.B)
+            dut.io.invalidate.bits.poke(true.B)
+            dut.io.invalidate.ready.expect(true.B)
+            dut.clock.step()
+            dut.io.invalidate.valid.poke(false.B)
+
+            pokeReq(dut, addr = 0x100, cmd = CacheCmd.Read)
+            issueReq(dut)
+            assert(waitResp(dut) == BigInt("aaaabbbbccccdddd", 16))
         }
     }
 

@@ -100,9 +100,10 @@ class ALU(XLEN: Int = 64) extends Module {
         op2 := io.decoded_in.op2
     }
 
-    val op1_32 = op1(31, 0)
-    val op2_32 = op2(31, 0)
-    val shamt  = op2(4, 0).asUInt
+    val op1_32  = op1(31, 0)
+    val op2_32  = op2(31, 0)
+    val shamt64 = op2(5, 0).asUInt
+    val shamt32 = op2(4, 0).asUInt
 
     when(io.stall) {
         stall_valid := true.B
@@ -181,11 +182,11 @@ class ALU(XLEN: Int = 64) extends Module {
                     Seq(
                         ALUOps.ADD  -> (op1 + op2),
                         ALUOps.SUB  -> (op1 - op2),
-                        ALUOps.SLL  -> (op1 << shamt),
+                        ALUOps.SLL  -> (op1 << shamt64),
                         ALUOps.SLT  -> (op1.asSInt < op2.asSInt).asUInt,
                         ALUOps.SLTU -> (op1 < op2).asUInt,
-                        ALUOps.SRA  -> (op1.asSInt >> shamt).asUInt,
-                        ALUOps.SRL  -> (op1 >> shamt),
+                        ALUOps.SRA  -> (op1.asSInt >> shamt64).asUInt,
+                        ALUOps.SRL  -> (op1 >> shamt64),
                         ALUOps.AND  -> (op1 & op2),
                         ALUOps.OR   -> (op1 | op2),
                         ALUOps.XOR  -> (op1 ^ op2),
@@ -201,9 +202,18 @@ class ALU(XLEN: Int = 64) extends Module {
                             val subw_res = Cat(Fill(32, diff32(31)), diff32)
                             subw_res
                         },
-                        ALUOps.SLLW -> (op1_32 << shamt)(31, 0),
-                        ALUOps.SRLW -> (op1_32 >> shamt)(31, 0),
-                        ALUOps.SRAW -> (op1_32.asSInt >> shamt).asUInt(31, 0)
+                        ALUOps.SLLW -> {
+                            val shifted = (op1_32 << shamt32)(31, 0)
+                            Cat(Fill(32, shifted(31)), shifted)
+                        },
+                        ALUOps.SRLW -> {
+                            val shifted = (op1_32 >> shamt32)(31, 0)
+                            Cat(Fill(32, shifted(31)), shifted)
+                        },
+                        ALUOps.SRAW -> {
+                            val shifted = (op1_32.asSInt >> shamt32).asUInt(31, 0)
+                            Cat(Fill(32, shifted(31)), shifted)
+                        }
                     )
                 ),
                 op1 // CSR指令直接写回old CSR值

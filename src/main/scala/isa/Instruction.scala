@@ -52,6 +52,9 @@ trait InstrProvider {
     def genPat(funct7: String, funct3: UInt, opcode: UInt): BitPat = {
         BitPat("b" + funct7 + "_?????_?????_" + UStr(funct3, 3) + "_?????_" + UStr(opcode, 7))
     }
+    def genPatShiftImm64(funct6: String, funct3: UInt, opcode: UInt): BitPat = {
+        BitPat("b" + funct6 + "_??????_?????_" + UStr(funct3, 3) + "_?????_" + UStr(opcode, 7))
+    }
     // 对于没有 funct7 的情况
     def genPat(funct3: UInt, opcode: UInt): BitPat = {
         BitPat("b???????_?????_?????_" + UStr(funct3, 3) + "_?????_" + UStr(opcode, 7))
@@ -156,4 +159,9 @@ object Funct3 {
 object Funct7 {
     val Z  = "0000000"
     val NZ = "0100000"
+}
+
+object Funct6 {
+    val Z  = "000000"
+    val NZ = "010000"
 }
