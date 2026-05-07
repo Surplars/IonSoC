@@ -9,9 +9,9 @@ _start:
     li   t1, 'E'
     sb   t1, 0(t0)
 
-    # ROM is valid for instruction fetch but intentionally connected to a
-    # denied TileLink slave on D-bus. This load must raise load access fault.
-    li   t0, 0x80000000
+    # Use a truly unmapped address so the crossbar local error responder must
+    # return a denied TileLink response and raise load access fault.
+    li   t0, 0x40000000
     ld   t1, 0(t0)
 
 fail_no_trap:
@@ -28,7 +28,7 @@ trap_handler:
     bne  t0, t1, fail_bad_trap
 
     csrr t0, mtval
-    li   t1, 0x80000000
+    li   t1, 0x40000000
     bne  t0, t1, fail_bad_trap
 
     li   t0, 0x10010000

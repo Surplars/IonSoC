@@ -6,6 +6,7 @@ import _root_.circt.stage.ChiselStage
 import soc.config.Config
 import soc.core._
 import soc.device.BROM
+import soc.device.TLROM
 import soc.device.UartTx
 import soc.device.CLINT
 import soc.device.TLError
@@ -29,7 +30,7 @@ class IonSoC extends Module {
     val brom  = Module(new BROM(Config.XLEN, Config.romDepth, Config.romInit))
     val sram  = Module(new TLRAM(dbusParams, Config.ramDepth))
     val debugError = Module(new TLError(dbusParams))
-    val romError   = Module(new TLError(dbusParams))
+    val tlrom = Module(new TLROM(dbusParams))
     val uart  = if (Config.features.uart) Some(Module(new UartTx(dbusParams))) else None
     val clint = if (Config.features.clint) Some(Module(new CLINT(dbusParams))) else None
 
@@ -49,7 +50,7 @@ class IonSoC extends Module {
     }
 
     connectSlave(debugError.io.tl)
-    connectSlave(romError.io.tl)
+    connectSlave(tlrom.io.tl)
     connectSlave(sram.io.tl)
     uart.foreach(device => connectSlave(device.io.tl))
     clint.foreach(device => connectSlave(device.io.tl))

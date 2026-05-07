@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
 import soc.bus.tilelink._
-import soc.device.{CLINT, TLError}
+import soc.device.{CLINT, TLError, TLROM}
 
 class DeviceSpec extends AnyFunSuite with ChiselSim {
     private val params = TLParams(addrWidth = 32, dataWidth = 64, sourceBits = 4, sinkBits = 1, sizeBits = 3)
@@ -23,6 +23,19 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
     }
 
     private def driveDefaults(dut: TLError): Unit = {
+        dut.io.tl.a.valid.poke(false.B)
+        dut.io.tl.a.bits.opcode.poke(0.U)
+        dut.io.tl.a.bits.param.poke(0.U)
+        dut.io.tl.a.bits.size.poke(3.U)
+        dut.io.tl.a.bits.source.poke(0.U)
+        dut.io.tl.a.bits.address.poke(0.U)
+        dut.io.tl.a.bits.mask.poke(0.U)
+        dut.io.tl.a.bits.data.poke(0.U)
+        dut.io.tl.a.bits.corrupt.poke(false.B)
+        dut.io.tl.d.ready.poke(false.B)
+    }
+
+    private def driveDefaults(dut: TLROM): Unit = {
         dut.io.tl.a.valid.poke(false.B)
         dut.io.tl.a.bits.opcode.poke(0.U)
         dut.io.tl.a.bits.param.poke(0.U)
@@ -123,6 +136,43 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
             dut.io.tl.d.valid.expect(true.B)
             dut.io.tl.d.bits.opcode.expect(TLOpcode.AccessAck)
             dut.io.tl.d.bits.source.expect(7.U)
+            dut.io.tl.d.bits.denied.expect(true.B)
+            dut.clock.step()
+        }
+    }
+
+    test("TLROM returns read data and denies writes") {
+        simulate(new TLROM(params)) { dut =>
+            driveDefaults(dut)
+            dut.io.tl.d.ready.poke(true.B)
+
+            dut.io.tl.a.bits.opcode.poke(TLOpcode.Get)
+            dut.io.tl.a.bits.size.poke(3.U)
+            dut.io.tl.a.bits.source.poke(1.U)
+            dut.io.tl.a.bits.address.poke("h80000000".U)
+            dut.io.tl.a.bits.mask.poke("hff".U)
+            dut.io.tl.a.valid.poke(true.B)
+            dut.io.tl.a.ready.expect(true.B)
+            dut.clock.step()
+            dut.io.tl.a.valid.poke(false.B)
+            dut.io.tl.d.valid.expect(true.B)
+            dut.io.tl.d.bits.opcode.expect(TLOpcode.AccessAckData)
+            dut.io.tl.d.bits.source.expect(1.U)
+            dut.io.tl.d.bits.denied.expect(false.B)
+            dut.clock.step()
+
+            dut.io.tl.a.bits.opcode.poke(TLOpcode.PutFullData)
+            dut.io.tl.a.bits.source.poke(2.U)
+            dut.io.tl.a.bits.address.poke("h80000008".U)
+            dut.io.tl.a.bits.mask.poke("hff".U)
+            dut.io.tl.a.bits.data.poke("h0123456789abcdef".U)
+            dut.io.tl.a.valid.poke(true.B)
+            dut.io.tl.a.ready.expect(true.B)
+            dut.clock.step()
+            dut.io.tl.a.valid.poke(false.B)
+            dut.io.tl.d.valid.expect(true.B)
+            dut.io.tl.d.bits.opcode.expect(TLOpcode.AccessAck)
+            dut.io.tl.d.bits.source.expect(2.U)
             dut.io.tl.d.bits.denied.expect(true.B)
             dut.clock.step()
         }

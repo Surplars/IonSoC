@@ -43,7 +43,8 @@ int main(int argc, char **argv, char **env)
     {
         std::string name = (argc > 2) ? argv[2] : "payload";
         std::string expected_uart = (argc > 3) ? argv[3] : "";
-        all_pass &= run_one_test(kPayloadElfPath, name, true, expected_uart);
+        std::string elf_path = (argc > 4) ? argv[4] : kPayloadElfPath;
+        all_pass &= run_one_test(elf_path, name, true, expected_uart);
     }
     else
     {
@@ -154,9 +155,11 @@ void load_elf(VSoc *dut, const char *path)
 
     // memory pointers: treat DUT mem[] as word array but provide byte view
     // 原代码使用 32-bit word pointers；这里保留相同写法（假设目标内存为 32-bit word 存储）
-    uint32_t *rom_words = (uint32_t*)&(dut->rootp->SimTop__DOT__brom__DOT__rom__DOT__mem[0]);
+    uint32_t *brom_words = (uint32_t*)&(dut->rootp->SimTop__DOT__brom__DOT__rom__DOT__mem[0]);
+    uint32_t *tlrom_lo_words = (uint32_t*)&(dut->rootp->SimTop__DOT__tlrom__DOT__loRom__DOT__mem[0]);
+    uint32_t *tlrom_hi_words = (uint32_t*)&(dut->rootp->SimTop__DOT__tlrom__DOT__hiRom__DOT__mem[0]);
     uint32_t *sram_words = (uint32_t*)&(dut->rootp->SimTop__DOT__sram__DOT__mem_ext__DOT__Memory[0]);
-    uint8_t *rom_bytes = (uint8_t*)rom_words;
+    uint8_t *brom_bytes = (uint8_t*)brom_words;
     uint8_t *sram_bytes = (uint8_t*)sram_words;
 
     const size_t rom_bytes_size = (size_t)ROM_SIZE;
@@ -208,6 +211,22 @@ void load_elf(VSoc *dut, const char *path)
         }
     };
 
+    auto mirror_rom_to_tlrom = [&](uint64_t offset_byte, uint64_t filesz) {
+        uint64_t end = offset_byte + filesz;
+        if (end > rom_bytes_size) {
+            end = rom_bytes_size;
+        }
+        for (uint64_t byte = offset_byte; byte < end; byte += 4) {
+            uint32_t word = ((uint32_t*)brom_bytes)[byte / 4];
+            uint64_t beat = byte / 8;
+            if (((byte / 4) & 1) == 0) {
+                tlrom_lo_words[beat] = word;
+            } else {
+                tlrom_hi_words[beat] = word;
+            }
+        }
+    };
+
     // Iterate program headers
     for (int i = 0; i < (int)ehdr64.e_phnum; ++i) {
         Elf64_Phdr &ph = phdrs[i];
@@ -227,7 +246,7 @@ void load_elf(VSoc *dut, const char *path)
         const char *region_name = nullptr;
 
         if (vaddr >= (uint64_t)BROM_BASE && vaddr < (uint64_t)BROM_BASE + (uint64_t)ROM_SIZE) {
-            target_bytes = rom_bytes;
+            target_bytes = brom_bytes;
             region_bytes = rom_bytes_size;
             offset_in_region = vaddr - (uint64_t)BROM_BASE;
             region_name = "ROM";
@@ -244,6 +263,9 @@ void load_elf(VSoc *dut, const char *path)
         // write file bytes to region
         if (filesz > 0) {
             write_bytes_to_region(target_bytes, region_bytes, offset_in_region, ph.p_offset, filesz);
+            if (target_bytes == brom_bytes) {
+                mirror_rom_to_tlrom(offset_in_region, filesz);
+            }
             printf("  -> wrote %" PRIu64 " bytes to %s @ offset 0x%016" PRIx64 "\n", filesz, region_name, offset_in_region);
         }
 

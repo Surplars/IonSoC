@@ -2,14 +2,50 @@ package soc.device
 
 import chisel3._
 import chisel3.util._
+import soc.bus.tilelink._
 import soc.config.Config
 
-class ROM extends BlackBox {
+class ROM extends BlackBox with HasBlackBoxInline {
 	val io = IO(new Bundle {
 		val en = Input(Bool())
 		val pc_in  = Input(UInt(Config.XLEN.W))
 		val instr_out = Output(UInt(32.W))
 	})
+
+    setInline(
+        "ROM.sv",
+        s"""
+module ROM #(
+    parameter ROM_DEPTH = ${Config.romDepth},
+    parameter ADDR_WIDTH = ${Config.XLEN},
+    parameter INSTR_WIDTH = 32
+)(
+    input logic                     en,
+    input logic [ADDR_WIDTH-1:0]    pc_in,
+    output logic [INSTR_WIDTH-1:0]  instr_out
+);
+
+localparam BYTES_PER_WORD = INSTR_WIDTH / 8;
+localparam IDX_LSB = $$clog2(BYTES_PER_WORD);
+localparam int INDEX_BITS = $$clog2(ROM_DEPTH);
+
+logic [INSTR_WIDTH-1:0] mem [0:ROM_DEPTH - 1];
+logic [INDEX_BITS-1:0] idx;
+
+/* verilator lint_off WIDTHTRUNC */
+always_comb begin
+    idx = pc_in[IDX_LSB +: INDEX_BITS];
+    if (en) begin
+        instr_out = mem[idx];
+    end else begin
+        instr_out = 32'h0000_0013;
+    end
+end
+/* verilator lint_on WIDTHTRUNC */
+
+endmodule
+"""
+    )
 }
 
 class BROM(XLEN: Int, depth: Int, init: Seq[Int]) extends Module {
@@ -28,3 +64,63 @@ class BROM(XLEN: Int, depth: Int, init: Seq[Int]) extends Module {
 	io.instr := rom.io.instr_out
 }
 
+class TLROM(params: TLParams) extends Module {
+    require(params.dataWidth == 64, "TLROM currently expects a 64-bit TileLink data beat")
+
+    val io = IO(new Bundle {
+        val tl = Flipped(new TLBundle(params))
+    })
+
+    private val beatBytes  = params.dataWidth / 8
+    private val offsetBits = log2Ceil(beatBytes)
+
+    val loRom = Module(new ROM)
+    val hiRom = Module(new ROM)
+
+    val beatBase = Cat(io.tl.a.bits.address(params.addrWidth - 1, offsetBits), 0.U(offsetBits.W))
+    loRom.io.en    := io.tl.a.fire
+    loRom.io.pc_in := beatBase
+    hiRom.io.en    := io.tl.a.fire
+    hiRom.io.pc_in := beatBase + 4.U
+
+    val respValid  = RegInit(false.B)
+    val respOpcode = RegInit(TLOpcode.AccessAck)
+    val respSize   = RegInit(0.U(params.sizeBits.W))
+    val respSource = RegInit(0.U(params.sourceBits.W))
+    val respDenied = RegInit(false.B)
+    val respData   = RegInit(0.U(params.dataWidth.W))
+
+    io.tl.a.ready := !respValid
+
+    when(io.tl.a.fire) {
+        val isRead = io.tl.a.bits.opcode === TLOpcode.Get
+        val rawBeat = Cat(hiRom.io.instr_out, loRom.io.instr_out)
+        val shiftBits = Cat(io.tl.a.bits.address(offsetBits - 1, 0), 0.U(3.W))
+        val shiftedData = (rawBeat >> shiftBits)(params.dataWidth - 1, 0)
+        val respByteCount = (1.U((params.sizeBits + 1).W) << io.tl.a.bits.size)
+        val respBitCount = respByteCount << 3
+        val fullMask = Fill(params.dataWidth, 1.U(1.W))
+        val readMask = fullMask >> (params.dataWidth.U - respBitCount)
+
+        respValid  := true.B
+        respOpcode := Mux(isRead, TLOpcode.AccessAckData, TLOpcode.AccessAck)
+        respSize   := io.tl.a.bits.size
+        respSource := io.tl.a.bits.source
+        respDenied := !isRead
+        respData   := Mux(isRead, shiftedData & readMask, 0.U)
+    }
+
+    io.tl.d.valid        := respValid
+    io.tl.d.bits.opcode  := respOpcode
+    io.tl.d.bits.param   := 0.U
+    io.tl.d.bits.size    := respSize
+    io.tl.d.bits.source  := respSource
+    io.tl.d.bits.sink    := 0.U
+    io.tl.d.bits.denied  := respDenied
+    io.tl.d.bits.data    := respData
+    io.tl.d.bits.corrupt := false.B
+
+    when(io.tl.d.fire) {
+        respValid := false.B
+    }
+}
