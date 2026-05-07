@@ -38,7 +38,7 @@ class TLXbarSpec extends AnyFunSuite with ChiselSim {
         dut.io.master.d.ready.poke(false.B)
     }
 
-    test("TLXbar returns a denied response for unmapped addresses") {
+    test("TLXbar returns denied responses and still routes mapped requests") {
         simulate(new TLXbarHarness(params)) { dut =>
             driveDefaults(dut)
             dut.io.master.d.ready.poke(true.B)
@@ -57,13 +57,6 @@ class TLXbarSpec extends AnyFunSuite with ChiselSim {
             dut.io.master.d.bits.opcode.expect(TLOpcode.AccessAckData)
             dut.io.master.d.bits.source.expect(9.U)
             dut.io.master.d.bits.denied.expect(true.B)
-        }
-    }
-
-    test("TLXbar still routes mapped requests to the selected slave") {
-        simulate(new TLXbarHarness(params)) { dut =>
-            driveDefaults(dut)
-            dut.io.master.d.ready.poke(true.B)
 
             dut.io.master.a.bits.opcode.poke(TLOpcode.PutFullData)
             dut.io.master.a.bits.size.poke(3.U)

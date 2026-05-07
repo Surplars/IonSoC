@@ -8,6 +8,7 @@ import soc.core.pipeline.MemorySystemConfig
 import soc.isa.PrivilegeLevel
 import soc.isa.Extension
 import soc.config.Config
+import soc.config.SoCFeatures
 
 object MStatus {
 	    val MIE  = 3
@@ -28,7 +29,12 @@ object MStatus {
 	    }
 }
 
-class CSRFile(XLEN: Int = 64, hartID: Int) extends Module {
+class CSRFile(
+    XLEN: Int = 64,
+    hartID: Int,
+    enabledExt: Set[Extension.Value] = Config.enabledExt,
+    features: SoCFeatures = Config.features
+) extends Module {
     val io = IO(new Bundle {
         // 读写接口
         val valid   = Input(Bool())
@@ -67,7 +73,7 @@ class CSRFile(XLEN: Int = 64, hartID: Int) extends Module {
         base
     }
 
-    val misa_val = ((BigInt(2) << (XLEN - 2)) | misaExtensionMask(Config.enabledExt)).U(XLEN.W)
+    val misa_val = ((BigInt(2) << (XLEN - 2)) | misaExtensionMask(enabledExt)).U(XLEN.W)
 
     val mstatus   = RegInit(0.U(XLEN.W))
     val mideleg   = RegInit(0.U(XLEN.W))
@@ -196,7 +202,7 @@ class CSRFile(XLEN: Int = 64, hartID: Int) extends Module {
         CurrentPrivLevel := PrivilegeLevel.Machine // 切换到机器模式
 	    }.elsewhen(io.is_ret) {
 	        // 处理 MRET 指令，恢复到 mepc 指向的地址
-	        mstatus := MStatus.setMPP(MStatus.setMPIE(MStatus.setMIE(mstatus, mstatus(MStatus.MPIE)), true.B), 0.U)
+	        mstatus := MStatus.setMPIE(MStatus.setMPP(MStatus.setMIE(mstatus, mstatus(MStatus.MPIE)), 0.U), true.B)
 	        CurrentPrivLevel := mstatus(MStatus.MPP) // 恢复特权级
 	    }
 
@@ -205,7 +211,7 @@ class CSRFile(XLEN: Int = 64, hartID: Int) extends Module {
     io.ie_out   := mstatus(MStatus.MIE)
     io.interrupt := mstatus(MStatus.MIE) && (mie & mip) =/= 0.U
     io.mem_cfg_out.priv := CurrentPrivLevel
-    io.mem_cfg_out.mmu_en := Config.features.mmu.B
+    io.mem_cfg_out.mmu_en := features.mmu.B
     io.mem_cfg_out.satp := satp
     io.mem_cfg_out.pmpcfg0 := pmpcfg0
     io.mem_cfg_out.pmpaddr0 := pmpaddr0

@@ -88,7 +88,7 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
         data
     }
 
-    test("CLINT decodes 32-bit high-word accesses on mtimecmp beat") {
+    test("Device tilelink blocks behave as expected") {
         simulate(new CLINT(params)) { dut =>
             driveDefaults(dut)
 
@@ -101,9 +101,7 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
             val fromHighAddress = clintRead(dut, 0x4004)
             assert(fromHighAddress == BigInt("12345678deadbeef", 16))
         }
-    }
 
-    test("TLError returns denied TileLink responses for reads and writes") {
         simulate(new TLError(params)) { dut =>
             driveDefaults(dut)
             dut.io.tl.d.ready.poke(true.B)
@@ -139,9 +137,7 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
             dut.io.tl.d.bits.denied.expect(true.B)
             dut.clock.step()
         }
-    }
 
-    test("TLROM returns read data and denies writes") {
         simulate(new TLROM(params)) { dut =>
             driveDefaults(dut)
             dut.io.tl.d.ready.poke(true.B)

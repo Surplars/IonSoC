@@ -9,7 +9,7 @@ import soc.isa.Extension
 import soc.isa.InstrTable
 import soc.isa.MCause
 
-class InstrDecode(XLEN: Int = 64) extends Module {
+class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enabledExt) extends Module {
     val io = IO(new Bundle {
         val valid_in      = Input(Bool())
         val trap_valid    = Input(Bool())
@@ -92,7 +92,7 @@ class InstrDecode(XLEN: Int = 64) extends Module {
         )
     )
 
-    val decodeTable = InstrTable.getTable(Config.enabledExt)
+    val decodeTable = InstrTable.getTable(enabledExt)
     val ctrlSignals = ListLookup(io.instr_in, InstrTable.defaultCtrl, decodeTable)
     val trap_info   = WireInit(0.U.asTypeOf(io.trap_info))
 

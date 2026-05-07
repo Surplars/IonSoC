@@ -55,7 +55,8 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
     val readTag  = tagArray.read(getIdx(io.cpu.req.bits.addr), io.cpu.req.valid && state === sIdle)
     val readData = dataArray.read(getIdx(io.cpu.req.bits.addr), io.cpu.req.valid && state === sIdle)
 
-    // 新增：用于在 Miss 处理后暂存刚拉回来的数据以立刻返回给 CPU
+    // Response data is registered so SyncReadMem outputs are never exposed
+    // across CPU backpressure cycles.
     val refillReg = RegInit(0.U(params.dataWidth.W))
     val respErrReg = RegInit(false.B)
 
@@ -89,17 +90,14 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
         }
         is(sCompare) {
             when(hit) {
-                io.cpu.resp.valid := true.B
-                // 默认的 io.cpu.resp.bits.rdata 为 readData 也就是当拍被 SRAM 丢出来的命中数据
-                when(reqReg.cmd === CacheCmd.Write && io.cpu.resp.ready) {
-                    // 写命中: 应用掩码修改现行 Cache 数据
-                    val maskedData = (reqReg.wdata & FillInterleaved(8, reqReg.mask)) | (readData & ~FillInterleaved(8, reqReg.mask))
+                val maskedData = (reqReg.wdata & FillInterleaved(8, reqReg.mask)) | (readData & ~FillInterleaved(8, reqReg.mask))
+                refillReg := Mux(reqReg.cmd === CacheCmd.Write, maskedData, readData)
+                respErrReg := false.B
+                when(reqReg.cmd === CacheCmd.Write) {
                     dataArray.write(reqIdx, maskedData)
                     dirtyArray(reqIdx) := true.B
                 }
-                when(io.cpu.resp.ready) {
-                    state := sIdle
-                }
+                state := sResp
             }.otherwise {
                 when(validArray(reqIdx) && dirty) {
                     victimTagReg  := readTag

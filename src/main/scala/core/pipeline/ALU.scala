@@ -66,8 +66,6 @@ class ALU(XLEN: Int = 64) extends Module {
     // 数据转发，优先级：mem > wb > alu输入
     when(!valid) {
         op1 := 0.U
-    }.elsewhen(stall_valid && !io.stall) {
-        op1 := stall_op1
     }.elsewhen(csr_op =/= CSROps.None) { // CSR指令，op1来自CSR寄存器
         io.csr_addr := io.decoded_in.op1
         op1         := io.csr_rdata
@@ -79,13 +77,13 @@ class ALU(XLEN: Int = 64) extends Module {
         op1 := io.alu_out.result
     }.elsewhen(io.decoded_in.rs1 === io.fwd.rd && io.fwd.reg_write) {
         op1 := io.fwd.alu_result
+    }.elsewhen(stall_valid && !io.stall) {
+        op1 := stall_op1
     }.otherwise {
         op1 := io.decoded_in.op1
     }
     when(!valid) {
         op2 := 0.U
-    }.elsewhen(stall_valid && !io.stall) {
-        op2 := stall_op2
     }.elsewhen(csr_op === CSROps.RWI || csr_op === CSROps.RSI || csr_op === CSROps.RCI) {
         op2 := Cat(Fill(XLEN - 5, 0.U), io.decoded_in.rs2) // CSR zimm 指令，0扩展
     }.elsewhen(io.decoded_in.rs2 === 0.U) { // 立即数指令
@@ -96,6 +94,8 @@ class ALU(XLEN: Int = 64) extends Module {
         op2 := io.alu_out.result
     }.elsewhen(io.decoded_in.rs2 === io.fwd.rd && io.fwd.reg_write) {
         op2 := io.fwd.alu_result
+    }.elsewhen(stall_valid && !io.stall) {
+        op2 := stall_op2
     }.otherwise {
         op2 := io.decoded_in.op2
     }
@@ -116,7 +116,7 @@ class ALU(XLEN: Int = 64) extends Module {
 
     val branch_type  = io.decoded_in.ctrl.branch_type
     val branch_valid = valid && (branch_type =/= BranchType.None) && !io.stall
-    val branch_is_br = branch_valid && (branch_type =/= BranchType.JAL)
+    val branch_is_br = branch_valid && (branch_type =/= BranchType.JAL) && (branch_type =/= BranchType.JALR)
     val branch_taken = MuxLookup(branch_type, false.B)(
         Seq(
             BranchType.None -> false.B,
@@ -244,12 +244,17 @@ class ALU(XLEN: Int = 64) extends Module {
     io.alu_out.mem.attrs.translate  := RegEnable(Mux(valid, mem_read || mem_write, false.B), false.B, update_en)
     io.alu_out.mem.attrs.executable := RegEnable(false.B, false.B, update_en)
 
+    val fallthroughTarget = io.pc_in + 4.U
+    val redirectTarget = Mux(branch_taken, branch_target, fallthroughTarget)
+    val forceTakenRedirect = branch_taken && ((branch_type === BranchType.JAL) || (branch_type === BranchType.JALR) || branch_is_br)
+    val correctNotTaken = !branch_taken && io.pred_taken_in
+
     io.br_info.pc        := Mux(branch_valid, io.pc_in, 0.U)
     io.br_info.valid     := branch_valid
     io.br_info.is_branch := branch_is_br
     io.br_info.taken     := branch_taken
-    io.br_info.target    := branch_target
-    io.br_info.redirect  := branch_valid && (branch_taken && (branch_target =/= io.next_pc_in))
+    io.br_info.target    := redirectTarget
+    io.br_info.redirect  := branch_valid && (forceTakenRedirect || correctNotTaken)
 
     io.trap_info_out := RegEnable(trap_info, 0.U.asTypeOf(io.trap_info_out), update_en)
     io.pc_out        := RegEnable(io.pc_in, 0.U, update_en)

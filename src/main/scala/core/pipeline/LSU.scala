@@ -243,8 +243,9 @@ class LSU(XLEN: Int = 64) extends Module {
         formatLoadData(storeBuffer.io.search_data, memAccess),
         Mux(is_load_resp, formatLoadData(io.dcache.resp.bits.rdata, cacheLoadAccess), Mux(is_mmio_load_resp, formatLoadData(io.mmio.resp_data, mmioAccess), 0.U))
     )
-    val stall_valid   = RegInit(false.B)
-    val stall_wb_data = RegInit(0.U(XLEN.W))
+    val stall_valid      = RegInit(false.B)
+    val stall_wb_data    = RegInit(0.U(XLEN.W))
+    val stall_load_valid = RegInit(false.B)
 
     when(is_load_resp && !is_cache_resp_err) {
         wb_data := formatLoadData(io.dcache.resp.bits.rdata, cacheLoadAccess)
@@ -259,11 +260,13 @@ class LSU(XLEN: Int = 64) extends Module {
     }
 
     when(io.stall_req) {
-        stall_valid   := true.B
-        stall_wb_data := wb_data
+        stall_valid      := true.B
+        stall_wb_data    := wb_data
+        stall_load_valid := load_data_valid
     }.otherwise {
-        stall_valid   := false.B
-        stall_wb_data := 0.U
+        stall_valid      := false.B
+        stall_wb_data    := 0.U
+        stall_load_valid := false.B
     }
 
     when(is_mmio_resp_err) {
@@ -291,10 +294,10 @@ class LSU(XLEN: Int = 64) extends Module {
         store_err_valid := false.B
     }
 
-    // 我们的 stall_req 已经把恢复放行包含进去了，这里仅用 !io.stall_req 即可
     val update_en = !io.stall_req
+    val writeback_en = update_en || load_data_valid
     val out_reg_rd    = RegNext(io.alu_out.rd, 0.U)
-    val out_reg_write = RegNext(io.alu_out.reg_write && !io.stall_req, false.B)
+    val out_reg_write = RegNext(io.alu_out.reg_write && writeback_en, false.B)
     val out_result    = RegNext(wb_data, 0.U)
     // val out_result    = RegNext(Mux(load_data_valid, load_data, wb_data), 0.U)
     val final_trap_info = WireInit(trap_info)
@@ -321,15 +324,15 @@ class LSU(XLEN: Int = 64) extends Module {
     val out_trap      = RegEnable(final_trap_info, 0.U.asTypeOf(io.trap_info_in), update_en)
     val out_pc        = RegEnable(io.pc_in, 0.U, update_en)
 
-    io.valid_out         := RegNext(valid_inst && !final_trap_info.valid && update_en, false.B)
+    io.valid_out         := RegNext((valid_inst && writeback_en || load_data_valid) && !final_trap_info.valid, false.B)
     io.mem_out.rd        := out_reg_rd
     io.mem_out.reg_write := out_reg_write
     io.mem_out.result    := out_result
     io.pc_out            := out_pc
     io.trap_info_out     := out_trap
 
-    io.load_data_valid := load_data_valid
-    io.load_data       := load_data
+    io.load_data_valid := load_data_valid || (!io.stall_req && stall_valid && stall_load_valid)
+    io.load_data       := Mux(!io.stall_req && stall_valid && stall_load_valid, stall_wb_data, load_data)
 
     dontTouch(io.mem_cfg)
 }

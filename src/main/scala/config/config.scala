@@ -48,12 +48,17 @@ object Config {
     val ClintRegion: AddressRegion = AddressRegion("clint", ClintBase, ClintSize)
 
     val alwaysOnRegions: Seq[AddressRegion] = Seq(DebugRegion, RomRegion, SramRegion)
-    val optionalRegions: Seq[AddressRegion] =
+    def optionalRegionsFor(features: SoCFeatures): Seq[AddressRegion] =
         Seq(
             Option.when(features.uart)(UartRegion),
             Option.when(features.clint)(ClintRegion)
         ).flatten
 
+    def mmioRegionsFor(features: SoCFeatures): Seq[AddressRegion] = alwaysOnRegions ++ optionalRegionsFor(features)
+    def mmioMapFor(features: SoCFeatures): Seq[(BigInt, BigInt)] = mmioRegionsFor(features).map(region => (region.base, region.size))
+    def addrMapFor(features: SoCFeatures): Seq[UInt => Bool] = mkAddrMap(mmioRegionsFor(features), XLEN)
+
+    val optionalRegions: Seq[AddressRegion] = optionalRegionsFor(features)
     val MMIORegions: Seq[AddressRegion] = alwaysOnRegions ++ optionalRegions
     val MMIOMap: Seq[(BigInt, BigInt)]  = MMIORegions.map(region => (region.base, region.size))
     val addrMap: Seq[UInt => Bool]      = mkAddrMap(MMIORegions, XLEN)

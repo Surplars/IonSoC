@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <elf.h>
 #include <cstdlib>
+#include <cstdint>
 #include <verilated.h>
 #include <verilated_vcd_c.h>
 #include "VSoc.h"
@@ -218,11 +219,11 @@ void load_elf(VSoc *dut, const char *path)
         }
         for (uint64_t byte = offset_byte; byte < end; byte += 4) {
             uint32_t word = ((uint32_t*)brom_bytes)[byte / 4];
-            uint64_t beat = byte / 8;
-            if (((byte / 4) & 1) == 0) {
-                tlrom_lo_words[beat] = word;
+            uint64_t word_idx = byte / 4;
+            if ((word_idx & 1) == 0) {
+                tlrom_lo_words[word_idx] = word;
             } else {
-                tlrom_hi_words[beat] = word;
+                tlrom_hi_words[word_idx] = word;
             }
         }
     };
@@ -336,12 +337,64 @@ bool run_one_test(const std::string &bin_path,
 	    std::string uart_output;
 	    printf("\n--- UART output ---\n");
     bool saw_exit = false;
+    bool trace_cpu = std::getenv("ION_TRACE_CPU") != nullptr;
+    uint64_t last_pc = UINT64_MAX;
+    uint64_t last_mtimecmp = UINT64_MAX;
+    uint8_t last_mtip = 0xff;
 
     while (sim_time < MAX_SIM_CYCLES)
     {
         dut->clock ^= 1;
         dut->eval();
         tfp->dump(sim_time);
+
+        uint64_t cur_mtimecmp = dut->rootp->SimTop__DOT__clint__DOT__mtimecmp;
+        uint8_t cur_mtip = dut->rootp->SimTop__DOT___clint_io_mtip;
+        bool trace_state_change = cur_mtip != last_mtip || cur_mtimecmp != last_mtimecmp;
+
+        if (trace_cpu && dut->clock && (sim_time < 150 || dut->io_debug_pc != last_pc || trace_state_change)) {
+            last_pc = dut->io_debug_pc;
+            last_mtimecmp = cur_mtimecmp;
+            last_mtip = cur_mtip;
+            uint64_t t0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[5];
+            uint64_t t3 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[28];
+            uint64_t a0_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
+            uint64_t a7_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
+            printf("[trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x t0=0x%016" PRIx64 " t3=0x%016" PRIx64 " a0=0x%016" PRIx64 " a7=0x%016" PRIx64
+                   " lsu_stall=%u load_valid=%u load=0x%016" PRIx64 " alu_rd=%u alu_w=%u alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
+                   " br_v=%u br_t=%u br_target=0x%016" PRIx64 " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
+                   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
+                   sim_time,
+                   (uint64_t)dut->io_debug_pc,
+                   (uint32_t)dut->io_debug_instr,
+                   t0,
+                   t3,
+                   a0_trace,
+                   a7_trace,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_req_0,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_load_data_valid,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_load_data,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_rd_r,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_reg_write_r,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__op1,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__op2,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_valid,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_taken,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_target,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirect,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__interruptPending,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__interrupt_fire,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__combined_trap,
+                   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pipeline_flush,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtvec,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mstatus,
+                   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mie,
+                   (uint32_t)cur_mtip,
+                   (uint64_t)dut->rootp->SimTop__DOT__clint__DOT__mtime,
+                   cur_mtimecmp);
+        }
 
         // UART TX: print char when tx_valid rises
         bool cur_uart_tx = dut->io_uart_tx;

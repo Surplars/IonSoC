@@ -13,11 +13,18 @@ import soc.memory.cache.HasCacheCoreIO
 import soc.memory.cache.L1Cache
 import soc.memory.cache.UncachedTileLinkBridge
 import soc.config.Config
+import soc.config.SoCFeatures
+import soc.isa.Extension
 
-class Core(XLEN: Int, hartID: Int) extends Module {
+class Core(
+    XLEN: Int,
+    hartID: Int,
+    features: SoCFeatures = Config.features,
+    enabledExt: Set[Extension.Value] = Config.enabledExt
+) extends Module {
     private val tlParams = TLParams()
-    private val hasICache = Config.features.iCache
-    private val hasDCache = Config.features.dCache
+    private val hasICache = features.iCache
+    private val hasDCache = features.dCache
     private val nMasters = 2 + (if (hasICache) 1 else 0) // dcache, tracker, optional icache
     private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + log2Ceil(nMasters))
 
@@ -40,16 +47,18 @@ class Core(XLEN: Int, hartID: Int) extends Module {
 
     val pc       = Module(new PC(XLEN, soc.config.Config.resetVector))
     val register = Module(new RegisterFile(XLEN))
-    val csr      = Module(new CSRFile(XLEN, hartID))
+    val csr      = Module(new CSRFile(XLEN, hartID, enabledExt, features))
 
-    val ifetch  = Module(new InstrFetch(XLEN))
-    val idecode = Module(new InstrDecode(XLEN))
+    val ifetch  = Module(new InstrFetch(XLEN, useCache = hasICache))
+    val idecode = Module(new InstrDecode(XLEN, enabledExt))
     val alu     = Module(new ALU(XLEN))
     val lsu     = Module(new LSU(XLEN))
     val wb      = Module(new WirteBack(XLEN))
 
-	// Global Signals
-	val global_stall = lsu.io.stall_req
+    // Global stall includes both memory-stage backpressure and optional
+    // instruction-cache fetch backpressure.
+    val global_stall = Wire(Bool())
+    val pipe_stall = Wire(Bool())
 
     dontTouch(register.io)
     dontTouch(idecode.io)
@@ -60,26 +69,48 @@ class Core(XLEN: Int, hartID: Int) extends Module {
     dbusXbar.io.masters(0) <> dcache.io.bus
     dbusXbar.io.masters(1) <> tracker.io.tl
 
-    // ICache is optional; instruction fetch currently uses the BROM path.
-    icache.foreach { cache =>
+    if (hasICache) {
+        val cache = icache.get
         dbusXbar.io.masters(2) <> cache.io.bus
-        cache.io.cpu.req.valid := false.B
-        cache.io.cpu.req.bits := DontCare
-        cache.io.cpu.resp.ready := true.B
+        cache.io.cpu <> ifetch.io.cache
+    } else {
+        ifetch.io.cache.req.ready := false.B
+        ifetch.io.cache.resp.valid := false.B
+        ifetch.io.cache.resp.bits.rdata := 0.U
+        ifetch.io.cache.resp.bits.err := false.B
     }
 
     io.DBus <> dbusXbar.io.slave
     io.IBus <> DontCare
 
+    pipe_stall := lsu.io.stall_req
+    global_stall := pipe_stall || ifetch.io.fetch_stall
+
     // csr mtip
     csr.io.mtip := io.mtip
 
-	    // Combine pipeline traps with external interrupts
+	    // Combine pipeline traps with external interrupts. External interrupts are
+	    // latched before redirect so CSR and PC consume the same trap PC.
 	    val has_pipeline_trap = lsu.io.trap_info_out.valid
 	    val has_ret           = lsu.io.trap_info_out.is_ret
-	    val ret_redirect      = alu.io.trap_info_out.is_ret || has_ret
-	    val interrupt_taken   = csr.io.interrupt && !global_stall && !has_pipeline_trap && !has_ret
-	    val combined_trap     = has_pipeline_trap || interrupt_taken
+        val retConsumed       = RegInit(false.B)
+	    val ret_redirect      = has_ret && !retConsumed
+        when(ret_redirect) {
+            retConsumed := true.B
+        }.elsewhen(!has_ret) {
+            retConsumed := false.B
+        }
+        val interruptPending = RegInit(false.B)
+        val interruptPc      = RegInit(0.U(XLEN.W))
+        val interrupt_fire   = interruptPending && !pipe_stall && !has_pipeline_trap && !ret_redirect
+        val interrupt_detect = csr.io.interrupt && !pipe_stall && !has_pipeline_trap && !ret_redirect && !interruptPending
+        when(interrupt_fire) {
+            interruptPending := false.B
+        }.elsewhen(interrupt_detect) {
+            interruptPending := true.B
+            interruptPc      := pc.io.pc_out
+        }
+	    val combined_trap     = has_pipeline_trap || interrupt_fire
 	    val pipeline_flush    = combined_trap || ret_redirect
 
     // pc
@@ -105,13 +136,13 @@ class Core(XLEN: Int, hartID: Int) extends Module {
     csr.io.wdata      := alu.io.csr_wdata
     csr.io.trap_valid := combined_trap
     // Exceptions take priority over interrupts for pc/cause
-    csr.io.trap_pc    := Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, pc.io.pc_out)
+    csr.io.trap_pc    := Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, interruptPc)
     csr.io.trap_cause := Mux(has_pipeline_trap, lsu.io.trap_info_out.cause, soc.isa.MCause.MachineTimerInt)
     csr.io.trap_value := Mux(has_pipeline_trap, lsu.io.trap_info_out.value, 0.U)
-    csr.io.is_ret     := lsu.io.trap_info_out.is_ret
+    csr.io.is_ret     := ret_redirect
     csr.io.ie_out     := DontCare
     // ifetch
-    ifetch.io.stall         := global_stall
+    ifetch.io.stall         := pipe_stall
     ifetch.io.pc            := pc.io.pc_out
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken
@@ -119,7 +150,7 @@ class Core(XLEN: Int, hartID: Int) extends Module {
 	    ifetch.io.trap_valid    := pipeline_flush
     // idcode
     idecode.io.valid_in      := ifetch.io.valid
-    idecode.io.stall         := global_stall
+    idecode.io.stall         := pipe_stall
 	    idecode.io.trap_valid    := pipeline_flush
     idecode.io.redirect      := ifetch.io.redirect
     idecode.io.pc_in         := ifetch.io.pc_out
@@ -129,7 +160,7 @@ class Core(XLEN: Int, hartID: Int) extends Module {
     idecode.io.reg_rs2_data  := register.io.rs2_data
     // alu
     alu.io.valid_in       := idecode.io.valid_out
-    alu.io.stall          := global_stall
+    alu.io.stall          := pipe_stall
 	    alu.io.trap_valid     := pipeline_flush
     alu.io.pc_in          := idecode.io.pc_out
     alu.io.next_pc_in     := idecode.io.pc_in
