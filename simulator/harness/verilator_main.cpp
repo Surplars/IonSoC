@@ -671,6 +671,9 @@ bool run_sim(const SimOptions &opts)
 	clear_ext_irq_sources(dut);
 	dut->io_uart_rx_valid = 0;
 	dut->io_uart_rx_byte = 0;
+	dut->io_jtag_tms = 1;
+	dut->io_jtag_tck = 0;
+	dut->io_jtag_tdi = 0;
 
 	if (opts.trace_wave)
 	{

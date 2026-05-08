@@ -12,6 +12,7 @@ import soc.device.TLROM
 import soc.device.UartTx
 import soc.device.CLINT
 import soc.device.TLError
+import soc.debug.JtagTap
 import soc.device.interrupt.PLIC
 import soc.bus.tilelink.TLXbar
 import soc.bus.tilelink.TLParams
@@ -35,6 +36,10 @@ class IonSoC(
         val uart_tx   = Output(Bool())
         val uart_byte = Output(UInt(8.W))
         val ext_irq_sources = Input(Vec(Config.plicSources + 1, Bool()))
+        val jtag_tms = Input(Bool())
+        val jtag_tck = Input(Bool())
+        val jtag_tdi = Input(Bool())
+        val jtag_tdo = Output(Bool())
     })
 
     val core  = Module(new Core(Config.XLEN, hartID = 0, features, enabledExt))
@@ -45,6 +50,7 @@ class IonSoC(
     val uart  = if (features.uart) Some(Module(new UartTx(dbusParams))) else None
     val clint = if (features.clint) Some(Module(new CLINT(dbusParams))) else None
     val plic  = if (features.interruptController == InterruptControllerKind.PLIC) Some(Module(new PLIC(dbusParams, Config.plicSources))) else None
+    val jtag  = Module(new JtagTap(drLen = Config.XLEN))
 
     val TLCrossbar = Module(new TLXbar(dbusParams, 1, slaveCount, Config.addrMapFor(features)))
 
@@ -57,6 +63,12 @@ class IonSoC(
     core.io.ssip     := false.B
     core.io.stip     := false.B
     core.io.seip     := plic.map(_.io.seip).getOrElse(false.B)
+
+    jtag.io.jtag.tms := io.jtag_tms
+    jtag.io.jtag.tck := io.jtag_tck
+    jtag.io.jtag.tdi := io.jtag_tdi
+    io.jtag_tdo := jtag.io.jtag.tdo
+    jtag.io.dr_in := core.io.pc
 
     uart.foreach { device =>
         device.io.rx_valid := io.uart_rx_valid
@@ -88,6 +100,7 @@ class IonSoC(
 
     core.io.IBus <> DontCare
     dontTouch(sram.io)
+    dontTouch(jtag.io)
     uart.foreach(device => dontTouch(device.io))
     clint.foreach(device => dontTouch(device.io))
     plic.foreach(device => dontTouch(device.io))
