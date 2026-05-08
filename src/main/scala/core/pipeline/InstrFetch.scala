@@ -3,11 +3,12 @@ package soc.core.pipeline
 import chisel3._
 import chisel3.util._
 import soc.isa.Common
+import soc.isa.Compressed
 import soc.memory.CacheReq
 import soc.memory.CacheResp
 import soc.memory.cache.CacheCmd
 
-class InstrFetch(XLEN: Int, useCache: Boolean = false) extends Module {
+class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = false) extends Module {
     val io = IO(new Bundle {
         val pc            = Input(UInt(XLEN.W))
         val instr_in      = Input(UInt(32.W))
@@ -19,6 +20,8 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false) extends Module {
         val valid          = Output(Bool())
         val pc_out         = Output(UInt(XLEN.W))
         val instr_out      = Output(UInt(32.W))
+        val instr_len      = Output(UInt(2.W))
+        val pc_step_len    = Output(UInt(2.W))
         val pred_taken_out = Output(Bool())
         val fetch_stall    = Output(Bool())
 
@@ -46,12 +49,27 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false) extends Module {
     io.cache.resp.ready         := true.B
 
     val directUpdate = !io.stall
-    val directInstr = Mux(io.redirect, Common.instrNop, io.instr_in)
+    private def selectAndExpand(raw: UInt, pc: UInt): (UInt, UInt) = {
+        if (useCompressed) {
+            val half = Mux(pc(1), raw(31, 16), raw(15, 0))
+            val isCompressed = half(1, 0) =/= "b11".U
+            val expanded = Compressed.expand(half)
+            val instr = Mux(expanded._2, expanded._1, Common.instrIllegal)
+            (Mux(isCompressed, instr, raw), Mux(isCompressed, 2.U(2.W), 0.U(2.W)))
+        } else {
+            (raw, 0.U(2.W))
+        }
+    }
+    val directExpanded = selectAndExpand(io.instr_in, io.pc)
+    val directInstr = Mux(io.redirect, Common.instrNop, directExpanded._1)
+    val directLen = Mux(io.redirect, 0.U(2.W), directExpanded._2)
 
     io.fetch_stall := false.B
+    io.pc_step_len    := directExpanded._2
     io.valid          := RegEnable(!io.redirect && !io.trap_valid, false.B, directUpdate)
     io.pc_out         := RegEnable(io.pc, 0.U, directUpdate)
     io.instr_out      := RegEnable(directInstr, 0.U, directUpdate)
+    io.instr_len      := RegEnable(directLen, 0.U, directUpdate)
     io.pred_taken_out := RegEnable(io.pred_taken_in, false.B, directUpdate)
 
     if (useCache) {
@@ -95,6 +113,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false) extends Module {
         val respFire = pending && sent && io.cache.resp.valid && io.cache.resp.ready
         val respShift = Cat(reqPc(beatOffsetBits - 1, 0), 0.U(3.W))
         val respInstr = (io.cache.resp.bits.rdata >> respShift)(31, 0)
+        val respExpanded = selectAndExpand(respInstr, reqPc)
         val acceptResp = respFire && !dropResp && !io.cache.resp.bits.err && !io.redirect && !io.trap_valid
 
         when(respFire) {
@@ -105,9 +124,11 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false) extends Module {
         }
 
         io.fetch_stall := pending || canIssue
+        io.pc_step_len := io.instr_len
         io.valid := RegEnable(acceptResp, false.B, !io.stall)
         io.pc_out := RegEnable(reqPc, 0.U, acceptResp)
-        io.instr_out := RegEnable(respInstr, 0.U, acceptResp)
+        io.instr_out := RegEnable(respExpanded._1, 0.U, acceptResp)
+        io.instr_len := RegEnable(respExpanded._2, 0.U, acceptResp)
         io.pred_taken_out := RegEnable(reqPredTaken, false.B, acceptResp)
     }
 }

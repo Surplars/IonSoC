@@ -52,6 +52,7 @@ object Config {
         Extension.Zicsr,
         Extension.Zifencei,
         Extension.S,
+        Extension.C,
         Extension.RV64M,
         Extension.RV64A,
         Extension.Zba,

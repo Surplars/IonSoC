@@ -12,6 +12,7 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
         dut.io.trap_valid.poke(false.B)
         dut.io.pc_in.poke("h80000000".U)
         dut.io.instr_in.poke("h00000013".U)
+        dut.io.instr_len_in.poke(0.U)
         dut.io.priv.poke(PrivilegeLevel.Machine)
         dut.io.pred_taken_in.poke(false.B)
         dut.io.redirect.poke(false.B)
@@ -163,6 +164,33 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.trap_info.valid.expect(false.B)
             dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.SH1ADD)
+        }
+    }
+
+    test("InstrDecode preserves compressed instruction length metadata") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I, Extension.C))) { dut =>
+            init(dut)
+            dut.io.instr_len_in.poke(2.U)
+            dut.io.instr_in.poke("h00100093".U) // addi x1, x0, 1 expanded from c.li/c.addi form
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.instr_len.expect(2.U)
+        }
+    }
+
+    test("InstrDecode maps RV64 word arithmetic to word ALU operations") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h00a484bb".U) // addw x9, x9, x10
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.ADDW)
+
+            init(dut)
+            dut.io.instr_in.poke("h40a484bb".U) // subw x9, x9, x10
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.SUBW)
         }
     }
 }

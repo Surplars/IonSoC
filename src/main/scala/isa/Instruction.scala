@@ -10,6 +10,7 @@ import soc.core.pipeline.CSROps
 
 object Common {
     val instrNop = "h00000013".U(32.W) // addi x0, x0, 0
+    val instrIllegal = 0.U(32.W)
 }
 
 trait InstrProvider {
@@ -76,6 +77,7 @@ object Extension extends Enumeration {
     val RV32I, RV64I, Zicsr               = Value
     val Zifencei                          = Value
     val S                                 = Value
+    val C                                 = Value
     val Zba, Zbb, Zbs                     = Value
     val RV32M, RV32A, RV32F, RV32D, RV32Q = Value
     val RV64M, RV64A, RV64F, RV64D, RV64Q = Value

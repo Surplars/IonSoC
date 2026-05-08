@@ -102,6 +102,7 @@ class CSRFile(
             (if (enabled.contains(Extension.RV32I) || enabled.contains(Extension.RV64I)) bit('i') else BigInt(0)) |
             (if (enabled.contains(Extension.RV32M) || enabled.contains(Extension.RV64M)) bit('m') else BigInt(0)) |
             (if (enabled.contains(Extension.RV32A) || enabled.contains(Extension.RV64A)) bit('a') else BigInt(0)) |
+            (if (enabled.contains(Extension.C)) bit('c') else BigInt(0)) |
             (if (enabled.contains(Extension.RV32F) || enabled.contains(Extension.RV64F)) bit('f') else BigInt(0)) |
             (if (enabled.contains(Extension.RV32D) || enabled.contains(Extension.RV64D)) bit('d') else BigInt(0)) |
             (if (enabled.contains(Extension.RV32Q) || enabled.contains(Extension.RV64Q)) bit('q') else BigInt(0))

@@ -12,6 +12,7 @@ class PC(XLEN: Int, RESET_VECTOR: BigInt) extends Module {
         val trap_ret   = Input(Bool())
         val trap_pc    = Input(UInt(XLEN.W))
         val trap_epc   = Input(UInt(XLEN.W))
+        val instr_len  = Input(UInt(2.W))
 
         val fetch_en   = Output(Bool())
         val pc_out     = Output(UInt(XLEN.W))
@@ -26,8 +27,9 @@ class PC(XLEN: Int, RESET_VECTOR: BigInt) extends Module {
 
     bpu.io.req_pc := ProgramCounter
 
-    val pc_p4   = ProgramCounter + 4.U
-    val pred_pc = Mux(bpu.io.pred_taken, bpu.io.pred_target, pc_p4)
+    val stepBytes = Mux(io.instr_len === 2.U, 2.U(XLEN.W), 4.U(XLEN.W))
+    val pc_next   = ProgramCounter + stepBytes
+    val pred_pc = Mux(bpu.io.pred_taken, bpu.io.pred_target, pc_next)
 
     io.fetch_en := true.B
 

@@ -188,7 +188,7 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
             init(dut)
 
             dut.io.addr.poke(CSR.MISA)
-            dut.io.rdata.expect((BigInt(2) << 62) | (1L << ('i' - 'a')) | (1L << ('m' - 'a')) | (1L << ('a' - 'a')) | (1L << ('s' - 'a')))
+            dut.io.rdata.expect((BigInt(2) << 62) | (1L << ('i' - 'a')) | (1L << ('m' - 'a')) | (1L << ('a' - 'a')) | (1L << ('c' - 'a')) | (1L << ('s' - 'a')))
 
             writeCsr(dut, CSR.MEDELEG, 1 << 2)
             writeCsr(dut, CSR.STVEC, BigInt("80000200", 16))

@@ -16,6 +16,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         val trap_valid    = Input(Bool())
         val pc_in         = Input(UInt(XLEN.W))
         val instr_in      = Input(UInt(32.W))
+        val instr_len_in  = Input(UInt(2.W))
         val priv          = Input(UInt(2.W))
         val pred_taken_in = Input(Bool())
         val redirect      = Input(Bool())
@@ -203,6 +204,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         0.U
     )
     decoded.mem_imm := Mux(valid && (ctrl.mem_read || ctrl.mem_write), imm, 0.U)
+    decoded.instr_len := io.instr_len_in
 
     trap_info.valid := illegal
     trap_info.pc    := io.pc_in

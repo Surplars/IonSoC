@@ -217,7 +217,47 @@ object InstrSetI extends InstrProvider {
         ),
         InstrEntry( // ADDIW
             genPat(Funct3.I.ADDIW, Opcode.OP_IMM_32),
-            ALU(ALUOps.ADD, OpSel.RS1, OpSel.IMM),
+            ALU(ALUOps.ADDW, OpSel.RS1, OpSel.IMM),
+            Extension.RV64I
+        ),
+        InstrEntry( // SLLIW
+            genPat(Funct7.Z, Funct3.I.SLLIW, Opcode.OP_IMM_32),
+            ALU(ALUOps.SLLW, OpSel.RS1, OpSel.IMM),
+            Extension.RV64I
+        ),
+        InstrEntry( // SRLIW
+            genPat(Funct7.Z, Funct3.I.SRLIW, Opcode.OP_IMM_32),
+            ALU(ALUOps.SRLW, OpSel.RS1, OpSel.IMM),
+            Extension.RV64I
+        ),
+        InstrEntry( // SRAIW
+            genPat(Funct7.NZ, Funct3.I.SRAIW, Opcode.OP_IMM_32),
+            ALU(ALUOps.SRAW, OpSel.RS1, OpSel.IMM),
+            Extension.RV64I
+        ),
+        InstrEntry( // ADDW
+            genPat(Funct7.Z, Funct3.I.ADDW, Opcode.OP_32),
+            ALU(ALUOps.ADDW, OpSel.RS1, OpSel.RS2),
+            Extension.RV64I
+        ),
+        InstrEntry( // SUBW
+            genPat(Funct7.NZ, Funct3.I.ADDW, Opcode.OP_32),
+            ALU(ALUOps.SUBW, OpSel.RS1, OpSel.RS2),
+            Extension.RV64I
+        ),
+        InstrEntry( // SLLW
+            genPat(Funct7.Z, Funct3.I.SLLW, Opcode.OP_32),
+            ALU(ALUOps.SLLW, OpSel.RS1, OpSel.RS2),
+            Extension.RV64I
+        ),
+        InstrEntry( // SRLW
+            genPat(Funct7.Z, Funct3.I.SRLW, Opcode.OP_32),
+            ALU(ALUOps.SRLW, OpSel.RS1, OpSel.RS2),
+            Extension.RV64I
+        ),
+        InstrEntry( // SRAW
+            genPat(Funct7.NZ, Funct3.I.SRAW, Opcode.OP_32),
+            ALU(ALUOps.SRAW, OpSel.RS1, OpSel.RS2),
             Extension.RV64I
         ),
     )

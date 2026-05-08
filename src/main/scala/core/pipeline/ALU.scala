@@ -27,6 +27,7 @@ class ALU(XLEN: Int = 64) extends Module {
         val pc_out        = Output(UInt(XLEN.W))
         val br_info       = Output(new BranchInfo(XLEN))
         val trap_info_out = Output(new TrapInfo(XLEN))
+        val instr_len_out = Output(UInt(2.W))
         // CSR读写
         val csr_valid   = Output(Bool())
         val csr_cmd     = Output(UInt(4.W))
@@ -125,6 +126,7 @@ class ALU(XLEN: Int = 64) extends Module {
     val bitMask = (1.U(XLEN.W) << bitIndex)(XLEN - 1, 0)
 
     val branch_type  = io.decoded_in.ctrl.branch_type
+    val instrStep = Mux(io.decoded_in.instr_len === 2.U, 2.U(XLEN.W), 4.U(XLEN.W))
     val branch_valid = valid && (branch_type =/= BranchType.None) && !io.stall
     val branch_is_br = branch_valid && (branch_type =/= BranchType.JAL) && (branch_type =/= BranchType.JALR)
     val branch_taken = MuxLookup(branch_type, false.B)(
@@ -286,7 +288,7 @@ class ALU(XLEN: Int = 64) extends Module {
                 op1 // CSR指令直接写回old CSR值
             )
         ),
-        io.pc_in + 4.U
+        io.pc_in + instrStep
     )
 
     val update_en = !io.stall
@@ -321,7 +323,7 @@ class ALU(XLEN: Int = 64) extends Module {
     io.alu_out.mem.attrs.translate  := RegEnable(Mux(valid, mem_read || mem_write || isAtomic, false.B), false.B, update_en)
     io.alu_out.mem.attrs.executable := RegEnable(false.B, false.B, update_en)
 
-    val fallthroughTarget = io.pc_in + 4.U
+    val fallthroughTarget = io.pc_in + instrStep
     val redirectTarget = Mux(branch_taken, branch_target, fallthroughTarget)
     val forceTakenRedirect = branch_taken && ((branch_type === BranchType.JAL) || (branch_type === BranchType.JALR) || branch_is_br)
     val correctNotTaken = !branch_taken && io.pred_taken_in
@@ -335,4 +337,5 @@ class ALU(XLEN: Int = 64) extends Module {
 
     io.trap_info_out := RegEnable(trap_info, 0.U.asTypeOf(io.trap_info_out), update_en)
     io.pc_out        := RegEnable(io.pc_in, 0.U, update_en)
+    io.instr_len_out := RegEnable(Mux(valid, io.decoded_in.instr_len, 0.U), 0.U, update_en)
 }

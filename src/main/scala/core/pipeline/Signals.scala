@@ -122,6 +122,7 @@ class DecodedInstr(XLEN: Int) extends Bundle {
     val atomic  = AtomicOpType.Type()
     val aq      = Bool()
     val rl      = Bool()
+    val instr_len = UInt(2.W) // 0 means 32-bit, 2 means 16-bit
     val br_imm  = Output(UInt(XLEN.W))
     val mem_imm = Output(UInt(XLEN.W))
 }

@@ -28,6 +28,7 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
         dut.io.decoded_in.rd.poke(1.U)
         dut.io.decoded_in.funct3.poke(0.U)
         dut.io.decoded_in.op2_sel.poke(OpSel.IMM)
+        dut.io.decoded_in.instr_len.poke(0.U)
         dut.io.decoded_in.br_imm.poke(0.U)
         dut.io.decoded_in.mem_imm.poke(0.U)
         dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADD)
@@ -302,6 +303,29 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.br_info.valid.expect(true.B)
             dut.io.br_info.taken.expect(false.B)
             dut.io.br_info.redirect.expect(false.B)
+        }
+    }
+
+    test("ALU uses compressed instruction length for link and fallthrough") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.decoded_in.ctrl.branch_type.poke(BranchType.JAL)
+            dut.io.decoded_in.instr_len.poke(2.U)
+            dut.io.decoded_in.op1.poke("h80000000".U)
+            dut.io.decoded_in.op2.poke(8.U)
+            dut.clock.step()
+            dut.io.alu_out.result.expect(BigInt("80000002", 16))
+            dut.io.br_info.target.expect(BigInt("80000008", 16))
+
+            init(dut)
+            dut.io.decoded_in.ctrl.reg_write.poke(false.B)
+            dut.io.decoded_in.ctrl.branch_type.poke(BranchType.BNE)
+            dut.io.decoded_in.instr_len.poke(2.U)
+            dut.io.decoded_in.op1.poke(1.U)
+            dut.io.decoded_in.op2.poke(1.U)
+            dut.clock.step()
+            dut.io.br_info.target.expect(BigInt("80000002", 16))
         }
     }
 }

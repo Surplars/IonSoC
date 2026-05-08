@@ -67,7 +67,7 @@ class Core(
     val register = Module(new RegisterFile(XLEN))
     val csr      = Module(new CSRFile(XLEN, hartID, enabledExt, features))
 
-    val ifetch  = Module(new InstrFetch(XLEN, useCache = hasICache))
+    val ifetch  = Module(new InstrFetch(XLEN, useCache = hasICache, useCompressed = enabledExt.contains(Extension.C)))
     val idecode = Module(new InstrDecode(XLEN, enabledExt))
     val alu     = Module(new ALU(XLEN))
     val lsu     = Module(new LSU(XLEN))
@@ -207,9 +207,10 @@ class Core(
     io.fetch_en      := pc.io.fetch_en
     pc.io.stall      := global_stall
 	    pc.io.trap_valid := combined_trap
-	    pc.io.trap_pc    := Mux(has_pipeline_trap, csr.io.tvec_out, interruptTarget)
+    pc.io.trap_pc    := Mux(has_pipeline_trap, csr.io.tvec_out, interruptTarget)
 	    pc.io.trap_ret   := ret_redirect
     pc.io.trap_epc   := csr.io.epc_out
+    pc.io.instr_len  := ifetch.io.pc_step_len
     pc.io.br_info <> alu.io.br_info
     // register
     register.io.rs1_addr   := idecode.io.reg_rd_rs1
@@ -255,6 +256,7 @@ class Core(
     idecode.io.redirect      := ifetch.io.redirect
     idecode.io.pc_in         := ifetch.io.pc_out
     idecode.io.instr_in      := ifetch.io.instr_out
+    idecode.io.instr_len_in  := ifetch.io.instr_len
     idecode.io.priv          := csr.io.mem_cfg_out.priv
     idecode.io.pred_taken_in := ifetch.io.pred_taken_out
     val aluBypassValid = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
