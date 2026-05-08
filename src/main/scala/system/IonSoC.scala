@@ -64,16 +64,19 @@ class IonSoC(
     core.io.ssip     := false.B
     core.io.stip     := false.B
     core.io.seip     := plic.map(_.io.seip).getOrElse(false.B)
+    core.io.debug_haltreq := debugModule.io.haltreq
+    core.io.debug_resumereq := debugModule.io.resumereq
 
     jtag.io.jtag.tms := io.jtag_tms
     jtag.io.jtag.tck := io.jtag_tck
     jtag.io.jtag.tdi := io.jtag_tdi
     io.jtag_tdo := jtag.io.jtag.tdo
     jtag.io.dr_in := Cat(0.U(23.W), debugModule.io.dmi_rdata, 0.U(9.W))
-    debugModule.io.dmi_valid := jtag.io.update_dr
+    debugModule.io.dmi_valid := RegNext(jtag.io.update_dr, false.B)
     debugModule.io.dmi_write := jtag.io.dr_out(1, 0) === 2.U
     debugModule.io.dmi_addr  := jtag.io.dr_out(8, 2)
     debugModule.io.dmi_wdata := jtag.io.dr_out(40, 9)
+    debugModule.io.hart_halted := core.io.debug_halted
 
     uart.foreach { device =>
         device.io.rx_valid := io.uart_rx_valid

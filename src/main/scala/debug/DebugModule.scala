@@ -23,14 +23,17 @@ class DebugModule(params: TLParams) extends Module {
         val haltreq = Output(Bool())
         val resumereq = Output(Bool())
         val dmactive = Output(Bool())
+        val hart_halted = Input(Bool())
     })
 
     private val beatBytes = params.dataWidth / 8
     val dmcontrol = RegInit(0.U(32.W))
     val data0 = RegInit(0.U(32.W))
 
-    private val dmstatus = "h00020f02".U(32.W)   // authenticated, running, Debug Spec 0.13 encoding
     private val abstractcs = "h01000000".U(32.W) // one data register, no abstract commands yet
+
+    private val haltedBits = Cat(!io.hart_halted, !io.hart_halted, io.hart_halted, io.hart_halted)
+    private val dmstatus = Cat(0.U(14.W), true.B, 0.U(5.W), haltedBits, 0.U(4.W), 2.U(4.W))
 
     private def readReg(addr: UInt): UInt = {
         MuxLookup(addr, 0.U(32.W))(
@@ -45,7 +48,7 @@ class DebugModule(params: TLParams) extends Module {
 
     private def writeReg(addr: UInt, data: UInt): Unit = {
         when(addr === DebugModuleMap.DMControl.U) {
-            dmcontrol := data
+            dmcontrol := Mux(data(30), data & ~(1.U(32.W) << 31), data)
         }.elsewhen(addr === DebugModuleMap.Data0.U) {
             data0 := data
         }

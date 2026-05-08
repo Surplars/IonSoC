@@ -43,6 +43,9 @@ class Core(
         val ssip = Input(Bool())
         val stip = Input(Bool())
         val seip = Input(Bool())
+        val debug_haltreq = Input(Bool())
+        val debug_resumereq = Input(Bool())
+        val debug_halted = Output(Bool())
     })
 
     val dcache: HasCacheCoreIO = if (hasDCache) Module(new L1Cache(tlParams, 256)) else Module(new UncachedTileLinkBridge(tlParams))
@@ -64,6 +67,7 @@ class Core(
     // instruction-cache fetch backpressure.
     val global_stall = Wire(Bool())
     val pipe_stall = Wire(Bool())
+    val debugHalted = RegInit(false.B)
 
     dontTouch(register.io)
     dontTouch(idecode.io)
@@ -142,7 +146,14 @@ class Core(
     val aluResultPrevData = RegNext(aluResultFwdData, 0.U)
 
     pipe_stall := lsu.io.stall_req
-    global_stall := pipe_stall || decodeUsesPending || ifetch.io.fetch_stall || fenceIHold
+    when(io.debug_resumereq) {
+        debugHalted := false.B
+    }.elsewhen(io.debug_haltreq && !pipe_stall) {
+        debugHalted := true.B
+    }
+    io.debug_halted := debugHalted
+
+    global_stall := pipe_stall || decodeUsesPending || ifetch.io.fetch_stall || fenceIHold || debugHalted
 
     // Interrupt inputs. Supervisor-level lines are reserved for the future
     // S-mode trap path and can be tied off by the SoC until a controller exists.
@@ -211,7 +222,7 @@ class Core(
     csr.io.ret_type   := lsu.io.trap_info_out.ret_type
     csr.io.ie_out     := DontCare
     // ifetch
-    ifetch.io.stall         := pipe_stall || decodeUsesPending
+    ifetch.io.stall         := pipe_stall || decodeUsesPending || debugHalted
     ifetch.io.pc            := pc.io.pc_out
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken
@@ -219,7 +230,7 @@ class Core(
 	    ifetch.io.trap_valid    := pipeline_flush
     // idcode
     idecode.io.valid_in      := ifetch.io.valid
-    idecode.io.stall         := pipe_stall || decodeUsesPending
+    idecode.io.stall         := pipe_stall || decodeUsesPending || debugHalted
 	    idecode.io.trap_valid    := pipeline_flush
     idecode.io.redirect      := ifetch.io.redirect
     idecode.io.pc_in         := ifetch.io.pc_out
@@ -258,7 +269,7 @@ class Core(
     idecode.io.reg_rs2_data  := decodeBypass(idecode.io.reg_rd_rs2, register.io.rs2_data)
     // alu
     alu.io.valid_in       := idecode.io.valid_out && !decodeUsesPending
-    alu.io.stall          := pipe_stall
+    alu.io.stall          := pipe_stall || debugHalted
 	    alu.io.trap_valid     := pipeline_flush
     alu.io.pc_in          := idecode.io.pc_out
     alu.io.next_pc_in     := idecode.io.pc_in

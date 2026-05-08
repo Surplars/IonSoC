@@ -79,6 +79,7 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
         dut.io.dmi_addr.poke(0.U)
         dut.io.dmi_wdata.poke(0.U)
         dut.io.dmi_write.poke(false.B)
+        dut.io.hart_halted.poke(false.B)
     }
 
     private def clintWrite(dut: CLINT, address: BigInt, mask: BigInt, data: BigInt): Unit = {
@@ -345,6 +346,9 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
             dut.io.dmactive.expect(true.B)
             dut.io.haltreq.expect(true.B)
             assert((debugRead(dut, DebugModuleMap.DMStatus * 4) & 0xf) == 2)
+            assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 10) & 0x3) == 0x3)
+            dut.io.hart_halted.poke(true.B)
+            assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 8) & 0x3) == 0x3)
 
             dut.io.dmi_addr.poke(DebugModuleMap.Data0.U)
             dut.io.dmi_wdata.poke("h12345678".U)
