@@ -21,7 +21,7 @@ object MemOpType extends ChiselEnum {
 }
 
 object AtomicOpType extends ChiselEnum {
-    val None, Swap, Add, Xor, And, Or, Min, Max, MinU, MaxU = Value
+    val None, LR, SC, Swap, Add, Xor, And, Or, Min, Max, MinU, MaxU = Value
 }
 
 object TrapReturnType extends ChiselEnum {
@@ -117,6 +117,9 @@ class DecodedInstr(XLEN: Int) extends Bundle {
     val ctrl    = new InstrSignals
     val funct3  = UInt(3.W)
     val op2_sel = OpSel.Type()
+    val atomic  = AtomicOpType.Type()
+    val aq      = Bool()
+    val rl      = Bool()
     val br_imm  = Output(UInt(XLEN.W))
     val mem_imm = Output(UInt(XLEN.W))
 }

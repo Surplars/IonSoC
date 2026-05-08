@@ -152,8 +152,10 @@ class ALU(XLEN: Int = 64) extends Module {
     io.csr_cmd   := Mux(io.csr_write, csr_op.asUInt, 0.U)
     io.csr_wdata := op2
 
+    val isAtomic = mem_atomic
     val mem_addr_calc = op1 + mem_imm
     val mem_size      = Mux(valid && (mem_read || mem_write), Cat(0.U(1.W), io.decoded_in.funct3(1, 0)), 0.U(3.W))
+    val atomic_size   = Mux(io.decoded_in.funct3 === "b010".U, 2.U(3.W), 3.U(3.W))
     val mem_signed    = mem_read && !io.decoded_in.funct3(2)
     val base_mask     = MuxLookup(mem_size, 0.U((XLEN / 8).W))(
         Seq(
@@ -166,16 +168,22 @@ class ALU(XLEN: Int = 64) extends Module {
     val byteShift         = mem_addr_calc(log2Ceil(XLEN / 8) - 1, 0)
     val mem_mask          = base_mask << byteShift
     val mem_wdata_aligned = op2 << (byteShift << 3)
-    val mem_op            = Mux(
-        mem_read,
-        MemOpType.Load,
+    val atomic_mask = Mux(atomic_size === 2.U, 15.U((XLEN / 8).W), 255.U((XLEN / 8).W)) << byteShift
+    val atomic_wdata_aligned = Mux(atomic_size === 2.U, Fill(2, op2(31, 0)), op2) << (byteShift << 3)
+    val mem_op = Mux(
+        isAtomic,
         Mux(
-            mem_write,
-            MemOpType.Store,
+            io.decoded_in.atomic === AtomicOpType.LR,
+            MemOpType.LR,
+            Mux(io.decoded_in.atomic === AtomicOpType.SC, MemOpType.SC, MemOpType.AMO)
+        ),
+        Mux(
+            mem_read,
+            MemOpType.Load,
             Mux(
-                mem_fence,
-                MemOpType.Fence,
-                Mux(mem_fence_i, MemOpType.FenceI, Mux(mem_atomic, MemOpType.AMO, MemOpType.None))
+                mem_write,
+                MemOpType.Store,
+                Mux(mem_fence, MemOpType.Fence, Mux(mem_fence_i, MemOpType.FenceI, MemOpType.None))
             )
         )
     )
@@ -279,18 +287,18 @@ class ALU(XLEN: Int = 64) extends Module {
     io.alu_out.mem.op               := RegEnable(Mux(valid, mem_op, MemOpType.None), MemOpType.None, update_en)
     io.alu_out.mem.vaddr            := RegEnable(Mux(valid, mem_addr_calc, 0.U), 0.U, update_en)
     io.alu_out.mem.paddr            := RegEnable(Mux(valid, mem_addr_calc, 0.U), 0.U, update_en)
-    io.alu_out.mem.size             := RegEnable(mem_size, 0.U, update_en)
+    io.alu_out.mem.size             := RegEnable(Mux(isAtomic, atomic_size, mem_size), 0.U, update_en)
     io.alu_out.mem.signed           := RegEnable(mem_signed, false.B, update_en)
-    io.alu_out.mem.mask             := RegEnable(mem_mask, 0.U, update_en)
-    io.alu_out.mem.wdata            := RegEnable(mem_wdata_aligned, 0.U, update_en)
-    io.alu_out.mem.atomic           := RegEnable(AtomicOpType.None, AtomicOpType.None, update_en)
-    io.alu_out.mem.aq               := RegEnable(false.B, false.B, update_en)
-    io.alu_out.mem.rl               := RegEnable(false.B, false.B, update_en)
-    io.alu_out.mem.attrs.cacheable  := RegEnable(Mux(valid, mem_read || mem_write, false.B), false.B, update_en)
+    io.alu_out.mem.mask             := RegEnable(Mux(isAtomic, atomic_mask, mem_mask), 0.U, update_en)
+    io.alu_out.mem.wdata            := RegEnable(Mux(isAtomic, atomic_wdata_aligned, mem_wdata_aligned), 0.U, update_en)
+    io.alu_out.mem.atomic           := RegEnable(Mux(isAtomic, io.decoded_in.atomic, AtomicOpType.None), AtomicOpType.None, update_en)
+    io.alu_out.mem.aq               := RegEnable(Mux(isAtomic, io.decoded_in.aq, false.B), false.B, update_en)
+    io.alu_out.mem.rl               := RegEnable(Mux(isAtomic, io.decoded_in.rl, false.B), false.B, update_en)
+    io.alu_out.mem.attrs.cacheable  := RegEnable(Mux(valid, mem_read || mem_write || isAtomic, false.B), false.B, update_en)
     io.alu_out.mem.attrs.device     := RegEnable(false.B, false.B, update_en)
     io.alu_out.mem.attrs.bufferable := RegEnable(true.B, true.B, update_en)
-    io.alu_out.mem.attrs.allocate   := RegEnable(Mux(valid, mem_read || mem_write, false.B), false.B, update_en)
-    io.alu_out.mem.attrs.translate  := RegEnable(Mux(valid, mem_read || mem_write, false.B), false.B, update_en)
+    io.alu_out.mem.attrs.allocate   := RegEnable(Mux(valid, mem_read || mem_write || isAtomic, false.B), false.B, update_en)
+    io.alu_out.mem.attrs.translate  := RegEnable(Mux(valid, mem_read || mem_write || isAtomic, false.B), false.B, update_en)
     io.alu_out.mem.attrs.executable := RegEnable(false.B, false.B, update_en)
 
     val fallthroughTarget = io.pc_in + 4.U

@@ -87,4 +87,47 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.io.decoded_out.ctrl.mem_fence_i.expect(true.B)
         }
     }
+
+    test("InstrDecode gates RV64A atomic instructions by enabled extensions") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h1400b1af".U) // lr.d.aq x3, (x1)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+        }
+
+        simulate(new InstrDecode(64, Set(Extension.RV64I, Extension.RV64A))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h1400b1af".U) // lr.d.aq x3, (x1)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.mem_atomic.expect(true.B)
+            dut.io.decoded_out.atomic.expect(AtomicOpType.LR)
+            dut.io.decoded_out.aq.expect(true.B)
+            dut.io.decoded_out.rl.expect(false.B)
+
+            init(dut)
+            dut.io.instr_in.poke("h1a20b1af".U) // sc.d.rl x3, x2, (x1)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.mem_atomic.expect(true.B)
+            dut.io.decoded_out.atomic.expect(AtomicOpType.SC)
+            dut.io.decoded_out.aq.expect(false.B)
+            dut.io.decoded_out.rl.expect(true.B)
+
+            init(dut)
+            dut.io.instr_in.poke("h0620b1af".U) // amoadd.d.aqrl x3, x2, (x1)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.mem_atomic.expect(true.B)
+            dut.io.decoded_out.atomic.expect(AtomicOpType.Add)
+            dut.io.decoded_out.aq.expect(true.B)
+            dut.io.decoded_out.rl.expect(true.B)
+
+            init(dut)
+            dut.io.instr_in.poke("h1420b1af".U) // reserved: lr.d with rs2 != x0
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+        }
+    }
 }

@@ -41,6 +41,9 @@ trait InstrProvider {
     def CSR(csrOp: CSROps.Type): List[Data] = {
         List(Y, OpSel.CSR, OpSel.RS1, ALUOps.NOP, Y, N, N, csrOp, BranchType.None)
     }
+    def ATOMIC: List[Data] = {
+        List(Y, OpSel.RS1, OpSel.RS2, ALUOps.NOP, Y, N, N, CSROps.None, BranchType.None)
+    }
 
     def UStr(u: UInt, width: Int): String = {
         // u.litValue 获取 BigInt, toString(2) 转二进制
@@ -92,6 +95,7 @@ object Opcode {
     val JALR      = "b1100111".U(7.W)
     val LUI       = "b0110111".U(7.W)
     val AUIPC     = "b0010111".U(7.W)
+    val AMO       = "b0101111".U(7.W)
 }
 
 object Funct3 {
@@ -153,6 +157,27 @@ object Funct3 {
         val DIVU   = "b101".U(3.W)
         val REM    = "b110".U(3.W)
         val REMU   = "b111".U(3.W)
+    }
+
+    object A {
+        val W = "b010".U(3.W)
+        val D = "b011".U(3.W)
+    }
+}
+
+object Funct5 {
+    object A {
+        val LR      = "00010"
+        val SC      = "00011"
+        val SWAP    = "00001"
+        val ADD     = "00000"
+        val XOR     = "00100"
+        val AND     = "01100"
+        val OR      = "01000"
+        val MIN     = "10000"
+        val MAX     = "10100"
+        val MINU    = "11000"
+        val MAXU    = "11100"
     }
 }
 

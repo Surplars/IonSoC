@@ -155,4 +155,40 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.alu_out.result.expect(1.U)
         }
     }
+
+    test("ALU emits memory access metadata for RV64A atomics") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.decoded_in.ctrl.mem_atomic.poke(true.B)
+            dut.io.decoded_in.atomic.poke(AtomicOpType.Add)
+            dut.io.decoded_in.aq.poke(true.B)
+            dut.io.decoded_in.rl.poke(true.B)
+            dut.io.decoded_in.funct3.poke("b011".U) // amoadd.d
+            dut.io.decoded_in.op1.poke("h10000008".U)
+            dut.io.decoded_in.op2.poke(5.U)
+            dut.clock.step()
+            dut.io.alu_out.mem.valid.expect(true.B)
+            dut.io.alu_out.mem.op.expect(MemOpType.AMO)
+            dut.io.alu_out.mem.atomic.expect(AtomicOpType.Add)
+            dut.io.alu_out.mem.size.expect(3.U)
+            dut.io.alu_out.mem.mask.expect("hff".U)
+            dut.io.alu_out.mem.wdata.expect(5.U)
+            dut.io.alu_out.mem.aq.expect(true.B)
+            dut.io.alu_out.mem.rl.expect(true.B)
+
+            dut.io.decoded_in.atomic.poke(AtomicOpType.SC)
+            dut.io.decoded_in.aq.poke(false.B)
+            dut.io.decoded_in.rl.poke(false.B)
+            dut.io.decoded_in.funct3.poke("b010".U) // sc.w at the upper word lane
+            dut.io.decoded_in.op1.poke("h10000004".U)
+            dut.io.decoded_in.op2.poke("h0000000012345678".U)
+            dut.clock.step()
+            dut.io.alu_out.mem.valid.expect(true.B)
+            dut.io.alu_out.mem.op.expect(MemOpType.SC)
+            dut.io.alu_out.mem.size.expect(2.U)
+            dut.io.alu_out.mem.mask.expect("hf0".U)
+            dut.io.alu_out.mem.wdata.expect(BigInt("1234567800000000", 16))
+        }
+    }
 }

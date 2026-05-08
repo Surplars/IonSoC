@@ -18,7 +18,7 @@ case class InstrEntry(
 object InstrTable {
     val defaultCtrl = List(false.B, OpSel.ZERO, OpSel.ZERO, ALUOps.NOP, false.B, false.B, false.B, CSROps.None, BranchType.None)
 
-    private val allProviders = Seq(InstrSetZicsr, InstrSetZifencei, InstrSetI, InstrSetM)
+    private val allProviders = Seq(InstrSetZicsr, InstrSetZifencei, InstrSetI, InstrSetM, InstrSetA)
 
     private def isFeatureSupported(f: Extension.Value, enabled: Set[Extension.Value]): Boolean = f match {
         case Extension.RV32I => enabled.contains(Extension.RV64I) || enabled.contains(Extension.RV32I)

@@ -90,6 +90,20 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         dut.io.alu_out.mem.signed.poke(false.B)
     }
 
+    private def driveAtomic(dut: LSU, op: MemOpType.Type, atomic: AtomicOpType.Type, addr: BigInt, data: BigInt = 0, size: Int = 3): Unit = {
+        val mask = if (size == 2) 0x0f else 0xff
+        dut.io.valid_in.poke(true.B)
+        dut.io.alu_out.reg_write.poke(true.B)
+        dut.io.alu_out.mem.valid.poke(true.B)
+        dut.io.alu_out.mem.op.poke(op)
+        dut.io.alu_out.mem.atomic.poke(atomic)
+        dut.io.alu_out.mem.vaddr.poke(addr.U)
+        dut.io.alu_out.mem.paddr.poke(addr.U)
+        dut.io.alu_out.mem.size.poke(size.U)
+        dut.io.alu_out.mem.mask.poke(mask.U)
+        dut.io.alu_out.mem.wdata.poke(data.U)
+    }
+
     private def driveNoMem(dut: LSU): Unit = {
         dut.io.valid_in.poke(false.B)
         dut.io.alu_out.mem.valid.poke(false.B)
@@ -257,6 +271,119 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             driveNoMem(dut)
             dut.clock.step()
             dut.io.dcache.req.valid.expect(false.B)
+        }
+    }
+
+    test("LSU completes LR/SC reservation success and writes store data") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            driveAtomic(dut, MemOpType.LR, AtomicOpType.LR, BigInt("10000000", 16))
+            dut.clock.step()
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(BigInt("1122334455667788", 16).U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data.expect(BigInt("1122334455667788", 16))
+
+            driveAtomic(dut, MemOpType.SC, AtomicOpType.SC, BigInt("10000000", 16), BigInt("aaaabbbbccccdddd", 16))
+            dut.clock.step()
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(BigInt("1122334455667788", 16).U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.io.dcache.req.bits.wdata.expect(BigInt("aaaabbbbccccdddd", 16))
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data.expect(0.U)
+        }
+    }
+
+    test("LSU fails SC without a matching reservation") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            driveAtomic(dut, MemOpType.SC, AtomicOpType.SC, BigInt("10000008", 16), BigInt("1234", 16))
+            dut.clock.step()
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(BigInt("feedfacecafebeef", 16).U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data.expect(1.U)
+        }
+    }
+
+    test("LSU performs AMOADD.D and returns the old value") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            driveAtomic(dut, MemOpType.AMO, AtomicOpType.Add, BigInt("10000010", 16), 5)
+            dut.clock.step()
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(7.U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.io.dcache.req.bits.wdata.expect(12.U)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data.expect(7.U)
+        }
+    }
+
+    test("LSU performs AMOSWAP.W with sign-extended old value") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            driveAtomic(dut, MemOpType.AMO, AtomicOpType.Swap, BigInt("10000018", 16), BigInt("0000000012345678", 16), size = 2)
+            dut.clock.step()
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(BigInt("0000000080000001", 16).U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.io.dcache.req.bits.mask.expect("h0f".U)
+            dut.io.dcache.req.bits.wdata.expect(BigInt("1234567812345678", 16))
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data.expect(BigInt("ffffffff80000001", 16))
         }
     }
 }

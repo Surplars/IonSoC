@@ -38,6 +38,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     val opcode    = io.instr_in(6, 0)
     val funct3    = io.instr_in(14, 12)
     val funct7    = io.instr_in(31, 25)
+    val funct5    = io.instr_in(31, 27)
     val imm       = WireInit(0.U(XLEN.W))
     val rs1       = WireInit(0.U(5.W))
     val rs2       = WireInit(0.U(5.W))
@@ -91,6 +92,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
             Opcode.BRANCH    -> imm_b,
             Opcode.LOAD      -> imm_i,
             Opcode.STORE     -> imm_s,
+            Opcode.AMO       -> 0.U(XLEN.W),
             Opcode.MISC_MEM  -> 0.U(XLEN.W), // fence指令没有立即数
             Opcode.SYSTEM    -> imm_i,
             Opcode.OP        -> 0.U(XLEN.W)  // R-type指令没有立即数
@@ -117,7 +119,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     ctrl.mem_write   := mem_write
     ctrl.mem_fence   := valid && ctrlSignals(0) === true.B && opcode === Opcode.MISC_MEM && funct3 === 0.U
     ctrl.mem_fence_i := valid && ctrlSignals(0) === true.B && opcode === Opcode.MISC_MEM && funct3 === "b001".U
-    ctrl.mem_atomic  := false.B
+    ctrl.mem_atomic  := valid && ctrlSignals(0) === true.B && opcode === Opcode.AMO
     ctrl.csr_op      := csr_op
     ctrl.branch_type := branch_type
 
@@ -174,6 +176,23 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     decoded.rd      := rd
     decoded.funct3  := funct3
     decoded.op2_sel := op2_sel
+    decoded.atomic := MuxLookup(funct5, AtomicOpType.None)(
+        Seq(
+            "b00010".U -> AtomicOpType.LR,
+            "b00011".U -> AtomicOpType.SC,
+            "b00001".U -> AtomicOpType.Swap,
+            "b00000".U -> AtomicOpType.Add,
+            "b00100".U -> AtomicOpType.Xor,
+            "b01100".U -> AtomicOpType.And,
+            "b01000".U -> AtomicOpType.Or,
+            "b10000".U -> AtomicOpType.Min,
+            "b10100".U -> AtomicOpType.Max,
+            "b11000".U -> AtomicOpType.MinU,
+            "b11100".U -> AtomicOpType.MaxU
+        )
+    )
+    decoded.aq := io.instr_in(26)
+    decoded.rl := io.instr_in(25)
     decoded.br_imm  := Mux(
         valid,
         Mux(

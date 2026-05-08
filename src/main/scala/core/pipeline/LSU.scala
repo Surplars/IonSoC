@@ -58,6 +58,61 @@ class LSU(XLEN: Int = 64) extends Module {
         )
     }
 
+    private def shiftedData(rawData: UInt, access: MemoryAccessInfo): UInt = {
+        val shiftBytes = access.paddr(beatOffsetBits - 1, 0)
+        val shiftBits  = Cat(shiftBytes, 0.U(3.W))
+        (rawData >> shiftBits)(XLEN - 1, 0)
+    }
+
+    private def formatAtomicReadData(rawData: UInt, access: MemoryAccessInfo): UInt = {
+        val shifted = shiftedData(rawData, access)
+        Mux(access.size === 2.U, Cat(Fill(XLEN - 32, shifted(31)), shifted(31, 0)), shifted)
+    }
+
+    private def formatAtomicWdata(value: UInt, access: MemoryAccessInfo): UInt = {
+        val shiftBits = Cat(access.paddr(beatOffsetBits - 1, 0), 0.U(3.W))
+        Mux(access.size === 2.U, Fill(2, value(31, 0)), value) << shiftBits
+    }
+
+    private def computeAtomicWrite(oldValue: UInt, access: MemoryAccessInfo): UInt = {
+        val srcValue = shiftedData(access.wdata, access)
+        val result64 = Wire(UInt(XLEN.W))
+        val oldS64 = oldValue.asSInt
+        val srcS64 = srcValue.asSInt
+        result64 := MuxLookup(access.atomic, srcValue)(
+            Seq(
+                AtomicOpType.Swap -> srcValue,
+                AtomicOpType.Add  -> (oldValue + srcValue),
+                AtomicOpType.Xor  -> (oldValue ^ srcValue),
+                AtomicOpType.And  -> (oldValue & srcValue),
+                AtomicOpType.Or   -> (oldValue | srcValue),
+                AtomicOpType.Min  -> Mux(oldS64 < srcS64, oldValue, srcValue),
+                AtomicOpType.Max  -> Mux(oldS64 >= srcS64, oldValue, srcValue),
+                AtomicOpType.MinU -> Mux(oldValue < srcValue, oldValue, srcValue),
+                AtomicOpType.MaxU -> Mux(oldValue >= srcValue, oldValue, srcValue)
+            )
+        )
+
+        val oldWord = oldValue(31, 0)
+        val srcWord = srcValue(31, 0)
+        val result32 = Wire(UInt(32.W))
+        result32 := MuxLookup(access.atomic, srcWord)(
+            Seq(
+                AtomicOpType.Swap -> srcWord,
+                AtomicOpType.Add  -> (oldWord + srcWord),
+                AtomicOpType.Xor  -> (oldWord ^ srcWord),
+                AtomicOpType.And  -> (oldWord & srcWord),
+                AtomicOpType.Or   -> (oldWord | srcWord),
+                AtomicOpType.Min  -> Mux(oldWord.asSInt < srcWord.asSInt, oldWord, srcWord),
+                AtomicOpType.Max  -> Mux(oldWord.asSInt >= srcWord.asSInt, oldWord, srcWord),
+                AtomicOpType.MinU -> Mux(oldWord < srcWord, oldWord, srcWord),
+                AtomicOpType.MaxU -> Mux(oldWord >= srcWord, oldWord, srcWord)
+            )
+        )
+
+        Mux(access.size === 2.U, Cat(Fill(XLEN - 32, result32(31)), result32), result64)
+    }
+
     val valid_inst  = io.valid_in && !io.trap_valid && !io.trap_info_in.valid
     val accessStage = Module(new MemoryAccessStage(XLEN))
     accessStage.io.in  := io.alu_out.mem
@@ -67,6 +122,10 @@ class LSU(XLEN: Int = 64) extends Module {
     val stageFault    = accessStage.io.fault
     val is_load       = valid_inst && memAccess.op === MemOpType.Load
     val is_store      = valid_inst && memAccess.op === MemOpType.Store
+    val is_lr         = valid_inst && memAccess.op === MemOpType.LR
+    val is_sc         = valid_inst && memAccess.op === MemOpType.SC
+    val is_amo        = valid_inst && memAccess.op === MemOpType.AMO
+    val is_atomic     = is_lr || is_sc || is_amo
     val is_device     = memAccess.attrs.device
     val addr          = memAccess.paddr
     val strb          = memAccess.mask
@@ -80,14 +139,22 @@ class LSU(XLEN: Int = 64) extends Module {
             3.U -> (addr(2, 0) =/= 0.U(3.W))
         )
     )
-    val mem_addr_exception = valid_inst && memAccess.valid && (is_load || is_store) && misaligned
+    val mem_addr_exception = valid_inst && memAccess.valid && (is_load || is_store || is_atomic) && misaligned
+    val atomic_device_fault = valid_inst && memAccess.valid && is_atomic && is_device
     val access_fault = stageFault.valid
 
     val trap_info = WireInit(io.trap_info_in)
     when(mem_addr_exception && !io.trap_info_in.valid) {
         trap_info.valid  := true.B
         trap_info.pc     := io.pc_in
-        trap_info.cause  := Mux(is_store, MCause.StoreAddrMisaligned, MCause.LoadAddrMisaligned)
+        trap_info.cause  := Mux(is_store || is_sc || is_amo, MCause.StoreAddrMisaligned, MCause.LoadAddrMisaligned)
+        trap_info.value  := memAccess.vaddr
+        trap_info.is_ret := false.B
+        trap_info.ret_type := TrapReturnType.None
+    }.elsewhen(atomic_device_fault && !io.trap_info_in.valid) {
+        trap_info.valid  := true.B
+        trap_info.pc     := io.pc_in
+        trap_info.cause  := Mux(is_lr, MCause.LoadAccessFault, MCause.StoreAccessFault)
         trap_info.value  := memAccess.vaddr
         trap_info.is_ret := false.B
         trap_info.ret_type := TrapReturnType.None
@@ -106,6 +173,7 @@ class LSU(XLEN: Int = 64) extends Module {
     val mmio_err_value  = RegInit(0.U(XLEN.W))
     val cache_err_valid = RegInit(false.B)
     val cache_err_pc    = RegInit(0.U(XLEN.W))
+    val cache_err_cause = RegInit(MCause.LoadAccessFault)
     val cache_err_value = RegInit(0.U(XLEN.W))
     val store_err_valid = RegInit(false.B)
     val store_err_pc    = RegInit(0.U(XLEN.W))
@@ -145,8 +213,29 @@ class LSU(XLEN: Int = 64) extends Module {
     val storeDrainPc      = RegInit(0.U(XLEN.W))
     val storeDrainVaddr   = RegInit(0.U(XLEN.W))
 
-    val new_cache_load = raw_cache_load && !cacheLoadPending && !storeDrainPending && !pending_mem_trap
-    val new_mmio_req   = raw_mmio_req && !mmioPending && !pending_mem_trap
+    // Single-hart LR/SC reservation. Coherence-aware invalidation can replace this when multi-hart support lands.
+    val reservationValid = RegInit(false.B)
+    val reservationAddr  = RegInit(0.U(XLEN.W))
+    val reservationSize  = RegInit(0.U(3.W))
+
+    // Atomics are serialized here as cache read plus optional cache write; TileLink Atomic opcodes are not used yet.
+    val atomicPending = RegInit(false.B)
+    val atomicReadSent = RegInit(false.B)
+    val atomicWriteSent = RegInit(false.B)
+    val atomicDoWrite = RegInit(false.B)
+    val atomicAccess = RegInit(0.U.asTypeOf(new MemoryAccessInfo(XLEN)))
+    val atomicPc = RegInit(0.U(XLEN.W))
+    val atomicOldData = RegInit(0.U(XLEN.W))
+    val atomicWriteData = RegInit(0.U(XLEN.W))
+    val atomicRespValid = RegInit(false.B)
+    val atomicRespData = RegInit(0.U(XLEN.W))
+    val atomicRespErr = RegInit(false.B)
+
+    val raw_atomic_req = memAccess.valid && !mem_addr_exception && !atomic_device_fault && !access_fault && !is_device && is_atomic
+
+    val new_atomic_req = raw_atomic_req && !atomicPending && !sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !pending_mem_trap
+    val new_cache_load = raw_cache_load && !cacheLoadPending && !atomicPending && !storeDrainPending && !pending_mem_trap
+    val new_mmio_req   = raw_mmio_req && !mmioPending && !atomicPending && !pending_mem_trap
 
     when(!cacheLoadPending && new_cache_load) {
         cacheLoadPending := true.B
@@ -162,17 +251,41 @@ class LSU(XLEN: Int = 64) extends Module {
         mmioPc      := io.pc_in
     }
 
+    when(!atomicPending && new_atomic_req) {
+        atomicPending   := true.B
+        atomicReadSent  := false.B
+        atomicWriteSent := false.B
+        atomicDoWrite   := false.B
+        atomicAccess    := memAccess
+        atomicPc        := io.pc_in
+    }
+
     val do_cache_load_req = cacheLoadPending && !cacheLoadSent
     val do_mmio_req       = mmioPending && !mmioSent
-    val do_store_drain    = sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !new_cache_load && !new_mmio_req && !pending_mem_trap
+    val do_atomic_read_req = atomicPending && !atomicReadSent
+    val do_atomic_write_req = atomicPending && atomicReadSent && atomicDoWrite && !atomicWriteSent
+    val do_store_drain    =
+        sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !atomicPending && !new_cache_load && !new_mmio_req && !new_atomic_req && !pending_mem_trap
 
-    io.dcache.req.valid          := do_cache_load_req || do_store_drain
-    io.dcache.req.bits.addr      := Mux(do_cache_load_req, cacheLoadAccess.paddr, storeBuffer.io.deq_addr)
-    io.dcache.req.bits.vaddr     := Mux(do_cache_load_req, cacheLoadAccess.vaddr, storeBuffer.io.deq_addr)
-    io.dcache.req.bits.cmd       := Mux(do_cache_load_req, CacheCmd.Read, CacheCmd.Write)
-    io.dcache.req.bits.wdata     := storeBuffer.io.deq_data
-    io.dcache.req.bits.mask      := storeBuffer.io.deq_mask
-    io.dcache.req.bits.size      := Mux(do_cache_load_req, cacheLoadAccess.size, storeBuffer.io.deq_size)
+    val cacheReqAddr = Mux(
+        do_cache_load_req,
+        cacheLoadAccess.paddr,
+        Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.paddr, storeBuffer.io.deq_addr)
+    )
+    val cacheReqVaddr = Mux(
+        do_cache_load_req,
+        cacheLoadAccess.vaddr,
+        Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.vaddr, storeBuffer.io.deq_addr)
+    )
+    val cacheReqIsWrite = do_store_drain || do_atomic_write_req
+
+    io.dcache.req.valid          := do_cache_load_req || do_store_drain || do_atomic_read_req || do_atomic_write_req
+    io.dcache.req.bits.addr      := cacheReqAddr
+    io.dcache.req.bits.vaddr     := cacheReqVaddr
+    io.dcache.req.bits.cmd       := Mux(cacheReqIsWrite, CacheCmd.Write, CacheCmd.Read)
+    io.dcache.req.bits.wdata     := Mux(do_atomic_write_req, atomicWriteData, storeBuffer.io.deq_data)
+    io.dcache.req.bits.mask      := Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.mask, storeBuffer.io.deq_mask)
+    io.dcache.req.bits.size      := Mux(do_cache_load_req, cacheLoadAccess.size, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.size, storeBuffer.io.deq_size))
     io.dcache.req.bits.signed    := Mux(do_cache_load_req, cacheLoadAccess.signed, false.B)
     io.dcache.req.bits.fence     := false.B
     io.dcache.req.bits.fencei    := false.B
@@ -189,6 +302,8 @@ class LSU(XLEN: Int = 64) extends Module {
 
     val cache_load_fire  = do_cache_load_req && io.dcache.req.ready
     val store_drain_fire = do_store_drain && io.dcache.req.ready
+    val atomic_read_fire = do_atomic_read_req && io.dcache.req.ready
+    val atomic_write_fire = do_atomic_write_req && io.dcache.req.ready
     val mmio_req_fire    = do_mmio_req && io.mmio.req_ready
 
     // Cache ready 时，才能真实出队 Store 数据
@@ -203,6 +318,14 @@ class LSU(XLEN: Int = 64) extends Module {
         storeDrainPending := true.B
         storeDrainPc      := storeBuffer.io.deq_pc
         storeDrainVaddr   := storeBuffer.io.deq_vaddr
+        reservationValid  := false.B
+    }
+    when(atomic_read_fire) {
+        atomicReadSent := true.B
+    }
+    when(atomic_write_fire) {
+        atomicWriteSent := true.B
+        reservationValid := false.B
     }
     when(mmio_req_fire) {
         mmioSent := true.B
@@ -215,6 +338,57 @@ class LSU(XLEN: Int = 64) extends Module {
     when(storeDrainPending && io.dcache.resp.valid) {
         storeDrainPending := false.B
     }
+    when(atomicPending && atomicReadSent && io.dcache.resp.valid && !atomicDoWrite) {
+        val oldValue = formatAtomicReadData(io.dcache.resp.bits.rdata, atomicAccess)
+        val reservationHit = reservationValid &&
+            reservationAddr === atomicAccess.paddr &&
+            reservationSize === atomicAccess.size
+        atomicOldData := oldValue
+        atomicRespErr := io.dcache.resp.bits.err
+        atomicRespValid := true.B
+        when(io.dcache.resp.bits.err) {
+            atomicRespData := 0.U
+            atomicPending := false.B
+            atomicReadSent := false.B
+        }.elsewhen(atomicAccess.op === MemOpType.LR) {
+            reservationValid := true.B
+            reservationAddr  := atomicAccess.paddr
+            reservationSize  := atomicAccess.size
+            atomicRespData   := oldValue
+            atomicPending    := false.B
+            atomicReadSent   := false.B
+        }.elsewhen(atomicAccess.op === MemOpType.SC) {
+            when(reservationHit) {
+                atomicWriteData := atomicAccess.wdata
+                atomicDoWrite := true.B
+                atomicRespValid := false.B
+            }.otherwise {
+                atomicRespData := 1.U
+                atomicPending := false.B
+                atomicReadSent := false.B
+                reservationValid := false.B
+            }
+        }.otherwise {
+            val newValue = computeAtomicWrite(oldValue, atomicAccess)
+            atomicWriteData := formatAtomicWdata(newValue, atomicAccess)
+            atomicRespData := oldValue
+            atomicDoWrite := true.B
+            atomicRespValid := false.B
+        }
+    }
+    when(atomicPending && atomicReadSent && atomicDoWrite && atomicWriteSent && io.dcache.resp.valid) {
+        atomicRespErr := io.dcache.resp.bits.err
+        atomicRespValid := true.B
+        when(atomicAccess.op === MemOpType.SC) {
+            atomicRespData := Mux(io.dcache.resp.bits.err, 1.U, 0.U)
+        }.otherwise {
+            atomicRespData := atomicOldData
+        }
+        atomicPending := false.B
+        atomicReadSent := false.B
+        atomicWriteSent := false.B
+        atomicDoWrite := false.B
+    }
     when(mmioPending && mmioSent && io.mmio.resp_valid) {
         mmioPending := false.B
         mmioSent    := false.B
@@ -226,10 +400,12 @@ class LSU(XLEN: Int = 64) extends Module {
 
     val stall_sb_full          = is_store && !mem_addr_exception && !access_fault && !storeBuffer.io.enq_ready
     val stall_wait_store_drain = raw_cache_load && storeDrainPending
+    val stall_wait_atomic_store_drain = raw_atomic_req && (sb_has_data || storeDrainPending)
     val stall_wait_cache_load  = new_cache_load || cacheLoadPending || stall_wait_store_drain
     val stall_wait_mmio        = new_mmio_req || mmioPending
+    val stall_wait_atomic      = new_atomic_req || atomicPending
 
-    io.stall_req := stall_sb_full || stall_wait_cache_load || stall_wait_mmio
+    io.stall_req := stall_sb_full || stall_wait_cache_load || stall_wait_mmio || stall_wait_atomic || stall_wait_atomic_store_drain
 
     val wb_data        = Wire(UInt(XLEN.W))
     val default_result = io.alu_out.result
@@ -240,11 +416,16 @@ class LSU(XLEN: Int = 64) extends Module {
     val is_cache_resp_err = completing_cache_load && io.dcache.resp.bits.err
     val is_store_resp_err = completing_store_drain && io.dcache.resp.bits.err
     val is_mmio_resp_err  = completing_mmio && io.mmio.resp_err
-    val load_data_valid   = load_hit_sb || (is_load_resp && !is_cache_resp_err) || (is_mmio_load_resp && !is_mmio_resp_err)
+    val is_atomic_resp = atomicRespValid
+    val load_data_valid   = load_hit_sb || (is_load_resp && !is_cache_resp_err) || (is_mmio_load_resp && !is_mmio_resp_err) || (is_atomic_resp && !atomicRespErr)
     val load_data         = Mux(
         load_hit_sb,
         formatLoadData(storeBuffer.io.search_data, memAccess),
-        Mux(is_load_resp, formatLoadData(io.dcache.resp.bits.rdata, cacheLoadAccess), Mux(is_mmio_load_resp, formatLoadData(io.mmio.resp_data, mmioAccess), 0.U))
+        Mux(
+            is_load_resp,
+            formatLoadData(io.dcache.resp.bits.rdata, cacheLoadAccess),
+            Mux(is_mmio_load_resp, formatLoadData(io.mmio.resp_data, mmioAccess), Mux(is_atomic_resp, atomicRespData, 0.U))
+        )
     )
     val stall_valid      = RegInit(false.B)
     val stall_wb_data    = RegInit(0.U(XLEN.W))
@@ -254,6 +435,8 @@ class LSU(XLEN: Int = 64) extends Module {
         wb_data := formatLoadData(io.dcache.resp.bits.rdata, cacheLoadAccess)
     }.elsewhen(is_mmio_load_resp && !is_mmio_resp_err) {
         wb_data := formatLoadData(io.mmio.resp_data, mmioAccess)
+    }.elsewhen(is_atomic_resp && !atomicRespErr) {
+        wb_data := atomicRespData
     }.elsewhen(load_hit_sb) {
         wb_data := formatLoadData(storeBuffer.io.search_data, memAccess)
     }.elsewhen(!io.stall_req && stall_valid) {
@@ -284,6 +467,7 @@ class LSU(XLEN: Int = 64) extends Module {
     when(is_cache_resp_err) {
         cache_err_valid := true.B
         cache_err_pc    := cacheLoadPc
+        cache_err_cause := MCause.LoadAccessFault
         cache_err_value := cacheLoadAccess.vaddr
     }.elsewhen(!io.stall_req && cache_err_valid) {
         cache_err_valid := false.B
@@ -296,6 +480,15 @@ class LSU(XLEN: Int = 64) extends Module {
     }.elsewhen(!io.stall_req && store_err_valid) {
         store_err_valid := false.B
     }
+    when(atomicRespValid && atomicRespErr) {
+        cache_err_valid := true.B
+        cache_err_pc    := atomicPc
+        cache_err_cause := Mux(atomicAccess.op === MemOpType.LR, MCause.LoadAccessFault, MCause.StoreAccessFault)
+        cache_err_value := atomicAccess.vaddr
+    }
+    when(!atomicPending && atomicRespValid) {
+        atomicRespValid := false.B
+    }
 
     val update_en = !io.stall_req
     val writeback_en = update_en || load_data_valid
@@ -307,7 +500,7 @@ class LSU(XLEN: Int = 64) extends Module {
     when(cache_err_valid) {
         final_trap_info.valid  := true.B
         final_trap_info.pc     := cache_err_pc
-        final_trap_info.cause  := MCause.LoadAccessFault
+        final_trap_info.cause  := cache_err_cause
         final_trap_info.value  := cache_err_value
         final_trap_info.is_ret := false.B
         final_trap_info.ret_type := TrapReturnType.None

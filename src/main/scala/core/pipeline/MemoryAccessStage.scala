@@ -22,8 +22,8 @@ class MemoryAccessStage(XLEN: Int = 64) extends Module {
     val inDevice = Config.deviceRegions.map(inRegion).reduce(_ || _)
 
     val translateEnabled = io.in.valid && io.cfg.mmu_en && (io.cfg.satp =/= 0.U) && !io.in.attrs.device
-    val isLoad = io.in.op === MemOpType.Load
-    val isStore = io.in.op === MemOpType.Store
+    val isLoad = io.in.op === MemOpType.Load || io.in.op === MemOpType.LR
+    val isStore = io.in.op === MemOpType.Store || io.in.op === MemOpType.SC || io.in.op === MemOpType.AMO
 
     val pmp0Cfg = io.cfg.pmpcfg0(7, 0)
     val pmp0Read = pmp0Cfg(0)
