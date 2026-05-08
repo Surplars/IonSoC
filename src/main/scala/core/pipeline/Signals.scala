@@ -14,6 +14,8 @@ object CSROps extends ChiselEnum {
 object ALUOps extends ChiselEnum {
     val NOP, ADD, SUB, OR, AND, XOR, SLL, SLT, SLTU, SRL, SRA, ADDW, SUBW, SLLW, SRLW, SRAW = Value
     val MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW = Value
+    val ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MAX, MINU, MAXU, SEXTB, SEXTH = Value
+    val BSET, BCLR, BINV, BEXT, SH1ADD, SH2ADD, SH3ADD = Value
 }
 
 object MemOpType extends ChiselEnum {

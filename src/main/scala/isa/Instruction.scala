@@ -76,6 +76,7 @@ object Extension extends Enumeration {
     val RV32I, RV64I, Zicsr               = Value
     val Zifencei                          = Value
     val S                                 = Value
+    val Zba, Zbb, Zbs                     = Value
     val RV32M, RV32A, RV32F, RV32D, RV32Q = Value
     val RV64M, RV64A, RV64F, RV64D, RV64Q = Value
     val RV32Zfh, Zawrs                    = Value

@@ -162,6 +162,66 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("ALU executes Zbb logical, count, and minmax operations") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            stepAlu(dut, ALUOps.ANDN, BigInt("ff00ff00ff00ff00", 16), BigInt("00ff00ff00ff00ff", 16))
+            dut.io.alu_out.result.expect(BigInt("ff00ff00ff00ff00", 16))
+
+            stepAlu(dut, ALUOps.ORN, BigInt("00000000000000f0", 16), BigInt("00000000000000ff", 16))
+            dut.io.alu_out.result.expect(BigInt("fffffffffffffff0", 16))
+
+            stepAlu(dut, ALUOps.XNOR, BigInt("aaaaaaaaaaaaaaaa", 16), BigInt("ffff0000ffff0000", 16))
+            dut.io.alu_out.result.expect(BigInt("aaaa5555aaaa5555", 16))
+
+            stepAlu(dut, ALUOps.CLZ, BigInt("0000000000001000", 16), 0)
+            dut.io.alu_out.result.expect(51.U)
+
+            stepAlu(dut, ALUOps.CTZ, BigInt("0000000000001000", 16), 0)
+            dut.io.alu_out.result.expect(12.U)
+
+            stepAlu(dut, ALUOps.CPOP, BigInt("f0f0000000000001", 16), 0)
+            dut.io.alu_out.result.expect(9.U)
+
+            stepAlu(dut, ALUOps.MIN, BigInt("fffffffffffffffe", 16), 3)
+            dut.io.alu_out.result.expect(BigInt("fffffffffffffffe", 16))
+
+            stepAlu(dut, ALUOps.MAXU, BigInt("fffffffffffffffe", 16), 3)
+            dut.io.alu_out.result.expect(BigInt("fffffffffffffffe", 16))
+
+            stepAlu(dut, ALUOps.SEXTB, BigInt("0000000000000080", 16), 0)
+            dut.io.alu_out.result.expect(BigInt("ffffffffffffff80", 16))
+
+            stepAlu(dut, ALUOps.SEXTH, BigInt("0000000000008001", 16), 0)
+            dut.io.alu_out.result.expect(BigInt("ffffffffffff8001", 16))
+        }
+    }
+
+    test("ALU executes Zbs single-bit and Zba shifted-add operations") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            stepAlu(dut, ALUOps.BSET, 0, 40)
+            dut.io.alu_out.result.expect(BigInt("0000010000000000", 16))
+
+            stepAlu(dut, ALUOps.BCLR, BigInt("ffffffffffffffff", 16), 63)
+            dut.io.alu_out.result.expect(BigInt("7fffffffffffffff", 16))
+
+            stepAlu(dut, ALUOps.BINV, 0, 5)
+            dut.io.alu_out.result.expect(32.U)
+
+            stepAlu(dut, ALUOps.BEXT, BigInt("0000010000000000", 16), 40)
+            dut.io.alu_out.result.expect(1.U)
+
+            stepAlu(dut, ALUOps.SH1ADD, 3, 10)
+            dut.io.alu_out.result.expect(16.U)
+
+            stepAlu(dut, ALUOps.SH3ADD, 3, 10)
+            dut.io.alu_out.result.expect(34.U)
+        }
+    }
+
     test("ALU emits memory access metadata for RV64A atomics") {
         simulate(new ALU(64)) { dut =>
             init(dut)

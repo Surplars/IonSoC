@@ -130,4 +130,39 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.io.trap_info.valid.expect(true.B)
         }
     }
+
+    test("InstrDecode gates bit-manipulation extensions independently") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h4020f1b3".U) // andn x3, x1, x2
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+
+            init(dut)
+            dut.io.instr_in.poke("h28509193".U) // bseti x3, x1, 5
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+        }
+
+        simulate(new InstrDecode(64, Set(Extension.RV64I, Extension.Zbb, Extension.Zbs, Extension.Zba))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h4020f1b3".U) // andn x3, x1, x2
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.ANDN)
+
+            init(dut)
+            dut.io.instr_in.poke("h2a809193".U) // bseti x3, x1, 40
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.BSET)
+            dut.io.decoded_out.op2.expect(40.U)
+
+            init(dut)
+            dut.io.instr_in.poke("h2020a1b3".U) // sh1add x3, x1, x2
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.SH1ADD)
+        }
+    }
 }

@@ -155,22 +155,22 @@ object InstrSetI extends InstrProvider {
             Extension.RV64I
         ),
         InstrEntry( // SLL
-            genPat(Funct3.I.SLL, Opcode.OP),
+            genPat(Funct7.Z, Funct3.I.SLL, Opcode.OP),
             ALU(ALUOps.SLL, OpSel.RS1, OpSel.RS2),
             Extension.RV64I
         ),
         InstrEntry( // SLT
-            genPat(Funct3.I.SLT, Opcode.OP),
+            genPat(Funct7.Z, Funct3.I.SLT, Opcode.OP),
             ALU(ALUOps.SLT, OpSel.RS1, OpSel.RS2),
             Extension.RV64I
         ),
         InstrEntry( // SLTU
-            genPat(Funct3.I.SLTU, Opcode.OP),
+            genPat(Funct7.Z, Funct3.I.SLTU, Opcode.OP),
             ALU(ALUOps.SLTU, OpSel.RS1, OpSel.RS2),
             Extension.RV64I
         ),
         InstrEntry( // XOR
-            genPat(Funct3.I.XOR, Opcode.OP),
+            genPat(Funct7.Z, Funct3.I.XOR, Opcode.OP),
             ALU(ALUOps.XOR, OpSel.RS1, OpSel.RS2),
             Extension.RV64I
         ),
@@ -185,12 +185,12 @@ object InstrSetI extends InstrProvider {
             Extension.RV64I
         ),
         InstrEntry( // OR
-            genPat(Funct3.I.OR, Opcode.OP),
+            genPat(Funct7.Z, Funct3.I.OR, Opcode.OP),
             ALU(ALUOps.OR, OpSel.RS1, OpSel.RS2),
             Extension.RV64I
         ),
         InstrEntry( // AND
-            genPat(Funct3.I.AND, Opcode.OP),
+            genPat(Funct7.Z, Funct3.I.AND, Opcode.OP),
             ALU(ALUOps.AND, OpSel.RS1, OpSel.RS2),
             Extension.RV64I
         ),

@@ -113,6 +113,16 @@ class ALU(XLEN: Int = 64) extends Module {
     val unsignedProduct = Cat(0.U(1.W), op1) * Cat(0.U(1.W), op2)
 
     private def sext32(value: UInt): UInt = Cat(Fill(XLEN - 32, value(31)), value)
+    private def sext8(value: UInt): UInt = Cat(Fill(XLEN - 8, value(7)), value(7, 0))
+    private def sext16(value: UInt): UInt = Cat(Fill(XLEN - 16, value(15)), value(15, 0))
+    private def lowestSetBitIndex(value: UInt): UInt = {
+        Mux(value === 0.U, XLEN.U, PriorityEncoder(value))
+    }
+    private def leadingZeroCount(value: UInt): UInt = {
+        Mux(value === 0.U, XLEN.U, PriorityEncoder(Reverse(value)))
+    }
+    val bitIndex = op2(log2Ceil(XLEN) - 1, 0)
+    val bitMask = (1.U(XLEN.W) << bitIndex)(XLEN - 1, 0)
 
     val branch_type  = io.decoded_in.ctrl.branch_type
     val branch_valid = valid && (branch_type =/= BranchType.None) && !io.stall
@@ -251,7 +261,26 @@ class ALU(XLEN: Int = 64) extends Module {
                             val overflow = op1_32 === wordMin && op2_32 === Fill(32, 1.U(1.W))
                             Mux(divByZero, sext32(op1_32), Mux(overflow, 0.U, sext32((op1_32.asSInt % op2_32.asSInt).asUInt)))
                         },
-                        ALUOps.REMUW -> Mux(op2_32 === 0.U, sext32(op1_32), sext32(op1_32 % op2_32))
+                        ALUOps.REMUW -> Mux(op2_32 === 0.U, sext32(op1_32), sext32(op1_32 % op2_32)),
+                        ALUOps.ANDN -> (op1 & ~op2),
+                        ALUOps.ORN -> (op1 | ~op2),
+                        ALUOps.XNOR -> ~(op1 ^ op2),
+                        ALUOps.CLZ -> leadingZeroCount(op1),
+                        ALUOps.CTZ -> lowestSetBitIndex(op1),
+                        ALUOps.CPOP -> PopCount(op1),
+                        ALUOps.MIN -> Mux(op1.asSInt < op2.asSInt, op1, op2),
+                        ALUOps.MAX -> Mux(op1.asSInt > op2.asSInt, op1, op2),
+                        ALUOps.MINU -> Mux(op1 < op2, op1, op2),
+                        ALUOps.MAXU -> Mux(op1 > op2, op1, op2),
+                        ALUOps.SEXTB -> sext8(op1),
+                        ALUOps.SEXTH -> sext16(op1),
+                        ALUOps.BSET -> (op1 | bitMask),
+                        ALUOps.BCLR -> (op1 & ~bitMask),
+                        ALUOps.BINV -> (op1 ^ bitMask),
+                        ALUOps.BEXT -> ((op1 >> bitIndex)(0)),
+                        ALUOps.SH1ADD -> ((op1 << 1) + op2),
+                        ALUOps.SH2ADD -> ((op1 << 2) + op2),
+                        ALUOps.SH3ADD -> ((op1 << 3) + op2)
                     )
                 ),
                 op1 // CSR指令直接写回old CSR值
