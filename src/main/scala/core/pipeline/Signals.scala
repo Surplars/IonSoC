@@ -23,6 +23,10 @@ object AtomicOpType extends ChiselEnum {
     val None, Swap, Add, Xor, And, Or, Min, Max, MinU, MaxU = Value
 }
 
+object TrapReturnType extends ChiselEnum {
+    val None, MRET, SRET, MNRET = Value
+}
+
 class MemoryAttrs extends Bundle {
     val cacheable  = Bool()
     val device     = Bool()
@@ -70,6 +74,7 @@ class TrapInfo(XLEN: Int) extends Bundle {
     val cause  = UInt(XLEN.W)
     val value  = UInt(XLEN.W)
     val is_ret = Bool()
+    val ret_type = TrapReturnType.Type()
 }
 
 object BranchType extends ChiselEnum {

@@ -62,6 +62,7 @@ class ALU(XLEN: Int = 64) extends Module {
     trap_info.cause  := Mux(io.csr_illegal, MCause.IllegalInstr, io.trap_info_in.cause)
     trap_info.value  := io.trap_info_in.value
     trap_info.is_ret := io.trap_info_in.is_ret
+    trap_info.ret_type := io.trap_info_in.ret_type
 
     // 数据转发，优先级：mem > wb > alu输入
     when(!valid) {

@@ -54,7 +54,7 @@ class IonSoC(
     core.io.meip     := plic.map(_.io.meip).getOrElse(false.B)
     core.io.ssip     := false.B
     core.io.stip     := false.B
-    core.io.seip     := false.B
+    core.io.seip     := plic.map(_.io.seip).getOrElse(false.B)
 
     plic.foreach { device =>
         device.io.sources := io.ext_irq_sources

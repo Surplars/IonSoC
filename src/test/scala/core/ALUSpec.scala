@@ -19,6 +19,7 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
         dut.io.trap_info_in.cause.poke(0.U)
         dut.io.trap_info_in.value.poke(0.U)
         dut.io.trap_info_in.is_ret.poke(false.B)
+        dut.io.trap_info_in.ret_type.poke(TrapReturnType.None)
 
         dut.io.decoded_in.rs1.poke(0.U)
         dut.io.decoded_in.rs2.poke(0.U)

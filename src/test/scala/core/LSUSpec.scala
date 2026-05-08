@@ -17,6 +17,7 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         dut.io.trap_info_in.cause.poke(0.U)
         dut.io.trap_info_in.value.poke(0.U)
         dut.io.trap_info_in.is_ret.poke(false.B)
+        dut.io.trap_info_in.ret_type.poke(TrapReturnType.None)
 
         dut.io.alu_out.result.poke(0.U)
         dut.io.alu_out.funct3.poke(0.U)

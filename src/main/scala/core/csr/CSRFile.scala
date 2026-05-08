@@ -6,6 +6,7 @@ import soc.isa.CSR
 import soc.isa.InterruptCauseCode
 import soc.core.pipeline.CSROps
 import soc.core.pipeline.MemorySystemConfig
+import soc.core.pipeline.TrapReturnType
 import soc.isa.PrivilegeLevel
 import soc.isa.Extension
 import soc.config.Config
@@ -34,6 +35,19 @@ object SStatus {
     val SIE  = 1
     val SPIE = 5
     val SPP  = 8
+
+    def setSIE(mstatus: UInt, enable: Bool): UInt = {
+        val mask = (BigInt(1) << SIE).U(mstatus.getWidth.W)
+        Mux(enable, mstatus | mask, mstatus & ~mask)
+    }
+    def setSPIE(mstatus: UInt, enable: Bool): UInt = {
+        val mask = (BigInt(1) << SPIE).U(mstatus.getWidth.W)
+        Mux(enable, mstatus | mask, mstatus & ~mask)
+    }
+    def setSPP(mstatus: UInt, level: UInt): UInt = {
+        val mask = (BigInt(1) << SPP).U(mstatus.getWidth.W)
+        Mux(level === PrivilegeLevel.Supervisor, mstatus | mask, mstatus & ~mask)
+    }
 }
 
 class CSRFile(
@@ -57,6 +71,7 @@ class CSRFile(
         val trap_cause = Input(UInt(XLEN.W))
         val trap_value = Input(UInt(XLEN.W))
         val is_ret     = Input(Bool())
+        val ret_type   = Input(TrapReturnType.Type())
         // 中断信号
         val msip = Input(Bool())
         val mtip = Input(Bool())
@@ -114,6 +129,16 @@ class CSRFile(
 
     private def bitMask(bit: Int): UInt = (BigInt(1) << bit).U(XLEN.W)
     private def interruptCause(code: Int): UInt = ((BigInt(1) << (XLEN - 1)) | code).U(XLEN.W)
+    private def causeBit(cause: UInt): UInt = {
+        val index = cause(log2Ceil(XLEN) - 1, 0)
+        (1.U(XLEN.W) << index)(XLEN - 1, 0)
+    }
+    private def trapVector(baseAndMode: UInt, cause: UInt): UInt = {
+        val base = baseAndMode & ~3.U(XLEN.W)
+        val mode = baseAndMode(1, 0)
+        val code = cause(XLEN - 2, 0)
+        Mux(cause(XLEN - 1) && mode === 1.U, base + (code << 2), base)
+    }
 
     val supervisorInterruptMask =
         bitMask(InterruptCauseCode.SupervisorSoft) |
@@ -272,6 +297,7 @@ class CSRFile(
 
     val pendingEnabled = mie & mip
     val machineVisiblePending = pendingEnabled & ~mideleg
+    val supervisorVisiblePending = pendingEnabled & mideleg & supervisorInterruptMask
     val machineInterruptCause = Wire(UInt(XLEN.W))
     machineInterruptCause := 0.U
     when(machineVisiblePending(InterruptCauseCode.MachineExt)) {
@@ -291,35 +317,64 @@ class CSRFile(
     val machineInterruptPending = machineVisiblePending =/= 0.U
     val machineInterrupt = machineInterruptPending && machineInterruptGlobalEnable
 
-    val mtvecBase = mtvec & ~3.U(XLEN.W)
-    val mtvecMode = mtvec(1, 0)
-    val machineInterruptCode = machineInterruptCause(XLEN - 2, 0)
-    val machineTrapVector = Mux(
-        machineInterrupt && mtvecMode === 1.U,
-        mtvecBase + (machineInterruptCode << 2),
-        mtvecBase
-    )
+    val supervisorInterruptCause = Wire(UInt(XLEN.W))
+    supervisorInterruptCause := 0.U
+    when(supervisorVisiblePending(InterruptCauseCode.SupervisorExt)) {
+        supervisorInterruptCause := interruptCause(InterruptCauseCode.SupervisorExt)
+    }.elsewhen(supervisorVisiblePending(InterruptCauseCode.SupervisorSoft)) {
+        supervisorInterruptCause := interruptCause(InterruptCauseCode.SupervisorSoft)
+    }.elsewhen(supervisorVisiblePending(InterruptCauseCode.SupervisorTimer)) {
+        supervisorInterruptCause := interruptCause(InterruptCauseCode.SupervisorTimer)
+    }
+    val supervisorInterruptGlobalEnable =
+        (CurrentPrivLevel < PrivilegeLevel.Supervisor) ||
+            (CurrentPrivLevel === PrivilegeLevel.Supervisor && mstatus(SStatus.SIE))
+    val supervisorInterruptPending = supervisorVisiblePending =/= 0.U
+    val supervisorInterrupt = supervisorInterruptPending && supervisorInterruptGlobalEnable
+
+    val selectedInterruptIsSupervisor = !machineInterrupt && supervisorInterrupt
+    val selectedInterruptCause = Mux(selectedInterruptIsSupervisor, supervisorInterruptCause, machineInterruptCause)
+    val selectedInterruptVector = Mux(selectedInterruptIsSupervisor, trapVector(stvec, selectedInterruptCause), trapVector(mtvec, selectedInterruptCause))
+
+    val trapCauseBit = causeBit(io.trap_cause)
+    val trapToSupervisor = io.trap_valid && CurrentPrivLevel =/= PrivilegeLevel.Machine &&
+        Mux(io.trap_cause(XLEN - 1), (mideleg & trapCauseBit) =/= 0.U, (medeleg & trapCauseBit) =/= 0.U)
+    val requestedTrapVector = Mux(trapToSupervisor, trapVector(stvec, io.trap_cause), trapVector(mtvec, io.trap_cause))
 
     // 处理中断和异常
     when(io.trap_valid) {
-        val curMie = mstatus(MStatus.MIE)
-        val trapMstatus = MStatus.setMPP(MStatus.setMIE(MStatus.setMPIE(mstatus, curMie), false.B), CurrentPrivLevel)
-        mepc   := io.trap_pc
-        mcause := io.trap_cause
-        mtval  := io.trap_value
-        mstatus := trapMstatus
-        CurrentPrivLevel := PrivilegeLevel.Machine // 切换到机器模式
-	    }.elsewhen(io.is_ret) {
-	        // 处理 MRET 指令，恢复到 mepc 指向的地址
-	        mstatus := MStatus.setMPIE(MStatus.setMPP(MStatus.setMIE(mstatus, mstatus(MStatus.MPIE)), 0.U), true.B)
-	        CurrentPrivLevel := mstatus(MStatus.MPP) // 恢复特权级
-	    }
+        when(trapToSupervisor) {
+            val curSie = mstatus(SStatus.SIE)
+            val trapSstatus = SStatus.setSPP(SStatus.setSIE(SStatus.setSPIE(mstatus, curSie), false.B), CurrentPrivLevel)
+            sepc    := io.trap_pc
+            scause  := io.trap_cause
+            stval   := io.trap_value
+            mstatus := trapSstatus
+            CurrentPrivLevel := PrivilegeLevel.Supervisor
+        }.otherwise {
+            val curMie = mstatus(MStatus.MIE)
+            val trapMstatus = MStatus.setMPP(MStatus.setMIE(MStatus.setMPIE(mstatus, curMie), false.B), CurrentPrivLevel)
+            mepc    := io.trap_pc
+            mcause  := io.trap_cause
+            mtval   := io.trap_value
+            mstatus := trapMstatus
+            CurrentPrivLevel := PrivilegeLevel.Machine
+        }
+    }.elsewhen(io.is_ret) {
+        when(io.ret_type === TrapReturnType.SRET) {
+            mstatus := SStatus.setSPP(SStatus.setSPIE(SStatus.setSIE(mstatus, mstatus(SStatus.SPIE)), true.B), PrivilegeLevel.User)
+            CurrentPrivLevel := Mux(mstatus(SStatus.SPP), PrivilegeLevel.Supervisor, PrivilegeLevel.User)
+        }.otherwise {
+            mstatus := MStatus.setMPIE(MStatus.setMPP(MStatus.setMIE(mstatus, mstatus(MStatus.MPIE)), 0.U), true.B)
+            CurrentPrivLevel := mstatus(MStatus.MPP)
+        }
+    }
 
-    io.epc_out  := mepc
-    io.tvec_out := machineTrapVector
-    io.interrupt_cause := machineInterruptCause
+    io.epc_out  := Mux(CurrentPrivLevel === PrivilegeLevel.Supervisor, sepc, mepc)
+    io.tvec_out := Mux(io.trap_valid, requestedTrapVector, selectedInterruptVector)
+    io.interrupt_cause := selectedInterruptCause
     io.ie_out   := mstatus(MStatus.MIE)
-    io.interrupt := machineInterrupt
+    io.interrupt := machineInterrupt || supervisorInterrupt
     io.mem_cfg_out.priv := CurrentPrivLevel
     io.mem_cfg_out.mmu_en := features.mmu.B
     io.mem_cfg_out.satp := satp

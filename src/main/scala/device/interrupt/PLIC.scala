@@ -8,6 +8,7 @@ object PLICMap {
     val PriorityBase: BigInt = 0x000000
     val PendingBase: BigInt = 0x001000
     val EnableBase: BigInt = 0x002000
+    val EnableStride: BigInt = 0x000080
     val ContextBase: BigInt = 0x200000
     val ContextStride: BigInt = 0x001000
     val ThresholdOffset: BigInt = 0x0
@@ -23,6 +24,7 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
         val tl      = Flipped(new TLBundle(params))
         val sources = Input(Vec(nSources + 1, Bool()))
         val meip    = Output(Bool())
+        val seip    = Output(Bool())
     })
 
     private val beatBytes = params.dataWidth / 8
@@ -30,11 +32,12 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
     private val sourceIdWidth = log2Ceil(nSources + 1).max(1)
     private val maxPriority = ((BigInt(1) << priorityWidth) - 1).U(priorityWidth.W)
     private val priorityAddrBits = log2Ceil((nSources + 1) * 4)
+    private val nContexts = 2
 
     val priority = RegInit(VecInit(Seq.fill(nSources + 1)(0.U(priorityWidth.W))))
     val pending  = RegInit(VecInit(Seq.fill(nSources + 1)(false.B)))
-    val enable   = RegInit(0.U((nSources + 1).W))
-    val threshold = RegInit(0.U(priorityWidth.W))
+    val enable   = RegInit(VecInit(Seq.fill(nContexts)(0.U((nSources + 1).W))))
+    val threshold = RegInit(VecInit(Seq.fill(nContexts)(0.U(priorityWidth.W))))
 
     priority(0) := 0.U
     pending(0) := false.B
@@ -64,13 +67,6 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
         ((oldBeat & ~maskBits) | (io.tl.a.bits.data & maskBits)) >> laneShift
     }
 
-    val notifyEligible = Wire(Vec(nSources + 1, Bool()))
-    val claimEligible = Wire(Vec(nSources + 1, Bool()))
-    for (id <- 0 to nSources) {
-        notifyEligible(id) := pending(id) && enable(id) && priority(id) > threshold
-        claimEligible(id) := pending(id) && enable(id) && priority(id) =/= 0.U
-    }
-
     private def selectBest(eligible: Vec[Bool]): (UInt, UInt) = {
         val selected = (1 to nSources).foldLeft((0.U(sourceIdWidth.W), 0.U(priorityWidth.W))) {
             case ((curId, curPriority), id) =>
@@ -80,10 +76,23 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
         selected
     }
 
-    val (notifyId, _) = selectBest(notifyEligible)
-    val (claimId, _) = selectBest(claimEligible)
+    val notifyIds = Wire(Vec(nContexts, UInt(sourceIdWidth.W)))
+    val claimIds = Wire(Vec(nContexts, UInt(sourceIdWidth.W)))
+    for (ctx <- 0 until nContexts) {
+        val notifyEligible = Wire(Vec(nSources + 1, Bool()))
+        val claimEligible = Wire(Vec(nSources + 1, Bool()))
+        for (id <- 0 to nSources) {
+            notifyEligible(id) := pending(id) && enable(ctx)(id) && priority(id) > threshold(ctx)
+            claimEligible(id) := pending(id) && enable(ctx)(id) && priority(id) =/= 0.U
+        }
+        val (notifyId, _) = selectBest(notifyEligible)
+        val (claimId, _) = selectBest(claimEligible)
+        notifyIds(ctx) := notifyId
+        claimIds(ctx) := claimId
+    }
 
-    io.meip := notifyId =/= 0.U
+    io.meip := notifyIds(0) =/= 0.U
+    io.seip := notifyIds(1) =/= 0.U
 
     val respValid  = RegInit(false.B)
     val respData   = RegInit(0.U(params.dataWidth.W))
@@ -108,11 +117,17 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
         }.elsewhen(wordOffset === PLICMap.PendingBase.U) {
             readData := placeRead(pending.asUInt)
         }.elsewhen(wordOffset === PLICMap.EnableBase.U) {
-            readData := placeRead(enable)
+            readData := placeRead(enable(0))
+        }.elsewhen(wordOffset === (PLICMap.EnableBase + PLICMap.EnableStride).U) {
+            readData := placeRead(enable(1))
         }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ThresholdOffset).U) {
-            readData := placeRead(threshold)
+            readData := placeRead(threshold(0))
         }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ClaimCompleteOffset).U) {
-            readData := placeRead(claimId)
+            readData := placeRead(claimIds(0))
+        }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ThresholdOffset).U) {
+            readData := placeRead(threshold(1))
+        }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ClaimCompleteOffset).U) {
+            readData := placeRead(claimIds(1))
         }
 
         when(isWrite) {
@@ -121,20 +136,32 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
                 val merged = mergeLaneMasked(priority(id))
                 priority(id) := Mux(merged(priorityWidth - 1, 0) > maxPriority, maxPriority, merged(priorityWidth - 1, 0))
             }.elsewhen(wordOffset === PLICMap.EnableBase.U) {
-                enable := mergeLaneMasked(enable)(nSources, 0) & ~1.U((nSources + 1).W)
+                enable(0) := mergeLaneMasked(enable(0))(nSources, 0) & ~1.U((nSources + 1).W)
+            }.elsewhen(wordOffset === (PLICMap.EnableBase + PLICMap.EnableStride).U) {
+                enable(1) := mergeLaneMasked(enable(1))(nSources, 0) & ~1.U((nSources + 1).W)
             }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ThresholdOffset).U) {
-                val merged = mergeLaneMasked(threshold)
-                threshold := Mux(merged(priorityWidth - 1, 0) > maxPriority, maxPriority, merged(priorityWidth - 1, 0))
+                val merged = mergeLaneMasked(threshold(0))
+                threshold(0) := Mux(merged(priorityWidth - 1, 0) > maxPriority, maxPriority, merged(priorityWidth - 1, 0))
+            }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ThresholdOffset).U) {
+                val merged = mergeLaneMasked(threshold(1))
+                threshold(1) := Mux(merged(priorityWidth - 1, 0) > maxPriority, maxPriority, merged(priorityWidth - 1, 0))
             }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ClaimCompleteOffset).U) {
                 val completeId = mergeLaneMasked(0.U)(sourceIdWidth - 1, 0)
                 when(completeId =/= 0.U && completeId <= nSources.U) {
                     pending(completeId) := false.B
                 }
+            }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ClaimCompleteOffset).U) {
+                val completeId = mergeLaneMasked(0.U)(sourceIdWidth - 1, 0)
+                when(completeId =/= 0.U && completeId <= nSources.U) {
+                    pending(completeId) := false.B
+                }
             }
-        }.elsewhen(isRead && wordOffset === (PLICMap.ContextBase + PLICMap.ClaimCompleteOffset).U && claimId =/= 0.U) {
+        }.elsewhen(isRead && wordOffset === (PLICMap.ContextBase + PLICMap.ClaimCompleteOffset).U && claimIds(0) =/= 0.U) {
             // Claim is a side-effecting read: it returns the selected source and
             // clears that pending bit so software can service it exactly once.
-            pending(claimId) := false.B
+            pending(claimIds(0)) := false.B
+        }.elsewhen(isRead && wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ClaimCompleteOffset).U && claimIds(1) =/= 0.U) {
+            pending(claimIds(1)) := false.B
         }
 
         respValid  := true.B

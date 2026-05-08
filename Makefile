@@ -28,6 +28,7 @@ BASIC_ELF = $(PAYLOAD_BUILD_DIR)/basic.elf
 CLINT32_ELF = $(PAYLOAD_BUILD_DIR)/clint32.elf
 TLERROR_ELF = $(PAYLOAD_BUILD_DIR)/tlerror.elf
 PLIC_ELF = $(PAYLOAD_BUILD_DIR)/plic.elf
+PLIC_S_ELF = $(PAYLOAD_BUILD_DIR)/plic_s.elf
 VSOC_BIN = $(VERILATOR_OBJ_DIR)/VSoc
 ICACHE_VSOC_BIN = $(ICACHE_VERILATOR_OBJ_DIR)/VSoc
 RTL_SCALA_SOURCES = $(shell find src/main/scala -name '*.scala') src/test/scala/sim.scala
@@ -82,6 +83,10 @@ $(PLIC_ELF): $(PAYLOAD_SRC_DIR)/plic.S $(PAYLOAD_LDS)
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	$(CC) -march=rv$(WORD_LEN)imzicsr -mabi=lp$(WORD_LEN) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
 
+$(PLIC_S_ELF): $(PAYLOAD_SRC_DIR)/plic_s.S $(PAYLOAD_LDS)
+	@mkdir -p $(PAYLOAD_BUILD_DIR)
+	$(CC) -march=rv$(WORD_LEN)imzicsr -mabi=lp$(WORD_LEN) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
+
 $(VSOC_BIN): $(RTL_STAMP) $(TB) $(FILE_LIST) $(SIM_RTL_DIR)/filelist.f
 	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(SYSTEM_VERILOG_DIR) -f $(FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) --trace --Mdir $(VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
 	@$(MAKE) -C $(VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j 15
@@ -109,15 +114,19 @@ verilator-run-tlerror: $(TLERROR_ELF) $(VSOC_BIN)
 verilator-run-plic: $(PLIC_ELF) $(VSOC_BIN)
 	./$(VSOC_BIN) --payload plic XP $(PLIC_ELF)
 
+verilator-run-plic-s: $(PLIC_S_ELF) $(VSOC_BIN)
+	./$(VSOC_BIN) --payload plic_s SIP $(PLIC_S_ELF)
+
 verilator-clint32: verilator-run-clint32
 
 verilator-tlerror: verilator-run-tlerror
 
-regress: $(VSOC_BIN) $(TIMER_ELF) $(CLINT32_ELF) $(TLERROR_ELF) $(PLIC_ELF)
+regress: $(VSOC_BIN) $(TIMER_ELF) $(CLINT32_ELF) $(TLERROR_ELF) $(PLIC_ELF) $(PLIC_S_ELF)
 	./$(VSOC_BIN) --payload timer S!!P $(TIMER_ELF)
 	./$(VSOC_BIN) --payload clint32 CP $(CLINT32_ELF)
 	./$(VSOC_BIN) --payload tlerror EP $(TLERROR_ELF)
 	./$(VSOC_BIN) --payload plic XP $(PLIC_ELF)
+	./$(VSOC_BIN) --payload plic_s SIP $(PLIC_S_ELF)
 
 regress-icache: $(ICACHE_VSOC_BIN) $(TIMER_ELF)
 	./$(ICACHE_VSOC_BIN) --payload timer S!!P $(TIMER_ELF)

@@ -358,7 +358,7 @@ bool run_one_test(const std::string &bin_path,
     while (sim_time < MAX_SIM_CYCLES)
     {
         CLEAR_EXT_IRQ_SOURCES(dut);
-        dut->io_ext_irq_sources_1 = (test_name == "plic" && sim_time >= 80) ? 1 : 0;
+        dut->io_ext_irq_sources_1 = ((test_name == "plic" || test_name == "plic_s") && sim_time >= 80) ? 1 : 0;
 
         dut->clock ^= 1;
         dut->eval();
@@ -380,7 +380,7 @@ bool run_one_test(const std::string &bin_path,
             printf("[trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x t0=0x%016" PRIx64 " t3=0x%016" PRIx64 " a0=0x%016" PRIx64 " a7=0x%016" PRIx64
                    " lsu_stall=%u load_valid=%u load=0x%016" PRIx64 " alu_rd=%u alu_w=%u alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
                    " br_v=%u br_t=%u br_target=0x%016" PRIx64 " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
-                   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " plic_src1=%u plic_pend1=%u plic_prio1=%u plic_en=0x%08x plic_th=%u mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
+                   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " plic_src1=%u mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
                    sim_time,
                    (uint64_t)dut->io_debug_pc,
                    (uint32_t)dut->io_debug_instr,
@@ -409,10 +409,6 @@ bool run_one_test(const std::string &bin_path,
                    (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mstatus,
                    (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mie,
                    (uint32_t)dut->rootp->io_ext_irq_sources_1,
-                   (uint32_t)dut->rootp->SimTop__DOT__plic__DOT__pending_1,
-                   (uint32_t)dut->rootp->SimTop__DOT__plic__DOT__priority_1,
-                   (uint32_t)dut->rootp->SimTop__DOT__plic__DOT__enable,
-                   (uint32_t)dut->rootp->SimTop__DOT__plic__DOT__threshold,
                    (uint32_t)cur_mtip,
                    (uint64_t)dut->rootp->SimTop__DOT__clint__DOT__mtime,
                    cur_mtimecmp);

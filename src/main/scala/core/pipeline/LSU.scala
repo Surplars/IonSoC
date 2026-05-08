@@ -89,12 +89,14 @@ class LSU(XLEN: Int = 64) extends Module {
         trap_info.cause  := Mux(is_store, MCause.StoreAddrMisaligned, MCause.LoadAddrMisaligned)
         trap_info.value  := memAccess.vaddr
         trap_info.is_ret := false.B
+        trap_info.ret_type := TrapReturnType.None
     }.elsewhen(stageFault.valid && !io.trap_info_in.valid) {
         trap_info.valid  := true.B
         trap_info.pc     := io.pc_in
         trap_info.cause  := stageFault.cause
         trap_info.value  := stageFault.value
         trap_info.is_ret := false.B
+        trap_info.ret_type := TrapReturnType.None
     }
 
     val mmio_err_valid  = RegInit(false.B)
@@ -307,18 +309,21 @@ class LSU(XLEN: Int = 64) extends Module {
         final_trap_info.cause  := MCause.LoadAccessFault
         final_trap_info.value  := cache_err_value
         final_trap_info.is_ret := false.B
+        final_trap_info.ret_type := TrapReturnType.None
     }.elsewhen(store_err_valid) {
         final_trap_info.valid  := true.B
         final_trap_info.pc     := store_err_pc
         final_trap_info.cause  := MCause.StoreAccessFault
         final_trap_info.value  := store_err_value
         final_trap_info.is_ret := false.B
+        final_trap_info.ret_type := TrapReturnType.None
     }.elsewhen(mmio_err_valid) {
         final_trap_info.valid  := true.B
         final_trap_info.pc     := mmio_err_pc
         final_trap_info.cause  := mmio_err_cause
         final_trap_info.value  := mmio_err_value
         final_trap_info.is_ret := false.B
+        final_trap_info.ret_type := TrapReturnType.None
     }
 
     val out_trap      = RegEnable(final_trap_info, 0.U.asTypeOf(io.trap_info_in), update_en)

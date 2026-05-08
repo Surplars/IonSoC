@@ -83,6 +83,7 @@ class PLICSpec extends AnyFunSuite with ChiselSim {
             dut.io.sources(1).poke(false.B)
             dut.io.sources(2).poke(false.B)
             dut.io.meip.expect(true.B)
+            dut.io.seip.expect(false.B)
             assert((readWord(dut, 0x001000) & 0x6) == 0x6)
 
             assert(readWord(dut, 0x200004) == 2)
@@ -107,6 +108,24 @@ class PLICSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.meip.expect(false.B)
             assert(readWord(dut, 0x200004) == 1)
+        }
+    }
+
+    test("PLIC exposes an independent supervisor context") {
+        simulate(new PLIC(params, nSources = 4)) { dut =>
+            init(dut)
+
+            write(dut, 0x000004, 4)
+            write(dut, 0x002080, 0x2)   // S context enable word
+            write(dut, 0x201000, 0)     // S context threshold
+            dut.io.sources(1).poke(true.B)
+            dut.clock.step()
+            dut.io.sources(1).poke(false.B)
+
+            dut.io.meip.expect(false.B)
+            dut.io.seip.expect(true.B)
+            assert(readWord(dut, 0x201004) == 1)
+            dut.io.seip.expect(false.B)
         }
     }
 }

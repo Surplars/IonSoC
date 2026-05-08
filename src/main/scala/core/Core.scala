@@ -172,6 +172,7 @@ class Core(
     csr.io.trap_cause := Mux(has_pipeline_trap, lsu.io.trap_info_out.cause, interruptCause)
     csr.io.trap_value := Mux(has_pipeline_trap, lsu.io.trap_info_out.value, 0.U)
     csr.io.is_ret     := ret_redirect
+    csr.io.ret_type   := lsu.io.trap_info_out.ret_type
     csr.io.ie_out     := DontCare
     // ifetch
     ifetch.io.stall         := pipe_stall

@@ -196,6 +196,13 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     )
     trap_info.value := io.instr_in
     trap_info.is_ret := branch_type === BranchType.MRET || branch_type === BranchType.SRET || branch_type === BranchType.MNRET
+    trap_info.ret_type := MuxLookup(branch_type, TrapReturnType.None)(
+        Seq(
+            BranchType.MRET  -> TrapReturnType.MRET,
+            BranchType.SRET  -> TrapReturnType.SRET,
+            BranchType.MNRET -> TrapReturnType.MNRET
+        )
+    )
 
     io.valid_out      := RegNext(valid, false.B)
     io.decoded_out    := RegEnable(Mux(valid, decoded, defaultDecoded), defaultDecoded, update_en)
