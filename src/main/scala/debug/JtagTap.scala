@@ -12,10 +12,14 @@ class JtagIO extends Bundle {
 
 object JtagInstruction {
     def idcode(irLen: Int): UInt = 1.U(irLen.W)
+    def dtmcs(irLen: Int): UInt = 0x10.U(irLen.W)
+    def dmi(irLen: Int): UInt = 0x11.U(irLen.W)
     def bypass(irLen: Int): UInt = ((BigInt(1) << irLen) - 1).U(irLen.W)
 }
 
-class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10e31913L) extends Module {
+class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10e31913L, val dmiAddrBits: Int = 7) extends Module {
+    require(drLen >= dmiAddrBits + 34, "JTAG DMI data register must fit addr + data + op")
+
     val io = IO(new Bundle {
         val jtag = new JtagIO
 
@@ -78,8 +82,11 @@ class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10
 
     val stateNext = nextState(state, io.jtag.tms)
     val idcodeData = idcode.U(drLen.W)
+    val dtmcsData = (((1 << 12) | (dmiAddrBits << 4) | 1) & 0xffffffffL).U(drLen.W)
     val bypassSelected = instr === JtagInstruction.bypass(irLen)
     val idcodeSelected = instr === JtagInstruction.idcode(irLen)
+    val dtmcsSelected = instr === JtagInstruction.dtmcs(irLen)
+    val dmiSelected = instr === JtagInstruction.dmi(irLen)
 
     when(tckRise) {
         state := stateNext
@@ -101,6 +108,8 @@ class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10
                     drShift := 0.U
                 }.elsewhen(idcodeSelected) {
                     drShift := idcodeData
+                }.elsewhen(dtmcsSelected) {
+                    drShift := dtmcsData
                 }.otherwise {
                     drShift := io.dr_in
                 }
@@ -109,13 +118,19 @@ class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10
                 when(bypassSelected) {
                     tdoReg := bypassBit
                     bypassBit := io.jtag.tdi
+                }.elsewhen(dtmcsSelected) {
+                    tdoReg := drShift(0)
+                    drShift := Cat(0.U((drLen - 32).W), io.jtag.tdi, drShift(31, 1))
+                }.elsewhen(dmiSelected) {
+                    tdoReg := drShift(0)
+                    drShift := Cat(0.U((drLen - dmiAddrBits - 34).W), io.jtag.tdi, drShift(dmiAddrBits + 33, 1))
                 }.otherwise {
                     tdoReg := drShift(0)
                     drShift := Cat(io.jtag.tdi, drShift(drLen - 1, 1))
                 }
             }
             is(updateDR) {
-                when(!idcodeSelected && !bypassSelected) {
+                when(dmiSelected) {
                     drUpdate := drShift
                 }
             }

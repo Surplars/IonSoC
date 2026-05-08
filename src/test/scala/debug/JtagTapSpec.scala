@@ -89,12 +89,23 @@ class JtagTapSpec extends AnyFunSuite with ChiselSim {
         simulate(new JtagTap(irLen = 5, drLen = 64, idcode = 0x10e31913L)) { dut =>
             init(dut)
             resetTap(dut)
-            shiftIR(dut, value = 2, irLen = 5)
+            shiftIR(dut, value = 0x11, irLen = 5)
 
-            dut.io.dr_in.poke("h1122334455667788".U)
-            val captured = captureAndShiftDR(dut, bits = 64, input = BigInt("8877665544332211", 16))
-            assert(captured == BigInt("1122334455667788", 16))
-            dut.io.dr_out.expect("h8877665544332211".U)
+            dut.io.dr_in.poke("h123456789a".U)
+            val captured = captureAndShiftDR(dut, bits = 41, input = BigInt("15555555555", 16))
+            assert(captured == BigInt("123456789a", 16))
+            dut.io.dr_out.expect("h15555555555".U)
+        }
+    }
+
+    test("DTMCS instruction exposes DMI width and version") {
+        simulate(new JtagTap(irLen = 5, drLen = 64, idcode = 0x10e31913L)) { dut =>
+            init(dut)
+            resetTap(dut)
+            shiftIR(dut, value = 0x10, irLen = 5)
+            val dtmcs = captureAndShiftDR(dut, bits = 32)
+            assert((dtmcs & 0xf) == 1)
+            assert(((dtmcs >> 4) & 0x3f) == 7)
         }
     }
 }

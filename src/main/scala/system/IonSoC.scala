@@ -71,7 +71,7 @@ class IonSoC(
     jtag.io.jtag.tck := io.jtag_tck
     jtag.io.jtag.tdi := io.jtag_tdi
     io.jtag_tdo := jtag.io.jtag.tdo
-    jtag.io.dr_in := Cat(0.U(23.W), debugModule.io.dmi_rdata, 0.U(9.W))
+    jtag.io.dr_in := Cat(0.U(23.W), 0.U(7.W), debugModule.io.dmi_rdata, 0.U(2.W))
     debugModule.io.dmi_valid := RegNext(jtag.io.update_dr, false.B)
     debugModule.io.dmi_write := jtag.io.dr_out(1, 0) === 2.U
     debugModule.io.dmi_addr  := jtag.io.dr_out(8, 2)

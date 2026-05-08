@@ -115,6 +115,9 @@ verilator-build-icache: $(ICACHE_VSOC_BIN)
 verilator: payload $(VSOC_BIN)
 	./$(VSOC_BIN) $(RUN_ARGS)
 
+verilator-jtag: payload $(VSOC_BIN)
+	ION_JTAG_RBB_PORT=$${ION_JTAG_RBB_PORT:-9824} ./$(VSOC_BIN) $(RUN_ARGS)
+
 verilator-run-timer: $(TIMER_ELF) $(VSOC_BIN)
 	./$(VSOC_BIN) --payload timer S!!P $(TIMER_ELF)
 

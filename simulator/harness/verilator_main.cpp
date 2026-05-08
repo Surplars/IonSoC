@@ -10,6 +10,9 @@
 #include <cinttypes>
 #include <fcntl.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <vector>
 #include <verilated.h>
 #include <verilated_vcd_c.h>
@@ -65,6 +68,7 @@ struct SimOptions
 	bool direct_elf_load = true;
 	bool uart_stdin = false;
 	bool trace_irq = false;
+	int jtag_rbb_port = 0;
 	uint64_t max_cycles = MAX_SIM_CYCLES;
 };
 
@@ -249,6 +253,134 @@ class InterruptModel
 	uint8_t last_src1_ = 0xff;
 	uint8_t last_pending_ = 0xff;
 	uint8_t last_fire_ = 0xff;
+};
+
+class RemoteBitbang
+{
+  public:
+	explicit RemoteBitbang(int port) : port_(port) {}
+
+	bool init()
+	{
+		if (port_ <= 0)
+			return true;
+		listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+		if (listen_fd_ < 0)
+		{
+			perror("jtag socket");
+			return false;
+		}
+		int one = 1;
+		setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+		sockaddr_in addr{};
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		addr.sin_port = htons((uint16_t)port_);
+		if (bind(listen_fd_, (sockaddr *)&addr, sizeof(addr)) != 0)
+		{
+			perror("jtag bind");
+			return false;
+		}
+		if (listen(listen_fd_, 1) != 0)
+		{
+			perror("jtag listen");
+			return false;
+		}
+		set_nonblock(listen_fd_);
+		printf("[jtag]: remote-bitbang listening on 127.0.0.1:%d\n", port_);
+		return true;
+	}
+
+	~RemoteBitbang()
+	{
+		if (client_fd_ >= 0)
+			close(client_fd_);
+		if (listen_fd_ >= 0)
+			close(listen_fd_);
+	}
+
+	void drive(VSoc *dut)
+	{
+		if (port_ <= 0)
+			return;
+		accept_client();
+		if (client_fd_ < 0)
+			return;
+
+		char ch = 0;
+		ssize_t n = recv(client_fd_, &ch, 1, 0);
+		if (n == 1)
+		{
+			handle(dut, ch);
+			return;
+		}
+		if (n == 0)
+		{
+			close(client_fd_);
+			client_fd_ = -1;
+			return;
+		}
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			return;
+		perror("jtag recv");
+		close(client_fd_);
+		client_fd_ = -1;
+	}
+
+  private:
+	static void set_nonblock(int fd)
+	{
+		int flags = fcntl(fd, F_GETFL, 0);
+		if (flags >= 0)
+			fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+	}
+
+	void accept_client()
+	{
+		if (client_fd_ >= 0 || listen_fd_ < 0)
+			return;
+		client_fd_ = accept(listen_fd_, nullptr, nullptr);
+		if (client_fd_ >= 0)
+		{
+			set_nonblock(client_fd_);
+			printf("[jtag]: remote-bitbang client connected\n");
+		}
+		else if (errno != EAGAIN && errno != EWOULDBLOCK)
+		{
+			perror("jtag accept");
+		}
+	}
+
+	void handle(VSoc *dut, char ch)
+	{
+		if (ch >= '0' && ch <= '7')
+		{
+			unsigned value = (unsigned)(ch - '0');
+			dut->io_jtag_tck = (value >> 2) & 1;
+			dut->io_jtag_tms = (value >> 1) & 1;
+			dut->io_jtag_tdi = value & 1;
+		}
+		else if (ch == 'r')
+		{
+			char tdo = dut->io_jtag_tdo ? '1' : '0';
+			(void)send(client_fd_, &tdo, 1, MSG_NOSIGNAL);
+		}
+		else if (ch == 'R')
+		{
+			dut->io_jtag_tms = 1;
+			dut->io_jtag_tck = 0;
+			dut->io_jtag_tdi = 0;
+		}
+		else if (ch == 'Q')
+		{
+			close(client_fd_);
+			client_fd_ = -1;
+		}
+	}
+
+	int port_ = 0;
+	int listen_fd_ = -1;
+	int client_fd_ = -1;
 };
 
 class FlashImage
@@ -635,6 +767,7 @@ bool run_one_test(const std::string &bin_path,
 	opts.direct_elf_load = !env_enabled("ION_BOOTROM_ONLY");
 	opts.uart_stdin = env_enabled("ION_UART_STDIN");
 	opts.trace_irq = env_enabled("ION_TRACE_IRQ");
+	opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
 	opts.max_cycles = env_u64("ION_MAX_CYCLES", MAX_SIM_CYCLES);
 	const char *flash = std::getenv("ION_FLASH_IMAGE");
 	if (flash != nullptr)
@@ -689,11 +822,19 @@ bool run_sim(const SimOptions &opts)
 
 	UartStdio uart(opts.uart_stdin);
 	InterruptModel irq(opts.trace_irq);
+	RemoteBitbang jtag(opts.jtag_rbb_port);
+	if (!jtag.init())
+	{
+		delete dut;
+		delete tfp;
+		return false;
+	}
 
 	for (int i = 0; i < 6; ++i)
 	{
 		irq.drive(dut, opts.test_name, sim_time);
 		uart.drive_rx(dut);
+		jtag.drive(dut);
 		dut->clock ^= 1;
 		dut->eval();
 		if (opts.trace_wave)
@@ -714,6 +855,7 @@ bool run_sim(const SimOptions &opts)
 	{
 		irq.drive(dut, opts.test_name, sim_time);
 		uart.drive_rx(dut);
+		jtag.drive(dut);
 
 		dut->clock ^= 1;
 		dut->eval();

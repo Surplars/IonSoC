@@ -44,15 +44,13 @@ class IonSoCSpec extends AnyFunSuite with ChiselSim {
         simulate(new IonSoC()) { dut =>
             tieOffExternalInterrupts(dut)
             resetTap(dut)
-            shiftIR(dut, value = 2, irLen = 5)
+            shiftIR(dut, value = 0x11, irLen = 5)
 
             dut.clock.step(4)
             val runningPc = dut.io.debug.pc.peek().litValue
 
             dmiWrite(dut, DebugModuleMap.DMControl, BigInt("80000001", 16))
-            dut.clock.step(4)
-            val haltedPc = dut.io.debug.pc.peek().litValue
-            assert(haltedPc >= runningPc)
+            val haltedPc = waitStablePc(dut)
             dut.clock.step(8)
             dut.io.debug.pc.expect(haltedPc.U)
 
@@ -95,10 +93,27 @@ class IonSoCSpec extends AnyFunSuite with ChiselSim {
         pulseTck(dut, tms = true)
         pulseTck(dut, tms = false)
         pulseTck(dut, tms = false)
-        for (i <- 0 until 64) {
-            pulseTck(dut, tms = i == 63, tdi = ((packet >> i) & 1) != 0)
+        for (i <- 0 until 41) {
+            pulseTck(dut, tms = i == 40, tdi = ((packet >> i) & 1) != 0)
         }
         pulseTck(dut, tms = true)
         pulseTck(dut, tms = false)
+    }
+
+    private def waitStablePc(dut: IonSoC, maxCycles: Int = 32): BigInt = {
+        var stable = 0
+        var last = dut.io.debug.pc.peek().litValue
+        for (_ <- 0 until maxCycles if stable < 4) {
+            dut.clock.step()
+            val now = dut.io.debug.pc.peek().litValue
+            if (now == last) {
+                stable += 1
+            } else {
+                stable = 0
+                last = now
+            }
+        }
+        assert(stable >= 4, "PC did not become stable after debug halt request")
+        last
     }
 }
