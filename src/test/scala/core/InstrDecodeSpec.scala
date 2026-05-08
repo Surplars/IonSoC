@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
 import soc.core.pipeline._
+import soc.isa.{MCause, PrivilegeLevel}
 
 class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
     private def init(dut: InstrDecode): Unit = {
@@ -11,6 +12,7 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
         dut.io.trap_valid.poke(false.B)
         dut.io.pc_in.poke("h80000000".U)
         dut.io.instr_in.poke("h00000013".U)
+        dut.io.priv.poke(PrivilegeLevel.Machine)
         dut.io.pred_taken_in.poke(false.B)
         dut.io.redirect.poke(false.B)
         dut.io.stall.poke(false.B)
@@ -33,6 +35,28 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.io.trap_info.valid.expect(false.B)
             dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.SRA)
             dut.io.decoded_out.op2.expect(63.U)
+        }
+    }
+
+    test("InstrDecode reports ECALL cause for the current privilege mode") {
+        simulate(new InstrDecode(64)) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h00000073".U) // ecall
+
+            dut.io.priv.poke(PrivilegeLevel.Machine)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+            dut.io.trap_info.cause.expect(MCause.EcallFromMMode)
+
+            dut.io.priv.poke(PrivilegeLevel.Supervisor)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+            dut.io.trap_info.cause.expect(MCause.EcallFromSMode)
+
+            dut.io.priv.poke(PrivilegeLevel.User)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+            dut.io.trap_info.cause.expect(MCause.EcallFromUMode)
         }
     }
 }

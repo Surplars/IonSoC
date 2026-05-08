@@ -81,6 +81,7 @@ class LSU(XLEN: Int = 64) extends Module {
         )
     )
     val mem_addr_exception = valid_inst && memAccess.valid && (is_load || is_store) && misaligned
+    val access_fault = stageFault.valid
 
     val trap_info = WireInit(io.trap_info_in)
     when(mem_addr_exception && !io.trap_info_in.valid) {
@@ -113,7 +114,7 @@ class LSU(XLEN: Int = 64) extends Module {
 
     val storeBuffer = Module(new StoreBuffer(4, XLEN, XLEN))
 
-    storeBuffer.io.enq_valid := is_store && !is_device && !mem_addr_exception && !pending_mem_trap
+    storeBuffer.io.enq_valid := is_store && !is_device && !mem_addr_exception && !access_fault && !pending_mem_trap
     storeBuffer.io.enq_pc    := io.pc_in
     storeBuffer.io.enq_vaddr := memAccess.vaddr
     storeBuffer.io.enq_addr  := addr
@@ -121,14 +122,14 @@ class LSU(XLEN: Int = 64) extends Module {
     storeBuffer.io.enq_mask  := strb
     storeBuffer.io.enq_size  := memAccess.size
 
-    storeBuffer.io.search_addr := Mux(is_load && !is_device, addr, 0.U)
-    storeBuffer.io.search_mask := Mux(is_load && !is_device, memAccess.mask, 0.U)
+    storeBuffer.io.search_addr := Mux(is_load && !is_device && !access_fault, addr, 0.U)
+    storeBuffer.io.search_mask := Mux(is_load && !is_device && !access_fault, memAccess.mask, 0.U)
 
-    val load_hit_sb    = is_load && !is_device && storeBuffer.io.search_hit
+    val load_hit_sb    = is_load && !is_device && !access_fault && storeBuffer.io.search_hit
     val load_miss_sb   = is_load && !is_device && !storeBuffer.io.search_hit
     val sb_has_data    = storeBuffer.io.deq_valid
-    val raw_cache_load = is_load && !is_device && !load_hit_sb && !mem_addr_exception
-    val raw_mmio_req   = memAccess.valid && !mem_addr_exception && is_device && (is_load || is_store)
+    val raw_cache_load = is_load && !is_device && !load_hit_sb && !mem_addr_exception && !access_fault
+    val raw_mmio_req   = memAccess.valid && !mem_addr_exception && !access_fault && is_device && (is_load || is_store)
 
     val cacheLoadPending = RegInit(false.B)
     val cacheLoadSent    = RegInit(false.B)
@@ -223,7 +224,7 @@ class LSU(XLEN: Int = 64) extends Module {
     val completing_store_drain = storeDrainPending && io.dcache.resp.valid
     val completing_mmio        = mmioPending && mmioSent && io.mmio.resp_valid
 
-    val stall_sb_full          = is_store && !mem_addr_exception && !storeBuffer.io.enq_ready
+    val stall_sb_full          = is_store && !mem_addr_exception && !access_fault && !storeBuffer.io.enq_ready
     val stall_wait_store_drain = raw_cache_load && storeDrainPending
     val stall_wait_cache_load  = new_cache_load || cacheLoadPending || stall_wait_store_drain
     val stall_wait_mmio        = new_mmio_req || mmioPending

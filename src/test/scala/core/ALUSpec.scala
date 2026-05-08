@@ -79,4 +79,29 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.alu_out.result.expect(BigInt("0000000040000000", 16))
         }
     }
+
+    test("ALU suppresses CSR write side effects for CSR read forms") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.decoded_in.ctrl.csr_op.poke(CSROps.RS)
+            dut.io.decoded_in.op1.poke("hf14".U) // mhartid
+            dut.io.decoded_in.rs2.poke(0.U)
+            dut.clock.step()
+            dut.io.csr_valid.expect(true.B)
+            dut.io.csr_write.expect(false.B)
+
+            dut.io.decoded_in.ctrl.csr_op.poke(CSROps.RW)
+            dut.io.decoded_in.rs2.poke(0.U)
+            dut.clock.step()
+            dut.io.csr_valid.expect(true.B)
+            dut.io.csr_write.expect(true.B)
+
+            dut.io.decoded_in.ctrl.csr_op.poke(CSROps.RSI)
+            dut.io.decoded_in.rs2.poke(0.U)
+            dut.clock.step()
+            dut.io.csr_valid.expect(true.B)
+            dut.io.csr_write.expect(false.B)
+        }
+    }
 }

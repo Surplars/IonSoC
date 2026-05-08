@@ -139,7 +139,9 @@ class ALU(XLEN: Int = 64) extends Module {
     )
 
     io.csr_valid := valid && csr_op =/= CSROps.None
-    io.csr_write := io.csr_valid && io.csr_addr =/= 0.U
+    io.csr_write := io.csr_valid && io.csr_addr =/= 0.U &&
+        !((csr_op === CSROps.RS || csr_op === CSROps.RC) && io.decoded_in.rs2 === 0.U) &&
+        !((csr_op === CSROps.RSI || csr_op === CSROps.RCI) && io.decoded_in.rs2 === 0.U)
     io.csr_cmd   := Mux(io.csr_write, csr_op.asUInt, 0.U)
     io.csr_wdata := op2
 

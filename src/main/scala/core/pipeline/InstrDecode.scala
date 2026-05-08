@@ -8,6 +8,7 @@ import soc.isa.Opcode
 import soc.isa.Extension
 import soc.isa.InstrTable
 import soc.isa.MCause
+import soc.isa.PrivilegeLevel
 
 class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enabledExt) extends Module {
     val io = IO(new Bundle {
@@ -15,6 +16,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         val trap_valid    = Input(Bool())
         val pc_in         = Input(UInt(XLEN.W))
         val instr_in      = Input(UInt(32.W))
+        val priv          = Input(UInt(2.W))
         val pred_taken_in = Input(Bool())
         val redirect      = Input(Bool())
         val stall         = Input(Bool())
@@ -189,7 +191,13 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         illegal,
         MuxLookup(branch_type, MCause.IllegalInstr)(
             Seq(
-                BranchType.ECALL -> MCause.EcallFromMMode
+                BranchType.ECALL -> MuxLookup(io.priv, MCause.EcallFromMMode)(
+                    Seq(
+                        PrivilegeLevel.User       -> MCause.EcallFromUMode,
+                        PrivilegeLevel.Supervisor -> MCause.EcallFromSMode,
+                        PrivilegeLevel.Machine    -> MCause.EcallFromMMode
+                    )
+                )
             )
         ),
         0.U

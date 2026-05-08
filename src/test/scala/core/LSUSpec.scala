@@ -4,10 +4,12 @@ import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
 import soc.core.pipeline._
-import soc.isa.MCause
+import soc.isa.{MCause, PrivilegeLevel}
 import soc.memory.cache.CacheCmd
 
 class LSUSpec extends AnyFunSuite with ChiselSim {
+    private val pmpNapotRwx = 0x1f
+
     private def init(dut: LSU): Unit = {
         dut.io.pc_in.poke("h80000000".U)
         dut.io.valid_in.poke(false.B)
@@ -197,6 +199,64 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             dut.io.dcache.req.valid.expect(true.B)
             dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
             dut.io.dcache.req.bits.addr.expect(BigInt("10000020", 16))
+        }
+    }
+
+    test("LSU blocks supervisor memory access without a matching PMP entry") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.pc_in.poke("h80000100".U)
+            driveLoad(dut, BigInt("10000000", 16))
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.io.mmio.req_valid.expect(false.B)
+
+            dut.clock.step()
+            dut.io.trap_info_out.valid.expect(true.B)
+            dut.io.trap_info_out.pc.expect(BigInt("80000100", 16))
+            dut.io.trap_info_out.cause.expect(MCause.LoadAccessFault)
+            dut.io.trap_info_out.value.expect(BigInt("10000000", 16))
+        }
+    }
+
+    test("LSU permits supervisor memory access through an all-address NAPOT PMP entry") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr0.poke(BigInt("ffffffffffffffff", 16).U)
+            driveLoad(dut, BigInt("10000008", 16))
+            dut.clock.step()
+
+            dut.io.trap_info_out.valid.expect(false.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.io.dcache.req.bits.addr.expect(BigInt("10000008", 16))
+        }
+    }
+
+    test("LSU reports supervisor store PMP denials as StoreAccessFault without enqueuing") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.pmpcfg0.poke(0x19.U) // NAPOT, read-only
+            dut.io.mem_cfg.pmpaddr0.poke(BigInt("ffffffffffffffff", 16).U)
+            dut.io.pc_in.poke("h80000140".U)
+            driveStore(dut, BigInt("10000010", 16), BigInt("feedfacecafebeef", 16))
+            dut.io.dcache.req.valid.expect(false.B)
+
+            dut.clock.step()
+            dut.io.trap_info_out.valid.expect(true.B)
+            dut.io.trap_info_out.pc.expect(BigInt("80000140", 16))
+            dut.io.trap_info_out.cause.expect(MCause.StoreAccessFault)
+            dut.io.trap_info_out.value.expect(BigInt("10000010", 16))
+
+            driveNoMem(dut)
+            dut.clock.step()
+            dut.io.dcache.req.valid.expect(false.B)
         }
     }
 }

@@ -202,9 +202,13 @@ class CSRFile(
     val rdata_pre = MuxLookup(io.addr, 0.U)(mapping.toSeq)
 
     val addr_valid = mapping.keys.map(_ === io.addr).reduce(_ || _)
+    val csrRequiredPriv = io.addr(9, 8)
+    val csrReadOnly = io.addr(11, 10) === 3.U
+    val csrPrivOk = CurrentPrivLevel >= csrRequiredPriv
+    val csrReadonlyWrite = io.write && csrReadOnly
 
     io.rdata   := rdata_pre
-    io.illegal := io.valid && !addr_valid
+    io.illegal := io.valid && (!addr_valid || !csrPrivOk || csrReadonlyWrite)
 
     val wdata_final = MuxLookup(io.cmd, 0.U)(
         Seq(

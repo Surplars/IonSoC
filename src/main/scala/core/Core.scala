@@ -188,6 +188,7 @@ class Core(
     idecode.io.redirect      := ifetch.io.redirect
     idecode.io.pc_in         := ifetch.io.pc_out
     idecode.io.instr_in      := ifetch.io.instr_out
+    idecode.io.priv          := csr.io.mem_cfg_out.priv
     idecode.io.pred_taken_in := ifetch.io.pred_taken_out
     idecode.io.reg_rs1_data  := register.io.rs1_data
     idecode.io.reg_rs2_data  := register.io.rs2_data

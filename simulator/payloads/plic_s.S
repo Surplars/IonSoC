@@ -13,6 +13,14 @@ _start:
     la   t0, supervisor_trap
     csrw stvec, t0
 
+    # No-MMU supervisor smoke tests need M-mode firmware to open PMP before
+    # mret. This single NAPOT entry grants S-mode access to the simulated
+    # physical address space.
+    li   t0, -1
+    csrw pmpaddr0, t0
+    li   t0, 0x1f        # R/W/X, NAPOT
+    csrw pmpcfg0, t0
+
     li   t0, PLIC_PRIORITY1
     li   t1, 3
     sw   t1, 0(t0)

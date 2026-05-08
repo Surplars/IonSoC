@@ -156,4 +156,24 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
             dut.io.rdata.expect(MCause.SupervisorExtInt)
         }
     }
+
+    test("CSRFile enforces CSR privilege and read-only address encoding") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+
+            enterSupervisor(dut)
+
+            dut.io.valid.poke(true.B)
+            dut.io.write.poke(false.B)
+            dut.io.addr.poke(CSR.SSTATUS)
+            dut.io.illegal.expect(false.B)
+
+            dut.io.addr.poke(CSR.MSTATUS)
+            dut.io.illegal.expect(true.B)
+
+            dut.io.write.poke(true.B)
+            dut.io.addr.poke(CSR.MVENDORID)
+            dut.io.illegal.expect(true.B)
+        }
+    }
 }
