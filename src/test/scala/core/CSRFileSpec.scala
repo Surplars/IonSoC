@@ -121,16 +121,21 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
 
             takeTrap(dut, BigInt("80000040", 16), MCause.IllegalInstr.litValue, BigInt("dead", 16))
             dut.io.mem_cfg_out.priv.expect(PrivilegeLevel.Supervisor)
-            dut.io.epc_out.expect(BigInt("80000040", 16))
+            dut.io.addr.poke(CSR.SEPC)
+            dut.io.rdata.expect(BigInt("80000040", 16))
             dut.io.addr.poke(CSR.SCAUSE)
             dut.io.rdata.expect(MCause.IllegalInstr)
             dut.io.addr.poke(CSR.STVAL)
             dut.io.rdata.expect(BigInt("dead", 16))
 
             writeCsr(dut, CSR.SEPC, BigInt("80000088", 16))
-            takeRet(dut, TrapReturnType.SRET)
-            dut.io.mem_cfg_out.priv.expect(PrivilegeLevel.Supervisor)
+            dut.io.ret_type.poke(TrapReturnType.SRET)
+            dut.io.is_ret.poke(true.B)
             dut.io.epc_out.expect(BigInt("80000088", 16))
+            dut.clock.step()
+            dut.io.is_ret.poke(false.B)
+            dut.io.ret_type.poke(TrapReturnType.None)
+            dut.io.mem_cfg_out.priv.expect(PrivilegeLevel.Supervisor)
         }
     }
 
@@ -151,7 +156,8 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
 
             takeTrap(dut, BigInt("80000044", 16), MCause.SupervisorExtInt.litValue)
             dut.io.mem_cfg_out.priv.expect(PrivilegeLevel.Supervisor)
-            dut.io.epc_out.expect(BigInt("80000044", 16))
+            dut.io.addr.poke(CSR.SEPC)
+            dut.io.rdata.expect(BigInt("80000044", 16))
             dut.io.addr.poke(CSR.SCAUSE)
             dut.io.rdata.expect(MCause.SupervisorExtInt)
         }
@@ -174,6 +180,29 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
             dut.io.write.poke(true.B)
             dut.io.addr.poke(CSR.MVENDORID)
             dut.io.illegal.expect(true.B)
+        }
+    }
+
+    test("CSRFile exposes supervisor capability in misa and returns through sepc on SRET") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+
+            dut.io.addr.poke(CSR.MISA)
+            dut.io.rdata.expect((BigInt(2) << 62) | (1L << ('i' - 'a')) | (1L << ('m' - 'a')) | (1L << ('a' - 'a')) | (1L << ('s' - 'a')))
+
+            writeCsr(dut, CSR.MEDELEG, 1 << 2)
+            writeCsr(dut, CSR.STVEC, BigInt("80000200", 16))
+            writeCsr(dut, CSR.MSTATUS, 1 << 11)
+            takeRet(dut, TrapReturnType.MRET)
+            dut.io.mem_cfg_out.priv.expect(PrivilegeLevel.Supervisor)
+
+            writeCsr(dut, CSR.SEPC, BigInt("80000088", 16))
+            dut.io.ret_type.poke(TrapReturnType.SRET)
+            dut.io.is_ret.poke(true.B)
+            dut.io.epc_out.expect(BigInt("80000088", 16))
+            dut.clock.step()
+            dut.io.is_ret.poke(false.B)
+            dut.io.ret_type.poke(TrapReturnType.None)
         }
     }
 }

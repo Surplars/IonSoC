@@ -37,7 +37,7 @@ VSOC_BIN = $(VERILATOR_OBJ_DIR)/VSoc
 ICACHE_VSOC_BIN = $(ICACHE_VERILATOR_OBJ_DIR)/VSoc
 RTL_SCALA_SOURCES = $(shell find src/main/scala -name '*.scala') src/test/scala/sim.scala
 
-RUN_ARGS := $(filter-out verilator,$(MAKECMDGOALS))
+RUN_ARGS := $(filter-out verilator verilator-jtag,$(MAKECMDGOALS))
 
 NEMU_HOME = ${HOME}/NEMU
 NOOP_HOME = ${HOME}/IonSoC
@@ -116,7 +116,7 @@ verilator: payload $(VSOC_BIN)
 	./$(VSOC_BIN) $(RUN_ARGS)
 
 verilator-jtag: payload $(VSOC_BIN)
-	ION_JTAG_RBB_PORT=$${ION_JTAG_RBB_PORT:-9824} ./$(VSOC_BIN) $(RUN_ARGS)
+	env ION_JTAG_ONLY=1 ION_JTAG_RBB_PORT=$${ION_JTAG_RBB_PORT:-9824} ./$(VSOC_BIN) $(RUN_ARGS)
 
 verilator-run-timer: $(TIMER_ELF) $(VSOC_BIN)
 	./$(VSOC_BIN) --payload timer S!!P $(TIMER_ELF)
@@ -172,7 +172,7 @@ clean:
 	rm -rf $(PAYLOAD_BUILD_DIR)/*
 # 	rm -rf $(SYSTEM_VERILOG_DIR)/*
 
-ifeq ($(filter verilator,$(MAKECMDGOALS)),verilator)
+ifneq ($(filter verilator verilator-jtag,$(MAKECMDGOALS)),)
 $(RUN_ARGS):
 	@:
 endif

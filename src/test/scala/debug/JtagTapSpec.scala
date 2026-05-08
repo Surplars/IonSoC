@@ -17,9 +17,9 @@ class JtagTapSpec extends AnyFunSuite with ChiselSim {
     private def pulseTck(dut: JtagTap, tms: Boolean, tdi: Boolean = false): Boolean = {
         dut.io.jtag.tms.poke(tms.B)
         dut.io.jtag.tdi.poke(tdi.B)
+        val tdo = dut.io.jtag.tdo.peek().litToBoolean
         dut.io.jtag.tck.poke(true.B)
         dut.clock.step()
-        val tdo = dut.io.jtag.tdo.peek().litToBoolean
         dut.io.jtag.tck.poke(false.B)
         dut.clock.step()
         tdo

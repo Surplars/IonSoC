@@ -68,6 +68,8 @@ struct SimOptions
 	bool direct_elf_load = true;
 	bool uart_stdin = false;
 	bool trace_irq = false;
+	bool trace_dmi = false;
+	bool jtag_only = false;
 	int jtag_rbb_port = 0;
 	uint64_t max_cycles = MAX_SIM_CYCLES;
 };
@@ -258,7 +260,11 @@ class InterruptModel
 class RemoteBitbang
 {
   public:
-	explicit RemoteBitbang(int port) : port_(port) {}
+	explicit RemoteBitbang(int port, bool cycle_per_command = false)
+	    : port_(port),
+	      cycle_per_command_(cycle_per_command),
+	      trace_(env_enabled("ION_TRACE_JTAG")),
+	      trace_dmi_(env_enabled("ION_TRACE_DMI")) {}
 
 	bool init()
 	{
@@ -359,17 +365,32 @@ class RemoteBitbang
 			dut->io_jtag_tck = (value >> 2) & 1;
 			dut->io_jtag_tms = (value >> 1) & 1;
 			dut->io_jtag_tdi = value & 1;
-		}
-		else if (ch == 'r')
-		{
-			char tdo = dut->io_jtag_tdo ? '1' : '0';
-			(void)send(client_fd_, &tdo, 1, MSG_NOSIGNAL);
+			step_command_clock(dut);
+			if (trace_)
+				printf("[jtag-rbb] write %c tck=%u tms=%u tdi=%u tdo=%u\n", ch,
+				       (unsigned)dut->io_jtag_tck, (unsigned)dut->io_jtag_tms,
+				       (unsigned)dut->io_jtag_tdi, (unsigned)dut->io_jtag_tdo);
 		}
 		else if (ch == 'R')
 		{
-			dut->io_jtag_tms = 1;
-			dut->io_jtag_tck = 0;
-			dut->io_jtag_tdi = 0;
+			dut->eval();
+			char tdo = dut->io_jtag_tdo ? '1' : '0';
+			(void)send(client_fd_, &tdo, 1, MSG_NOSIGNAL);
+			if (trace_)
+				printf("[jtag-rbb] read tdo=%c\n", tdo);
+		}
+		else if (ch >= 'r' && ch <= 'u')
+		{
+			bool trst = ((ch - 'r') & 0x2) != 0;
+			if (trst)
+			{
+				dut->io_jtag_tms = 1;
+				dut->io_jtag_tck = 0;
+				dut->io_jtag_tdi = 0;
+			}
+			step_command_clock(dut);
+			if (trace_)
+				printf("[jtag-rbb] reset cmd %c trst=%u\n", ch, (unsigned)trst);
 		}
 		else if (ch == 'Q')
 		{
@@ -381,6 +402,50 @@ class RemoteBitbang
 	int port_ = 0;
 	int listen_fd_ = -1;
 	int client_fd_ = -1;
+	bool cycle_per_command_ = false;
+	bool trace_ = false;
+	bool trace_dmi_ = false;
+	uint8_t last_dmi_valid_ = 0;
+
+	void step_command_clock(VSoc *dut)
+	{
+		if (!cycle_per_command_)
+			return;
+		// The current Chisel TAP samples TCK edges in the SoC clock domain.
+		// In JTAG-only mode, advance a full SoC tick for every remote_bitbang
+		// drive command so OpenOCD cannot outrun the synchronizer.
+		if (dut->clock)
+		{
+			dut->clock = 0;
+			dut->eval();
+		}
+		dut->clock = 1;
+		dut->eval();
+		trace_dmi(dut);
+		dut->clock = 0;
+		dut->eval();
+	}
+
+	void trace_dmi(VSoc *dut)
+	{
+		if (!trace_dmi_)
+			return;
+		uint8_t dmi_valid = dut->rootp->SimTop__DOT__debugModule_io_dmi_valid_REG;
+		if (dmi_valid && !last_dmi_valid_)
+		{
+			uint64_t dr = dut->rootp->SimTop__DOT__jtag__DOT__drUpdate;
+			unsigned op = dr & 0x3;
+			unsigned addr = (dr >> 34) & 0x7f;
+			uint32_t wdata = (uint32_t)((dr >> 2) & 0xffffffffu);
+			uint32_t rdata = dut->rootp->SimTop__DOT___debugModule_io_dmi_rdata;
+			uint32_t dmcontrol = dut->rootp->SimTop__DOT__debugModule__DOT__dmcontrol;
+			uint32_t dmstatus = dut->rootp->SimTop__DOT__debugModule__DOT__dmstatus;
+			printf("[dmi-cmd] op=%u addr=0x%02x wdata=0x%08x rdata=0x%08x dmcontrol=0x%08x dmstatus=0x%08x\n",
+			       op, addr, wdata, rdata, dmcontrol, dmstatus);
+			fflush(stdout);
+		}
+		last_dmi_valid_ = dmi_valid;
+	}
 };
 
 class FlashImage
@@ -428,7 +493,24 @@ int main(int argc, char **argv, char **env)
 {
 	printf("\n\n");
 	bool all_pass = true;
-	if (argc < 2)
+	if (env_enabled("ION_JTAG_ONLY"))
+	{
+		SimOptions opts;
+		opts.test_name = "jtag";
+		opts.trace_wave = env_enabled("ION_TRACE_WAVE");
+		opts.direct_elf_load = !env_enabled("ION_BOOTROM_ONLY");
+		opts.uart_stdin = env_enabled("ION_UART_STDIN");
+		opts.trace_irq = env_enabled("ION_TRACE_IRQ");
+		opts.trace_dmi = env_enabled("ION_TRACE_DMI");
+		opts.jtag_only = true;
+		opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
+		opts.max_cycles = env_u64("ION_MAX_CYCLES", 0);
+		const char *flash = std::getenv("ION_FLASH_IMAGE");
+		if (flash != nullptr)
+			opts.flash_image = flash;
+		return run_sim(opts) ? 0 : 1;
+	}
+	else if (argc < 2)
 	{
 		// 默认测试 payload (假设无后缀)
 		all_pass &= run_one_test(kPayloadElfPath, "payload", true, "S!!P");
@@ -767,6 +849,7 @@ bool run_one_test(const std::string &bin_path,
 	opts.direct_elf_load = !env_enabled("ION_BOOTROM_ONLY");
 	opts.uart_stdin = env_enabled("ION_UART_STDIN");
 	opts.trace_irq = env_enabled("ION_TRACE_IRQ");
+	opts.trace_dmi = env_enabled("ION_TRACE_DMI");
 	opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
 	opts.max_cycles = env_u64("ION_MAX_CYCLES", MAX_SIM_CYCLES);
 	const char *flash = std::getenv("ION_FLASH_IMAGE");
@@ -822,7 +905,7 @@ bool run_sim(const SimOptions &opts)
 
 	UartStdio uart(opts.uart_stdin);
 	InterruptModel irq(opts.trace_irq);
-	RemoteBitbang jtag(opts.jtag_rbb_port);
+	RemoteBitbang jtag(opts.jtag_rbb_port, opts.jtag_only);
 	if (!jtag.init())
 	{
 		delete dut;
@@ -850,8 +933,9 @@ bool run_sim(const SimOptions &opts)
 	uint64_t last_pc = UINT64_MAX;
 	uint64_t last_mtimecmp = UINT64_MAX;
 	uint8_t last_mtip = 0xff;
+	uint8_t last_dmi_valid = 0;
 
-	while (sim_time < opts.max_cycles)
+	while (opts.max_cycles == 0 || sim_time < opts.max_cycles)
 	{
 		irq.drive(dut, opts.test_name, sim_time);
 		uart.drive_rx(dut);
@@ -913,12 +997,29 @@ bool run_sim(const SimOptions &opts)
 				   cur_mtimecmp);
 		}
 		irq.sample(dut, sim_time);
+		if (opts.trace_dmi)
+		{
+			uint8_t dmi_valid = dut->rootp->SimTop__DOT__debugModule_io_dmi_valid_REG;
+			if (dmi_valid && !last_dmi_valid)
+			{
+				uint64_t dr = dut->rootp->SimTop__DOT__jtag__DOT__drUpdate;
+				unsigned op = dr & 0x3;
+				unsigned addr = (dr >> 34) & 0x7f;
+				uint32_t wdata = (uint32_t)((dr >> 2) & 0xffffffffu);
+				uint32_t rdata = dut->rootp->SimTop__DOT___debugModule_io_dmi_rdata;
+				uint32_t dmcontrol = dut->rootp->SimTop__DOT__debugModule__DOT__dmcontrol;
+				uint32_t dmstatus = dut->rootp->SimTop__DOT__debugModule__DOT__dmstatus;
+				printf("[dmi %6" PRIu64 "] op=%u addr=0x%02x wdata=0x%08x rdata=0x%08x dmcontrol=0x%08x dmstatus=0x%08x\n",
+				       sim_time, op, addr, wdata, rdata, dmcontrol, dmstatus);
+			}
+			last_dmi_valid = dmi_valid;
+		}
 
 		uart.capture_tx(dut);
 
 		int a0_live = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
 		int a7_live = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
-		if (a7_live == 93)
+		if (!opts.jtag_only && a7_live == 93)
 		{
 			saw_exit = true;
 			sim_time++;
@@ -935,9 +1036,11 @@ bool run_sim(const SimOptions &opts)
 	int a7 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
 
 	bool uart_pass = opts.expected_uart.empty() || (uart.output().find(opts.expected_uart) != std::string::npos);
-	bool pass = (saw_exit && a7 == 93 && a0 == 0 && uart_pass);
+	bool pass = opts.jtag_only ? true : (saw_exit && a7 == 93 && a0 == 0 && uart_pass);
 
-	if (pass)
+	if (opts.jtag_only)
+		printf("[%s]: JTAG server active on port %d%s\n", opts.test_name.c_str(), opts.jtag_rbb_port, CEND);
+	else if (pass)
 		printf("[%s]: gp=%d, a7=%d, a0=%d, test %spassed%s\n", opts.test_name.c_str(), gp, a7, a0, GREEN, CEND);
 	else if (a7 == 93)
 		printf("[%s]: gp=%d, a7=%d, a0=%d, uart=\"%s\", test %sfailed%s\n", opts.test_name.c_str(), gp, a7, a0, uart.output().c_str(), RED, CEND);

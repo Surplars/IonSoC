@@ -65,6 +65,13 @@ class CSRFile(
         val wdata   = Input(UInt(XLEN.W))
         val rdata   = Output(UInt(XLEN.W))
         val illegal = Output(Bool())
+        // Debug abstract commands access CSRs while the core is halted.
+        val debug_addr = Input(UInt(12.W))
+        val debug_rdata = Output(UInt(XLEN.W))
+        val debug_valid = Output(Bool())
+        val debug_writable = Output(Bool())
+        val debug_write = Input(Bool())
+        val debug_wdata = Input(UInt(XLEN.W))
         // 硬件直接交互接口
         val trap_valid = Input(Bool())
         val trap_pc    = Input(UInt(XLEN.W))
@@ -158,6 +165,9 @@ class CSRFile(
             Mux(io.seip, bitMask(InterruptCauseCode.SupervisorExt), 0.U) |
             Mux(io.meip, bitMask(InterruptCauseCode.MachineExt), 0.U)
 
+    val supervisorEnabled = enabledExt.contains(Extension.S).B
+    val misa_val_with_s = Mux(supervisorEnabled, misa_val | (BigInt(1) << 18).U(XLEN.W), misa_val)
+
     val sstatus =
         (mstatus & (bitMask(SStatus.SIE) | bitMask(SStatus.SPIE) | bitMask(SStatus.SPP))) |
             (mstatus & (bitMask(13) | bitMask(14) | bitMask(15) | bitMask(18) | bitMask(19))) |
@@ -179,7 +189,7 @@ class CSRFile(
         CSR.MIMPID     -> 0.U(XLEN.W),
         CSR.MHARTID    -> hartID.U(XLEN.W),
         CSR.MSTATUS    -> mstatus,
-        CSR.MISA       -> misa_val,
+        CSR.MISA       -> misa_val_with_s,
         CSR.MEDELEG    -> medeleg,
         CSR.MIDELEG    -> mideleg,
         CSR.MIE        -> mie,
@@ -200,14 +210,20 @@ class CSRFile(
     )
 
     val rdata_pre = MuxLookup(io.addr, 0.U)(mapping.toSeq)
+    val debug_rdata_pre = MuxLookup(io.debug_addr, 0.U)(mapping.toSeq)
 
     val addr_valid = mapping.keys.map(_ === io.addr).reduce(_ || _)
+    val debug_addr_valid = mapping.keys.map(_ === io.debug_addr).reduce(_ || _)
     val csrRequiredPriv = io.addr(9, 8)
     val csrReadOnly = io.addr(11, 10) === 3.U
+    val debugCsrReadOnly = io.debug_addr(11, 10) === 3.U
     val csrPrivOk = CurrentPrivLevel >= csrRequiredPriv
     val csrReadonlyWrite = io.write && csrReadOnly
 
     io.rdata   := rdata_pre
+    io.debug_rdata := debug_rdata_pre
+    io.debug_valid := debug_addr_valid
+    io.debug_writable := debug_addr_valid && !debugCsrReadOnly
     io.illegal := io.valid && (!addr_valid || !csrPrivOk || csrReadonlyWrite)
 
     val wdata_final = MuxLookup(io.cmd, 0.U)(
@@ -225,76 +241,80 @@ class CSRFile(
 	        (io.cmd === CSROps.RW.asUInt || io.cmd === CSROps.RS.asUInt || io.cmd === CSROps.RC.asUInt ||
 	            io.cmd === CSROps.RWI.asUInt || io.cmd === CSROps.RSI.asUInt || io.cmd === CSROps.RCI.asUInt)
 
-    when(do_write) {
-        switch(io.addr) {
+    val writeAddr = Mux(io.debug_write, io.debug_addr, io.addr)
+    val writeData = Mux(io.debug_write, io.debug_wdata, wdata_final)
+    val writeEnable = io.debug_write || do_write
+
+    when(writeEnable) {
+        switch(writeAddr) {
             is(CSR.MSTATUS) {
-                mstatus := wdata_final
+                mstatus := writeData
             }
             is(CSR.SSTATUS) {
                 val sMask = bitMask(SStatus.SIE) | bitMask(SStatus.SPIE) | bitMask(SStatus.SPP)
-                mstatus := (mstatus & ~sMask) | (wdata_final & sMask)
+                mstatus := (mstatus & ~sMask) | (writeData & sMask)
             }
             is(CSR.MEDELEG) {
-                medeleg := wdata_final
+                medeleg := writeData
             }
             is(CSR.MIDELEG) {
-                mideleg := wdata_final & supervisorInterruptMask
+                mideleg := writeData & supervisorInterruptMask
             }
             is(CSR.MIE) {
-                mie := wdata_final & writableMieMask
+                mie := writeData & writableMieMask
             }
             is(CSR.SIE) {
-                mie := (mie & ~(mideleg & supervisorInterruptMask)) | (wdata_final & mideleg & supervisorInterruptMask)
+                mie := (mie & ~(mideleg & supervisorInterruptMask)) | (writeData & mideleg & supervisorInterruptMask)
             }
             is(CSR.MTVEC) {
-                mtvec := wdata_final
+                mtvec := writeData
             }
             is(CSR.STVEC) {
-                stvec := wdata_final
+                stvec := writeData
             }
             is(CSR.MEPC) {
-                mepc := wdata_final
+                mepc := writeData
             }
             is(CSR.SEPC) {
-                sepc := wdata_final
+                sepc := writeData
             }
             is(CSR.MCAUSE) {
-                mcause := wdata_final
+                mcause := writeData
             }
             is(CSR.SCAUSE) {
-                scause := wdata_final
+                scause := writeData
             }
             is(CSR.MTVAL) {
-                mtval := wdata_final
+                mtval := writeData
             }
             is(CSR.STVAL) {
-                stval := wdata_final
+                stval := writeData
             }
             is(CSR.MSCRATCH) {
-                mscratch := wdata_final
+                mscratch := writeData
             }
             is(CSR.SSCRATCH) {
-                sscratch := wdata_final
+                sscratch := writeData
             }
             is(CSR.SIP) {
                 when(mideleg(InterruptCauseCode.SupervisorSoft)) {
-                    ssipSw := wdata_final(InterruptCauseCode.SupervisorSoft)
+                    ssipSw := writeData(InterruptCauseCode.SupervisorSoft)
                 }
             }
             is(CSR.PMPcfg0) {
-                pmpcfg0 := wdata_final
+                pmpcfg0 := writeData
             }
             is(CSR.PMPaddr0) {
-                pmpaddr0 := wdata_final
+                pmpaddr0 := writeData
             }
             is(CSR.MNSCRATCH) {
-                mnscratch := wdata_final
+                mnscratch := writeData
             }
             is(CSR.MNSTATUS) {
-                mnstatus := wdata_final
+                mnstatus := writeData
             }
             is(CSR.SATP) {
-                satp := wdata_final
+                satp := writeData
             }
         }
     }
@@ -341,7 +361,7 @@ class CSRFile(
     val selectedInterruptVector = Mux(selectedInterruptIsSupervisor, trapVector(stvec, selectedInterruptCause), trapVector(mtvec, selectedInterruptCause))
 
     val trapCauseBit = causeBit(io.trap_cause)
-    val trapToSupervisor = io.trap_valid && CurrentPrivLevel =/= PrivilegeLevel.Machine &&
+    val trapToSupervisor = supervisorEnabled && io.trap_valid && CurrentPrivLevel =/= PrivilegeLevel.Machine &&
         Mux(io.trap_cause(XLEN - 1), (mideleg & trapCauseBit) =/= 0.U, (medeleg & trapCauseBit) =/= 0.U)
     val requestedTrapVector = Mux(trapToSupervisor, trapVector(stvec, io.trap_cause), trapVector(mtvec, io.trap_cause))
 
@@ -365,7 +385,7 @@ class CSRFile(
             CurrentPrivLevel := PrivilegeLevel.Machine
         }
     }.elsewhen(io.is_ret) {
-        when(io.ret_type === TrapReturnType.SRET) {
+        when(io.ret_type === TrapReturnType.SRET && supervisorEnabled) {
             mstatus := SStatus.setSPP(SStatus.setSPIE(SStatus.setSIE(mstatus, mstatus(SStatus.SPIE)), true.B), PrivilegeLevel.User)
             CurrentPrivLevel := Mux(mstatus(SStatus.SPP), PrivilegeLevel.Supervisor, PrivilegeLevel.User)
         }.otherwise {
@@ -374,7 +394,7 @@ class CSRFile(
         }
     }
 
-    io.epc_out  := Mux(CurrentPrivLevel === PrivilegeLevel.Supervisor, sepc, mepc)
+    io.epc_out  := Mux(io.is_ret && io.ret_type === TrapReturnType.SRET && supervisorEnabled, sepc, mepc)
     io.tvec_out := Mux(io.trap_valid, requestedTrapVector, selectedInterruptVector)
     io.interrupt_cause := selectedInterruptCause
     io.ie_out   := mstatus(MStatus.MIE)

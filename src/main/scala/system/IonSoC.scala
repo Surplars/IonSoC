@@ -66,17 +66,27 @@ class IonSoC(
     core.io.seip     := plic.map(_.io.seip).getOrElse(false.B)
     core.io.debug_haltreq := debugModule.io.haltreq
     core.io.debug_resumereq := debugModule.io.resumereq
+    core.io.debug_gpr_addr := debugModule.io.gpr_addr
+    core.io.debug_gpr_write := debugModule.io.gpr_write
+    core.io.debug_gpr_wdata := debugModule.io.gpr_wdata
+    core.io.debug_csr_addr := debugModule.io.csr_addr
+    core.io.debug_csr_write := debugModule.io.csr_write
+    core.io.debug_csr_wdata := debugModule.io.csr_wdata
 
     jtag.io.jtag.tms := io.jtag_tms
     jtag.io.jtag.tck := io.jtag_tck
     jtag.io.jtag.tdi := io.jtag_tdi
     io.jtag_tdo := jtag.io.jtag.tdo
-    jtag.io.dr_in := Cat(0.U(23.W), 0.U(7.W), debugModule.io.dmi_rdata, 0.U(2.W))
+    jtag.io.dr_in := Cat(0.U(23.W), 0.U(2.W), debugModule.io.dmi_rdata, 0.U(2.W))
     debugModule.io.dmi_valid := RegNext(jtag.io.update_dr, false.B)
     debugModule.io.dmi_write := jtag.io.dr_out(1, 0) === 2.U
-    debugModule.io.dmi_addr  := jtag.io.dr_out(8, 2)
-    debugModule.io.dmi_wdata := jtag.io.dr_out(40, 9)
+    debugModule.io.dmi_addr  := jtag.io.dr_out(40, 34)
+    debugModule.io.dmi_wdata := jtag.io.dr_out(33, 2)
     debugModule.io.hart_halted := core.io.debug_halted
+    debugModule.io.gpr_rdata := core.io.debug_gpr_rdata
+    debugModule.io.csr_rdata := core.io.debug_csr_rdata
+    debugModule.io.csr_valid := core.io.debug_csr_valid
+    debugModule.io.csr_writable := core.io.debug_csr_writable
 
     uart.foreach { device =>
         device.io.rx_valid := io.uart_rx_valid

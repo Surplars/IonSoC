@@ -49,7 +49,6 @@ class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10
     val drShift = RegInit(0.U(drLen.W))
     val drUpdate = RegInit(0.U(drLen.W))
     val bypassBit = RegInit(false.B)
-    val tdoReg = RegInit(false.B)
 
     // This first-stage TAP is synchronous to the SoC clock and detects TCK
     // edges. A production debug port can replace this with a true TCK clock
@@ -90,13 +89,15 @@ class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10
 
     when(tckRise) {
         state := stateNext
+        when(stateNext === testLogicReset) {
+            instr := JtagInstruction.idcode(irLen)
+        }
 
         switch(state) {
             is(captureIR) {
                 irShift := Cat(0.U((irLen - 2).W), "b01".U(2.W))
             }
             is(shiftIR) {
-                tdoReg := irShift(0)
                 irShift := Cat(io.jtag.tdi, irShift(irLen - 1, 1))
             }
             is(updateIR) {
@@ -116,16 +117,14 @@ class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10
             }
             is(shiftDR) {
                 when(bypassSelected) {
-                    tdoReg := bypassBit
                     bypassBit := io.jtag.tdi
                 }.elsewhen(dtmcsSelected) {
-                    tdoReg := drShift(0)
+                    drShift := Cat(0.U((drLen - 32).W), io.jtag.tdi, drShift(31, 1))
+                }.elsewhen(idcodeSelected) {
                     drShift := Cat(0.U((drLen - 32).W), io.jtag.tdi, drShift(31, 1))
                 }.elsewhen(dmiSelected) {
-                    tdoReg := drShift(0)
                     drShift := Cat(0.U((drLen - dmiAddrBits - 34).W), io.jtag.tdi, drShift(dmiAddrBits + 33, 1))
                 }.otherwise {
-                    tdoReg := drShift(0)
                     drShift := Cat(io.jtag.tdi, drShift(drLen - 1, 1))
                 }
             }
@@ -137,7 +136,11 @@ class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10
         }
     }
 
-    io.jtag.tdo := tdoReg
+    io.jtag.tdo := Mux(
+        state === shiftIR,
+        irShift(0),
+        Mux(state === shiftDR, Mux(bypassSelected, bypassBit, drShift(0)), false.B)
+    )
     io.dr_out := drUpdate
     io.ir_out := instr
     io.sel_inst := instr

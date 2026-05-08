@@ -46,6 +46,16 @@ class Core(
         val debug_haltreq = Input(Bool())
         val debug_resumereq = Input(Bool())
         val debug_halted = Output(Bool())
+        val debug_gpr_addr = Input(UInt(5.W))
+        val debug_gpr_rdata = Output(UInt(XLEN.W))
+        val debug_gpr_write = Input(Bool())
+        val debug_gpr_wdata = Input(UInt(XLEN.W))
+        val debug_csr_addr = Input(UInt(12.W))
+        val debug_csr_rdata = Output(UInt(XLEN.W))
+        val debug_csr_valid = Output(Bool())
+        val debug_csr_writable = Output(Bool())
+        val debug_csr_write = Input(Bool())
+        val debug_csr_wdata = Input(UInt(XLEN.W))
     })
 
     val dcache: HasCacheCoreIO = if (hasDCache) Module(new L1Cache(tlParams, 256)) else Module(new UncachedTileLinkBridge(tlParams))
@@ -207,12 +217,22 @@ class Core(
     register.io.write_en   := wb.io.reg_wb.reg_write
     register.io.write_addr := wb.io.reg_wb.rd
     register.io.write_data := wb.io.reg_wb.data
+    register.io.debug_addr := io.debug_gpr_addr
+    register.io.debug_write := io.debug_gpr_write && debugHalted
+    register.io.debug_wdata := io.debug_gpr_wdata
+    io.debug_gpr_rdata := register.io.debug_rdata
     // CSR
     csr.io.valid      := alu.io.csr_valid
     csr.io.cmd        := alu.io.csr_cmd
     csr.io.addr       := alu.io.csr_addr
     csr.io.write      := alu.io.csr_write
     csr.io.wdata      := alu.io.csr_wdata
+    csr.io.debug_addr := io.debug_csr_addr
+    csr.io.debug_write := io.debug_csr_write && debugHalted
+    csr.io.debug_wdata := io.debug_csr_wdata
+    io.debug_csr_rdata := csr.io.debug_rdata
+    io.debug_csr_valid := csr.io.debug_valid
+    io.debug_csr_writable := csr.io.debug_writable
     csr.io.trap_valid := combined_trap
     // Exceptions take priority over interrupts for pc/cause
     csr.io.trap_pc    := Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, interruptPc)

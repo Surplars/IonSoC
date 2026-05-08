@@ -80,6 +80,10 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
         dut.io.dmi_wdata.poke(0.U)
         dut.io.dmi_write.poke(false.B)
         dut.io.hart_halted.poke(false.B)
+        dut.io.gpr_rdata.poke(0.U)
+        dut.io.csr_rdata.poke(0.U)
+        dut.io.csr_valid.poke(true.B)
+        dut.io.csr_writable.poke(true.B)
     }
 
     private def clintWrite(dut: CLINT, address: BigInt, mask: BigInt, data: BigInt): Unit = {
@@ -206,6 +210,54 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
         val data = (dut.io.tl.d.bits.data.peek().litValue >> (lane * 8)) & BigInt("ffffffff", 16)
         dut.clock.step()
         data
+    }
+
+    private def debugWriteCommandAndExpectGprWrite(dut: DebugModule, command: BigInt, addr: BigInt, data: BigInt): Unit = {
+        debugWrite(dut, DebugModuleMap.Data0 * 4, data & BigInt("ffffffff", 16))
+        debugWrite(dut, DebugModuleMap.Data1 * 4, data >> 32)
+
+        val address = DebugModuleMap.Command * 4
+        val lane = (address & 0x7).toInt
+        dut.io.tl.d.ready.poke(true.B)
+        dut.io.tl.a.bits.opcode.poke(TLOpcode.PutPartialData)
+        dut.io.tl.a.bits.size.poke(2.U)
+        dut.io.tl.a.bits.source.poke(3.U)
+        dut.io.tl.a.bits.address.poke(address.U)
+        dut.io.tl.a.bits.mask.poke((0xf << lane).U)
+        dut.io.tl.a.bits.data.poke((command << (lane * 8)).U)
+        dut.io.tl.a.valid.poke(true.B)
+        dut.io.tl.a.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.tl.a.valid.poke(false.B)
+        dut.io.gpr_write.expect(true.B)
+        dut.io.gpr_addr.expect(addr.U)
+        dut.io.gpr_wdata.expect(data.U)
+        dut.io.tl.d.valid.expect(true.B)
+        dut.clock.step()
+    }
+
+    private def debugWriteCommandAndExpectCsrWrite(dut: DebugModule, command: BigInt, addr: BigInt, data: BigInt): Unit = {
+        debugWrite(dut, DebugModuleMap.Data0 * 4, data & BigInt("ffffffff", 16))
+        debugWrite(dut, DebugModuleMap.Data1 * 4, data >> 32)
+
+        val address = DebugModuleMap.Command * 4
+        val lane = (address & 0x7).toInt
+        dut.io.tl.d.ready.poke(true.B)
+        dut.io.tl.a.bits.opcode.poke(TLOpcode.PutPartialData)
+        dut.io.tl.a.bits.size.poke(2.U)
+        dut.io.tl.a.bits.source.poke(3.U)
+        dut.io.tl.a.bits.address.poke(address.U)
+        dut.io.tl.a.bits.mask.poke((0xf << lane).U)
+        dut.io.tl.a.bits.data.poke((command << (lane * 8)).U)
+        dut.io.tl.a.valid.poke(true.B)
+        dut.io.tl.a.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.tl.a.valid.poke(false.B)
+        dut.io.csr_write.expect(true.B)
+        dut.io.csr_addr.expect(addr.U)
+        dut.io.csr_wdata.expect(data.U)
+        dut.io.tl.d.valid.expect(true.B)
+        dut.clock.step()
     }
 
     test("Device tilelink blocks behave as expected") {
@@ -346,6 +398,7 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
             dut.io.dmactive.expect(true.B)
             dut.io.haltreq.expect(true.B)
             assert((debugRead(dut, DebugModuleMap.DMStatus * 4) & 0xf) == 2)
+            assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 7) & 0x1) == 0x1)
             assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 10) & 0x3) == 0x3)
             dut.io.hart_halted.poke(true.B)
             assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 8) & 0x3) == 0x3)
@@ -357,6 +410,27 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.dmi_valid.poke(false.B)
             assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt("12345678", 16))
+
+            dut.io.hart_halted.poke(true.B)
+            debugWriteCommandAndExpectGprWrite(dut, BigInt("00331005", 16), addr = 5, data = BigInt("1122334455667788", 16))
+
+            dut.io.gpr_rdata.poke("h8877665544332211".U)
+            debugWrite(dut, DebugModuleMap.Command * 4, BigInt("00321005", 16))
+            assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt("44332211", 16))
+            assert(debugRead(dut, DebugModuleMap.Data1 * 4) == BigInt("88776655", 16))
+
+            debugWriteCommandAndExpectCsrWrite(dut, BigInt("00330300", 16), addr = BigInt("300", 16), data = BigInt("0123456789abcdef", 16))
+
+            dut.io.csr_rdata.poke("h4000110100000105".U)
+            debugWrite(dut, DebugModuleMap.Command * 4, BigInt("00320301", 16))
+            assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt("00000105", 16))
+            assert(debugRead(dut, DebugModuleMap.Data1 * 4) == BigInt("40001101", 16))
+
+            dut.io.csr_valid.poke(false.B)
+            debugWrite(dut, DebugModuleMap.Command * 4, BigInt("00320c22", 16))
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 2)
+            debugWrite(dut, DebugModuleMap.AbstractCS * 4, BigInt("00000700", 16))
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 0)
         }
     }
 }

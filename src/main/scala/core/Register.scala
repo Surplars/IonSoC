@@ -13,12 +13,21 @@ class RegisterFile(XLEN: Int) extends Module {
 
         val rs1_data = Output(UInt(XLEN.W))
         val rs2_data = Output(UInt(XLEN.W))
+
+        val debug_addr = Input(UInt(5.W))
+        val debug_rdata = Output(UInt(XLEN.W))
+        val debug_write = Input(Bool())
+        val debug_wdata = Input(UInt(XLEN.W))
     })
 
     val regFile = Mem(32, UInt(XLEN.W))
 
-    when(io.write_en && (io.write_addr =/= 0.U)) {
-        regFile.write(io.write_addr, io.write_data)
+    val writeEn = io.debug_write || io.write_en
+    val writeAddr = Mux(io.debug_write, io.debug_addr, io.write_addr)
+    val writeData = Mux(io.debug_write, io.debug_wdata, io.write_data)
+
+    when(writeEn && (writeAddr =/= 0.U)) {
+        regFile.write(writeAddr, writeData)
     }
 
     io.rs1_data := Mux(
@@ -32,5 +41,6 @@ class RegisterFile(XLEN: Int) extends Module {
 		0.U,
 		Mux(io.rs2_addr === io.write_addr && io.write_en, io.write_data, regFile.read(io.rs2_addr))
 	)
-}
 
+    io.debug_rdata := Mux(io.debug_addr === 0.U, 0.U, regFile.read(io.debug_addr))
+}
