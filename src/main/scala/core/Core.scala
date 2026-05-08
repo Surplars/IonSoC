@@ -105,8 +105,39 @@ class Core(
     io.DBus <> dbusXbar.io.slave
     io.IBus <> DontCare
 
+    val loadLikePending = RegInit(false.B)
+    val loadLikePendingRd = RegInit(0.U(5.W))
+    val aluMemOp = alu.io.alu_out.mem.op
+    val aluLoadLike = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
+        (aluMemOp === MemOpType.Load || aluMemOp === MemOpType.LR || aluMemOp === MemOpType.SC || aluMemOp === MemOpType.AMO)
+    val loadLikeComplete =
+        loadLikePending && (lsu.io.load_data_valid ||
+            (wb.io.reg_wb.reg_write && wb.io.reg_wb.rd === loadLikePendingRd))
+    val decodeUsesPending =
+        loadLikePending && idecode.io.valid_out &&
+            ((idecode.io.decoded_out.rs1 === loadLikePendingRd && idecode.io.decoded_out.rs1 =/= 0.U) ||
+                (idecode.io.decoded_out.rs2 === loadLikePendingRd && idecode.io.decoded_out.rs2 =/= 0.U))
+    when(loadLikeComplete) {
+        loadLikePending := false.B
+        loadLikePendingRd := 0.U
+    }.elsewhen(aluLoadLike) {
+        loadLikePending := true.B
+        loadLikePendingRd := alu.io.alu_out.rd
+    }
+
+    val aluResultFwdValid = RegNext(
+        alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
+            !(aluMemOp === MemOpType.Load || aluMemOp === MemOpType.LR || aluMemOp === MemOpType.SC || aluMemOp === MemOpType.AMO),
+        false.B
+    )
+    val aluResultFwdRd = RegEnable(alu.io.alu_out.rd, 0.U, alu.io.valid_out)
+    val aluResultFwdData = RegEnable(alu.io.alu_out.result, 0.U, alu.io.valid_out)
+    val aluResultPrevValid = RegNext(aluResultFwdValid, false.B)
+    val aluResultPrevRd = RegNext(aluResultFwdRd, 0.U)
+    val aluResultPrevData = RegNext(aluResultFwdData, 0.U)
+
     pipe_stall := lsu.io.stall_req
-    global_stall := pipe_stall || ifetch.io.fetch_stall || fenceIHold
+    global_stall := pipe_stall || decodeUsesPending || ifetch.io.fetch_stall || fenceIHold
 
     // Interrupt inputs. Supervisor-level lines are reserved for the future
     // S-mode trap path and can be tied off by the SoC until a controller exists.
@@ -175,7 +206,7 @@ class Core(
     csr.io.ret_type   := lsu.io.trap_info_out.ret_type
     csr.io.ie_out     := DontCare
     // ifetch
-    ifetch.io.stall         := pipe_stall
+    ifetch.io.stall         := pipe_stall || decodeUsesPending
     ifetch.io.pc            := pc.io.pc_out
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken
@@ -183,17 +214,34 @@ class Core(
 	    ifetch.io.trap_valid    := pipeline_flush
     // idcode
     idecode.io.valid_in      := ifetch.io.valid
-    idecode.io.stall         := pipe_stall
+    idecode.io.stall         := pipe_stall || decodeUsesPending
 	    idecode.io.trap_valid    := pipeline_flush
     idecode.io.redirect      := ifetch.io.redirect
     idecode.io.pc_in         := ifetch.io.pc_out
     idecode.io.instr_in      := ifetch.io.instr_out
     idecode.io.priv          := csr.io.mem_cfg_out.priv
     idecode.io.pred_taken_in := ifetch.io.pred_taken_out
-    idecode.io.reg_rs1_data  := register.io.rs1_data
-    idecode.io.reg_rs2_data  := register.io.rs2_data
+    val aluBypassValid = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
+        !(aluMemOp === MemOpType.Load || aluMemOp === MemOpType.LR || aluMemOp === MemOpType.SC || aluMemOp === MemOpType.AMO)
+    def decodeBypass(addr: UInt, regData: UInt): UInt = {
+        Mux(
+            addr === 0.U,
+            0.U,
+            Mux(
+                aluBypassValid && addr === alu.io.alu_out.rd,
+                alu.io.alu_out.result,
+                Mux(
+                    lsu.io.mem_out.reg_write && addr === lsu.io.mem_out.rd,
+                    lsu.io.mem_out.result,
+                    Mux(wb.io.reg_wb.reg_write && addr === wb.io.reg_wb.rd, wb.io.reg_wb.data, regData)
+                )
+            )
+        )
+    }
+    idecode.io.reg_rs1_data  := decodeBypass(idecode.io.reg_rd_rs1, register.io.rs1_data)
+    idecode.io.reg_rs2_data  := decodeBypass(idecode.io.reg_rd_rs2, register.io.rs2_data)
     // alu
-    alu.io.valid_in       := idecode.io.valid_out
+    alu.io.valid_in       := idecode.io.valid_out && !decodeUsesPending
     alu.io.stall          := pipe_stall
 	    alu.io.trap_valid     := pipeline_flush
     alu.io.pc_in          := idecode.io.pc_out
@@ -202,11 +250,17 @@ class Core(
     alu.io.decoded_in     := idecode.io.decoded_out
     alu.io.trap_info_in   := idecode.io.trap_info
     alu.io.csr_illegal    := csr.io.illegal
-	alu.io.fwd.load_valid := lsu.io.load_data_valid
+    alu.io.fwd.load_valid := lsu.io.load_data_valid
 	alu.io.fwd.load_data  := lsu.io.load_data
-    alu.io.fwd.reg_write  := lsu.io.mem_out.reg_write
-    alu.io.fwd.rd         := lsu.io.mem_out.rd
-    alu.io.fwd.alu_result := lsu.io.mem_out.result
+    alu.io.fwd.reg_write  := aluResultFwdValid || lsu.io.mem_out.reg_write
+    alu.io.fwd.rd         := Mux(aluResultFwdValid, aluResultFwdRd, lsu.io.mem_out.rd)
+    alu.io.fwd.alu_result := Mux(aluResultFwdValid, aluResultFwdData, lsu.io.mem_out.result)
+    alu.io.fwd.wb_reg_write := wb.io.reg_wb.reg_write
+    alu.io.fwd.wb_rd        := wb.io.reg_wb.rd
+    alu.io.fwd.wb_data      := wb.io.reg_wb.data
+    alu.io.fwd.prev_reg_write := aluResultPrevValid
+    alu.io.fwd.prev_rd        := aluResultPrevRd
+    alu.io.fwd.prev_data      := aluResultPrevData
     alu.io.csr_rdata      := csr.io.rdata
     // mem
     lsu.io.pc_in        := alu.io.pc_out

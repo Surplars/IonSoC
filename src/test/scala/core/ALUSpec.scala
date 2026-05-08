@@ -45,6 +45,12 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
         dut.io.fwd.rd.poke(0.U)
         dut.io.fwd.alu_result.poke(0.U)
         dut.io.fwd.reg_write.poke(false.B)
+        dut.io.fwd.wb_rd.poke(0.U)
+        dut.io.fwd.wb_data.poke(0.U)
+        dut.io.fwd.wb_reg_write.poke(false.B)
+        dut.io.fwd.prev_rd.poke(0.U)
+        dut.io.fwd.prev_data.poke(0.U)
+        dut.io.fwd.prev_reg_write.poke(false.B)
         dut.io.csr_rdata.poke(0.U)
         dut.io.csr_illegal.poke(false.B)
     }
@@ -189,6 +195,53 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.alu_out.mem.size.expect(2.U)
             dut.io.alu_out.mem.mask.expect("hf0".U)
             dut.io.alu_out.mem.wdata.expect(BigInt("1234567800000000", 16))
+        }
+    }
+
+    test("ALU forwards LSU load-like results by forwarding rd") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.decoded_in.rs1.poke(3.U)
+            dut.io.decoded_in.rs2.poke(0.U)
+            dut.io.decoded_in.op1.poke(1.U)
+            dut.io.decoded_in.op2.poke(1.U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADD)
+            dut.io.fwd.load_valid.poke(true.B)
+            dut.io.fwd.rd.poke(3.U)
+            dut.io.fwd.load_data.poke(41.U)
+            dut.clock.step()
+            dut.io.alu_out.result.expect(42.U)
+
+            dut.io.decoded_in.rs1.poke(0.U)
+            dut.io.decoded_in.rs2.poke(4.U)
+            dut.io.decoded_in.op1.poke(1.U)
+            dut.io.decoded_in.op2.poke(1.U)
+            dut.io.fwd.rd.poke(4.U)
+            dut.io.fwd.load_data.poke(9.U)
+            dut.clock.step()
+            dut.io.alu_out.result.expect(10.U)
+        }
+    }
+
+    test("ALU forwards writeback results to adjacent branch operands") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.decoded_in.ctrl.reg_write.poke(false.B)
+            dut.io.decoded_in.ctrl.branch_type.poke(BranchType.BNE)
+            dut.io.decoded_in.rs1.poke(5.U)
+            dut.io.decoded_in.rs2.poke(6.U)
+            dut.io.decoded_in.op1.poke("h40000000".U)
+            dut.io.decoded_in.op2.poke("h45".U)
+            dut.io.fwd.wb_reg_write.poke(true.B)
+            dut.io.fwd.wb_rd.poke(6.U)
+            dut.io.fwd.wb_data.poke("h40000000".U)
+            dut.clock.step()
+
+            dut.io.br_info.valid.expect(true.B)
+            dut.io.br_info.taken.expect(false.B)
+            dut.io.br_info.redirect.expect(false.B)
         }
     }
 }

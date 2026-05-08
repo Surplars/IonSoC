@@ -231,7 +231,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         )
     )
 
-    io.valid_out      := RegNext(valid, false.B)
+    io.valid_out      := RegEnable(valid, false.B, update_en)
     io.decoded_out    := RegEnable(Mux(valid, decoded, defaultDecoded), defaultDecoded, update_en)
     io.pc_out         := RegEnable(io.pc_in, 0.U, update_en)
     io.pred_taken_out := RegEnable(io.pred_taken_in, false.B, update_en)

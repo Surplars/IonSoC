@@ -49,7 +49,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false) extends Module {
     val directInstr = Mux(io.redirect, Common.instrNop, io.instr_in)
 
     io.fetch_stall := false.B
-    io.valid          := RegNext(!io.redirect && !io.trap_valid, false.B)
+    io.valid          := RegEnable(!io.redirect && !io.trap_valid, false.B, directUpdate)
     io.pc_out         := RegEnable(io.pc, 0.U, directUpdate)
     io.instr_out      := RegEnable(directInstr, 0.U, directUpdate)
     io.pred_taken_out := RegEnable(io.pred_taken_in, false.B, directUpdate)
@@ -105,7 +105,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false) extends Module {
         }
 
         io.fetch_stall := pending || canIssue
-        io.valid := RegNext(acceptResp, false.B)
+        io.valid := RegEnable(acceptResp, false.B, !io.stall)
         io.pc_out := RegEnable(reqPc, 0.U, acceptResp)
         io.instr_out := RegEnable(respInstr, 0.U, acceptResp)
         io.pred_taken_out := RegEnable(reqPredTaken, false.B, acceptResp)

@@ -153,4 +153,10 @@ class FwdSignals(XLEN: Int) extends Bundle {
     val rd         = UInt(5.W)
     val alu_result = UInt(XLEN.W)
     val reg_write  = Bool()
+    val wb_rd        = UInt(5.W)
+    val wb_data      = UInt(XLEN.W)
+    val wb_reg_write = Bool()
+    val prev_rd        = UInt(5.W)
+    val prev_data      = UInt(XLEN.W)
+    val prev_reg_write = Bool()
 }

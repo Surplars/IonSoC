@@ -386,4 +386,83 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             dut.io.load_data.expect(BigInt("ffffffff80000001", 16))
         }
     }
+
+    test("LSU reports atomic misalignment with load/store-specific causes") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.pc_in.poke("h80000200".U)
+            driveAtomic(dut, MemOpType.LR, AtomicOpType.LR, BigInt("10000004", 16))
+            dut.clock.step()
+            dut.io.trap_info_out.valid.expect(true.B)
+            dut.io.trap_info_out.pc.expect(BigInt("80000200", 16))
+            dut.io.trap_info_out.cause.expect(MCause.LoadAddrMisaligned)
+            dut.io.trap_info_out.value.expect(BigInt("10000004", 16))
+
+            init(dut)
+            dut.io.pc_in.poke("h80000208".U)
+            driveAtomic(dut, MemOpType.SC, AtomicOpType.SC, BigInt("10000004", 16), 1)
+            dut.clock.step()
+            dut.io.trap_info_out.valid.expect(true.B)
+            dut.io.trap_info_out.pc.expect(BigInt("80000208", 16))
+            dut.io.trap_info_out.cause.expect(MCause.StoreAddrMisaligned)
+            dut.io.trap_info_out.value.expect(BigInt("10000004", 16))
+        }
+    }
+
+    test("LSU rejects atomics to device regions") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.pc_in.poke("h80000240".U)
+            driveAtomic(dut, MemOpType.AMO, AtomicOpType.Add, BigInt("10010000", 16), 1)
+            dut.clock.step()
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.io.mmio.req_valid.expect(false.B)
+            dut.io.trap_info_out.valid.expect(true.B)
+            dut.io.trap_info_out.pc.expect(BigInt("80000240", 16))
+            dut.io.trap_info_out.cause.expect(MCause.StoreAccessFault)
+            dut.io.trap_info_out.value.expect(BigInt("10010000", 16))
+        }
+    }
+
+    test("LSU clears LR reservation after an intervening store drain") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            driveAtomic(dut, MemOpType.LR, AtomicOpType.LR, BigInt("10000020", 16))
+            dut.clock.step()
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(BigInt("1111222233334444", 16).U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.load_data_valid.expect(true.B)
+
+            driveStore(dut, BigInt("10000028", 16), BigInt("aaaabbbbccccdddd", 16))
+            dut.clock.step()
+
+            driveNoMem(dut)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            driveAtomic(dut, MemOpType.SC, AtomicOpType.SC, BigInt("10000020", 16), BigInt("5555666677778888", 16))
+            dut.clock.step()
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(BigInt("1111222233334444", 16).U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data.expect(1.U)
+        }
+    }
 }

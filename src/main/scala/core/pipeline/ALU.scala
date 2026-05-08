@@ -47,9 +47,6 @@ class ALU(XLEN: Int = 64) extends Module {
     val mem_imm       = io.decoded_in.mem_imm
     val op1           = WireInit(0.U(XLEN.W))
     val op2           = WireInit(0.U(XLEN.W))
-    val stall_op1     = RegInit(0.U(XLEN.W))
-    val stall_op2     = RegInit(0.U(XLEN.W))
-    val stall_valid   = RegInit(false.B)
     val alu_result    = WireInit(0.U(XLEN.W))
     val branch_target = WireInit(0.U(XLEN.W))
     val valid         = io.valid_in && !io.trap_valid
@@ -72,14 +69,16 @@ class ALU(XLEN: Int = 64) extends Module {
         op1         := io.csr_rdata
     }.elsewhen(io.decoded_in.rs1 === 0.U) { // 立即数指令
         op1 := io.decoded_in.op1
-    }.elsewhen(io.alu_out.reg_write && io.decoded_in.rs1 === io.alu_out.rd && io.fwd.load_valid) {
+    }.elsewhen(io.fwd.load_valid && io.decoded_in.rs1 === io.fwd.rd) {
         op1 := io.fwd.load_data
     }.elsewhen(io.alu_out.reg_write && io.decoded_in.rs1 === io.alu_out.rd) {
         op1 := io.alu_out.result
     }.elsewhen(io.decoded_in.rs1 === io.fwd.rd && io.fwd.reg_write) {
         op1 := io.fwd.alu_result
-    }.elsewhen(stall_valid && !io.stall) {
-        op1 := stall_op1
+    }.elsewhen(io.decoded_in.rs1 === io.fwd.prev_rd && io.fwd.prev_reg_write) {
+        op1 := io.fwd.prev_data
+    }.elsewhen(io.decoded_in.rs1 === io.fwd.wb_rd && io.fwd.wb_reg_write) {
+        op1 := io.fwd.wb_data
     }.otherwise {
         op1 := io.decoded_in.op1
     }
@@ -89,14 +88,16 @@ class ALU(XLEN: Int = 64) extends Module {
         op2 := Cat(Fill(XLEN - 5, 0.U), io.decoded_in.rs2) // CSR zimm 指令，0扩展
     }.elsewhen(io.decoded_in.rs2 === 0.U) { // 立即数指令
         op2 := io.decoded_in.op2
-    }.elsewhen(io.alu_out.reg_write && io.decoded_in.rs2 === io.alu_out.rd && io.fwd.load_valid) {
+    }.elsewhen(io.fwd.load_valid && io.decoded_in.rs2 === io.fwd.rd) {
         op2 := io.fwd.load_data
     }.elsewhen(io.alu_out.reg_write && io.decoded_in.rs2 === io.alu_out.rd) {
         op2 := io.alu_out.result
     }.elsewhen(io.decoded_in.rs2 === io.fwd.rd && io.fwd.reg_write) {
         op2 := io.fwd.alu_result
-    }.elsewhen(stall_valid && !io.stall) {
-        op2 := stall_op2
+    }.elsewhen(io.decoded_in.rs2 === io.fwd.prev_rd && io.fwd.prev_reg_write) {
+        op2 := io.fwd.prev_data
+    }.elsewhen(io.decoded_in.rs2 === io.fwd.wb_rd && io.fwd.wb_reg_write) {
+        op2 := io.fwd.wb_data
     }.otherwise {
         op2 := io.decoded_in.op2
     }
@@ -112,16 +113,6 @@ class ALU(XLEN: Int = 64) extends Module {
     val unsignedProduct = Cat(0.U(1.W), op1) * Cat(0.U(1.W), op2)
 
     private def sext32(value: UInt): UInt = Cat(Fill(XLEN - 32, value(31)), value)
-
-    when(io.stall) {
-        stall_valid := true.B
-        stall_op1   := op1
-        stall_op2   := op2
-    }.otherwise {
-        stall_valid := false.B
-        stall_op1   := 0.U
-        stall_op2   := 0.U
-    }
 
     val branch_type  = io.decoded_in.ctrl.branch_type
     val branch_valid = valid && (branch_type =/= BranchType.None) && !io.stall
@@ -271,7 +262,7 @@ class ALU(XLEN: Int = 64) extends Module {
 
     val update_en = !io.stall
 
-    io.valid_out         := RegNext(valid && update_en, false.B)
+    io.valid_out         := RegEnable(valid, false.B, update_en)
     io.alu_out.funct3    := RegEnable(Mux(valid, io.decoded_in.funct3, 0.U), 0.U, update_en)
     io.alu_out.rd        := RegEnable(Mux(valid, io.decoded_in.rd, 0.U), 0.U, update_en)
     io.alu_out.reg_write := RegEnable(Mux(valid, io.decoded_in.ctrl.reg_write, false.B), false.B, update_en)

@@ -1,11 +1,16 @@
 #include <cstdio>
-#include <cstring> // Added for strcmp
+#include <cstring>
 #include <string>
 #include <sys/stat.h>
 #include <filesystem>
 #include <elf.h>
 #include <cstdlib>
 #include <cstdint>
+#include <cerrno>
+#include <cinttypes>
+#include <fcntl.h>
+#include <unistd.h>
+#include <vector>
 #include <verilated.h>
 #include <verilated_vcd_c.h>
 #include "VSoc.h"
@@ -26,10 +31,266 @@ static const char *kPayloadElfPath = "simulator/build/payload/payload.elf";
 static const char *kWavePath = "simulator/build/wave.vcd";
 vluint64_t sim_time = 0;
 
+struct SimOptions;
+
 void load_elf(VSoc *dut, const char *path);
 bool run_one_test(const std::string &bin_path,
 				  const std::string &test_name, bool trace_en,
 				  const std::string &expected_uart = "");
+bool run_sim(const SimOptions &opts);
+
+static bool env_enabled(const char *name)
+{
+	const char *value = std::getenv(name);
+	return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static uint64_t env_u64(const char *name, uint64_t fallback)
+{
+	const char *value = std::getenv(name);
+	if (value == nullptr || value[0] == '\0')
+		return fallback;
+	char *end = nullptr;
+	uint64_t parsed = std::strtoull(value, &end, 0);
+	return end != value ? parsed : fallback;
+}
+
+struct SimOptions
+{
+	std::string elf_path = kPayloadElfPath;
+	std::string test_name = "payload";
+	std::string expected_uart;
+	std::string flash_image;
+	bool trace_wave = true;
+	bool direct_elf_load = true;
+	bool uart_stdin = false;
+	bool trace_irq = false;
+	uint64_t max_cycles = MAX_SIM_CYCLES;
+};
+
+static void clear_ext_irq_sources(VSoc *dut)
+{
+	dut->io_ext_irq_sources_0 = 0;
+	dut->io_ext_irq_sources_1 = 0;
+	dut->io_ext_irq_sources_2 = 0;
+	dut->io_ext_irq_sources_3 = 0;
+	dut->io_ext_irq_sources_4 = 0;
+	dut->io_ext_irq_sources_5 = 0;
+	dut->io_ext_irq_sources_6 = 0;
+	dut->io_ext_irq_sources_7 = 0;
+	dut->io_ext_irq_sources_8 = 0;
+	dut->io_ext_irq_sources_9 = 0;
+	dut->io_ext_irq_sources_10 = 0;
+	dut->io_ext_irq_sources_11 = 0;
+	dut->io_ext_irq_sources_12 = 0;
+	dut->io_ext_irq_sources_13 = 0;
+	dut->io_ext_irq_sources_14 = 0;
+	dut->io_ext_irq_sources_15 = 0;
+	dut->io_ext_irq_sources_16 = 0;
+	dut->io_ext_irq_sources_17 = 0;
+	dut->io_ext_irq_sources_18 = 0;
+	dut->io_ext_irq_sources_19 = 0;
+	dut->io_ext_irq_sources_20 = 0;
+	dut->io_ext_irq_sources_21 = 0;
+	dut->io_ext_irq_sources_22 = 0;
+	dut->io_ext_irq_sources_23 = 0;
+	dut->io_ext_irq_sources_24 = 0;
+	dut->io_ext_irq_sources_25 = 0;
+	dut->io_ext_irq_sources_26 = 0;
+	dut->io_ext_irq_sources_27 = 0;
+	dut->io_ext_irq_sources_28 = 0;
+	dut->io_ext_irq_sources_29 = 0;
+	dut->io_ext_irq_sources_30 = 0;
+	dut->io_ext_irq_sources_31 = 0;
+}
+
+static void set_ext_irq_source(VSoc *dut, unsigned source, bool value)
+{
+	switch (source)
+	{
+	case 0: dut->io_ext_irq_sources_0 = value; break;
+	case 1: dut->io_ext_irq_sources_1 = value; break;
+	case 2: dut->io_ext_irq_sources_2 = value; break;
+	case 3: dut->io_ext_irq_sources_3 = value; break;
+	case 4: dut->io_ext_irq_sources_4 = value; break;
+	case 5: dut->io_ext_irq_sources_5 = value; break;
+	case 6: dut->io_ext_irq_sources_6 = value; break;
+	case 7: dut->io_ext_irq_sources_7 = value; break;
+	case 8: dut->io_ext_irq_sources_8 = value; break;
+	case 9: dut->io_ext_irq_sources_9 = value; break;
+	case 10: dut->io_ext_irq_sources_10 = value; break;
+	case 11: dut->io_ext_irq_sources_11 = value; break;
+	case 12: dut->io_ext_irq_sources_12 = value; break;
+	case 13: dut->io_ext_irq_sources_13 = value; break;
+	case 14: dut->io_ext_irq_sources_14 = value; break;
+	case 15: dut->io_ext_irq_sources_15 = value; break;
+	case 16: dut->io_ext_irq_sources_16 = value; break;
+	case 17: dut->io_ext_irq_sources_17 = value; break;
+	case 18: dut->io_ext_irq_sources_18 = value; break;
+	case 19: dut->io_ext_irq_sources_19 = value; break;
+	case 20: dut->io_ext_irq_sources_20 = value; break;
+	case 21: dut->io_ext_irq_sources_21 = value; break;
+	case 22: dut->io_ext_irq_sources_22 = value; break;
+	case 23: dut->io_ext_irq_sources_23 = value; break;
+	case 24: dut->io_ext_irq_sources_24 = value; break;
+	case 25: dut->io_ext_irq_sources_25 = value; break;
+	case 26: dut->io_ext_irq_sources_26 = value; break;
+	case 27: dut->io_ext_irq_sources_27 = value; break;
+	case 28: dut->io_ext_irq_sources_28 = value; break;
+	case 29: dut->io_ext_irq_sources_29 = value; break;
+	case 30: dut->io_ext_irq_sources_30 = value; break;
+	case 31: dut->io_ext_irq_sources_31 = value; break;
+	default: break;
+	}
+}
+
+class UartStdio
+{
+  public:
+	explicit UartStdio(bool enable_stdin) : enable_stdin_(enable_stdin)
+	{
+		if (enable_stdin_)
+		{
+			old_flags_ = fcntl(STDIN_FILENO, F_GETFL, 0);
+			if (old_flags_ >= 0)
+				fcntl(STDIN_FILENO, F_SETFL, old_flags_ | O_NONBLOCK);
+		}
+	}
+
+	~UartStdio()
+	{
+		if (enable_stdin_ && old_flags_ >= 0)
+			fcntl(STDIN_FILENO, F_SETFL, old_flags_);
+	}
+
+	void drive_rx(VSoc *dut)
+	{
+		dut->io_uart_rx_valid = 0;
+		dut->io_uart_rx_byte = 0;
+		if (!enable_stdin_)
+			return;
+
+		uint8_t ch = 0;
+		ssize_t n = read(STDIN_FILENO, &ch, 1);
+		if (n == 1)
+		{
+			dut->io_uart_rx_valid = 1;
+			dut->io_uart_rx_byte = ch;
+		}
+		else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+		{
+			perror("uart stdin read");
+		}
+	}
+
+	void capture_tx(VSoc *dut)
+	{
+		bool cur_uart_tx = dut->io_uart_tx;
+		if (cur_uart_tx && !prev_uart_tx_)
+		{
+			uint8_t ch = (uint8_t)(dut->io_uart_byte & 0xFF);
+			output_.push_back((char)ch);
+			putchar(ch);
+			fflush(stdout);
+		}
+		prev_uart_tx_ = cur_uart_tx;
+	}
+
+	const std::string &output() const { return output_; }
+
+  private:
+	bool enable_stdin_ = false;
+	int old_flags_ = -1;
+	bool prev_uart_tx_ = false;
+	std::string output_;
+};
+
+class InterruptModel
+{
+  public:
+	explicit InterruptModel(bool trace_irq)
+	    : trace_irq_(trace_irq), env_mask_(env_u64("ION_IRQ_SOURCE_MASK", 0))
+	{
+	}
+
+	void drive(VSoc *dut, const std::string &test_name, uint64_t cycle)
+	{
+		clear_ext_irq_sources(dut);
+		uint64_t mask = env_mask_;
+		if ((test_name == "plic" || test_name == "plic_s") && cycle >= 80)
+			mask |= (1ULL << 1);
+		for (unsigned source = 0; source < 32; ++source)
+			set_ext_irq_source(dut, source, (mask >> source) & 1ULL);
+	}
+
+	void sample(VSoc *dut, uint64_t cycle)
+	{
+		uint8_t mtip = (dut->rootp->SimTop__DOT__clint__DOT__mtimecmp != 0) &&
+		               (dut->rootp->SimTop__DOT__clint__DOT__mtime >= dut->rootp->SimTop__DOT__clint__DOT__mtimecmp);
+		uint8_t src1 = dut->rootp->io_ext_irq_sources_1;
+		uint8_t pending = dut->rootp->SimTop__DOT__core__DOT__interruptPending;
+		uint8_t fire = dut->rootp->SimTop__DOT__core__DOT__interrupt_fire;
+		uint64_t mcause = dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause;
+		if (trace_irq_ && (mtip != last_mtip_ || src1 != last_src1_ || pending != last_pending_ || fire != last_fire_))
+		{
+			printf("[irq %6" PRIu64 "] src1=%u mtip=%u pending=%u fire=%u mcause=0x%016" PRIx64 "\n",
+			       cycle, src1, mtip, pending, fire, mcause);
+		}
+		last_mtip_ = mtip;
+		last_src1_ = src1;
+		last_pending_ = pending;
+		last_fire_ = fire;
+	}
+
+  private:
+	bool trace_irq_ = false;
+	uint64_t env_mask_ = 0;
+	uint8_t last_mtip_ = 0xff;
+	uint8_t last_src1_ = 0xff;
+	uint8_t last_pending_ = 0xff;
+	uint8_t last_fire_ = 0xff;
+};
+
+class FlashImage
+{
+  public:
+	bool load(const std::string &path)
+	{
+		if (path.empty())
+			return true;
+		FILE *f = fopen(path.c_str(), "rb");
+		if (!f)
+		{
+			perror("flash fopen");
+			return false;
+		}
+		if (fseek(f, 0, SEEK_END) != 0)
+		{
+			fclose(f);
+			return false;
+		}
+		long size = ftell(f);
+		if (size < 0)
+		{
+			fclose(f);
+			return false;
+		}
+		rewind(f);
+		data_.resize((size_t)size);
+		size_t got = fread(data_.data(), 1, data_.size(), f);
+		fclose(f);
+		if (got != data_.size())
+		{
+			fprintf(stderr, "short flash image read: %zu/%zu\n", got, data_.size());
+			return false;
+		}
+		printf("[flash]: loaded %zu bytes from %s (QSPI pins not connected yet)\n", data_.size(), path.c_str());
+		return true;
+	}
+
+  private:
+	std::vector<uint8_t> data_;
+};
 
 int main(int argc, char **argv, char **env)
 {
@@ -366,55 +627,52 @@ bool run_one_test(const std::string &bin_path,
 				  const std::string &test_name, bool trace_en,
 				  const std::string &expected_uart)
 {
+	SimOptions opts;
+	opts.elf_path = bin_path;
+	opts.test_name = test_name;
+	opts.expected_uart = expected_uart;
+	opts.trace_wave = trace_en;
+	opts.direct_elf_load = !env_enabled("ION_BOOTROM_ONLY");
+	opts.uart_stdin = env_enabled("ION_UART_STDIN");
+	opts.trace_irq = env_enabled("ION_TRACE_IRQ");
+	opts.max_cycles = env_u64("ION_MAX_CYCLES", MAX_SIM_CYCLES);
+	const char *flash = std::getenv("ION_FLASH_IMAGE");
+	if (flash != nullptr)
+		opts.flash_image = flash;
+	return run_sim(opts);
+}
+
+bool run_sim(const SimOptions &opts)
+{
 	VSoc *dut = new VSoc;
 	VerilatedVcdC *tfp = new VerilatedVcdC;
 
 	sim_time = 0;
 
 	ram_init(dut);
-	load_elf(dut, bin_path.c_str());
-#define CLEAR_EXT_IRQ_SOURCES(DUT)        \
-	do                                    \
-	{                                     \
-		(DUT)->io_ext_irq_sources_0 = 0;  \
-		(DUT)->io_ext_irq_sources_1 = 0;  \
-		(DUT)->io_ext_irq_sources_2 = 0;  \
-		(DUT)->io_ext_irq_sources_3 = 0;  \
-		(DUT)->io_ext_irq_sources_4 = 0;  \
-		(DUT)->io_ext_irq_sources_5 = 0;  \
-		(DUT)->io_ext_irq_sources_6 = 0;  \
-		(DUT)->io_ext_irq_sources_7 = 0;  \
-		(DUT)->io_ext_irq_sources_8 = 0;  \
-		(DUT)->io_ext_irq_sources_9 = 0;  \
-		(DUT)->io_ext_irq_sources_10 = 0; \
-		(DUT)->io_ext_irq_sources_11 = 0; \
-		(DUT)->io_ext_irq_sources_12 = 0; \
-		(DUT)->io_ext_irq_sources_13 = 0; \
-		(DUT)->io_ext_irq_sources_14 = 0; \
-		(DUT)->io_ext_irq_sources_15 = 0; \
-		(DUT)->io_ext_irq_sources_16 = 0; \
-		(DUT)->io_ext_irq_sources_17 = 0; \
-		(DUT)->io_ext_irq_sources_18 = 0; \
-		(DUT)->io_ext_irq_sources_19 = 0; \
-		(DUT)->io_ext_irq_sources_20 = 0; \
-		(DUT)->io_ext_irq_sources_21 = 0; \
-		(DUT)->io_ext_irq_sources_22 = 0; \
-		(DUT)->io_ext_irq_sources_23 = 0; \
-		(DUT)->io_ext_irq_sources_24 = 0; \
-		(DUT)->io_ext_irq_sources_25 = 0; \
-		(DUT)->io_ext_irq_sources_26 = 0; \
-		(DUT)->io_ext_irq_sources_27 = 0; \
-		(DUT)->io_ext_irq_sources_28 = 0; \
-		(DUT)->io_ext_irq_sources_29 = 0; \
-		(DUT)->io_ext_irq_sources_30 = 0; \
-		(DUT)->io_ext_irq_sources_31 = 0; \
-	} while (0)
 
-	CLEAR_EXT_IRQ_SOURCES(dut);
+	FlashImage flash;
+	if (!flash.load(opts.flash_image))
+	{
+		delete dut;
+		delete tfp;
+		return false;
+	}
+	if (opts.direct_elf_load)
+	{
+		load_elf(dut, opts.elf_path.c_str());
+	}
+	else
+	{
+		printf("[boot]: direct ELF preload disabled; boot ROM will run from built-in contents\n");
+		printf("[boot]: use ION_FLASH_IMAGE for the future QSPI-backed boot path\n");
+	}
+
+	clear_ext_irq_sources(dut);
 	dut->io_uart_rx_valid = 0;
 	dut->io_uart_rx_byte = 0;
 
-	if (trace_en)
+	if (opts.trace_wave)
 	{
 		Verilated::traceEverOn(true);
 		dut->trace(tfp, 99);
@@ -426,21 +684,22 @@ bool run_one_test(const std::string &bin_path,
 	dut->clock = 0;
 	dut->reset = 1;
 
+	UartStdio uart(opts.uart_stdin);
+	InterruptModel irq(opts.trace_irq);
+
 	for (int i = 0; i < 6; ++i)
 	{
-		CLEAR_EXT_IRQ_SOURCES(dut);
-		dut->io_uart_rx_valid = 0;
-		dut->io_uart_rx_byte = 0;
+		irq.drive(dut, opts.test_name, sim_time);
+		uart.drive_rx(dut);
 		dut->clock ^= 1;
 		dut->eval();
-		tfp->dump(sim_time);
+		if (opts.trace_wave)
+			tfp->dump(sim_time);
 		sim_time++;
 	}
 
 	dut->reset = 0;
 
-	bool prev_uart_tx = false;
-	std::string uart_output;
 	printf("\n--- UART output ---\n");
 	bool saw_exit = false;
 	bool trace_cpu = std::getenv("ION_TRACE_CPU") != nullptr;
@@ -448,16 +707,15 @@ bool run_one_test(const std::string &bin_path,
 	uint64_t last_mtimecmp = UINT64_MAX;
 	uint8_t last_mtip = 0xff;
 
-	while (sim_time < MAX_SIM_CYCLES)
+	while (sim_time < opts.max_cycles)
 	{
-		CLEAR_EXT_IRQ_SOURCES(dut);
-		dut->io_uart_rx_valid = 0;
-		dut->io_uart_rx_byte = 0;
-		dut->io_ext_irq_sources_1 = ((test_name == "plic" || test_name == "plic_s") && sim_time >= 80) ? 1 : 0;
+		irq.drive(dut, opts.test_name, sim_time);
+		uart.drive_rx(dut);
 
 		dut->clock ^= 1;
 		dut->eval();
-		tfp->dump(sim_time);
+		if (opts.trace_wave)
+			tfp->dump(sim_time);
 
 		uint64_t cur_mtimecmp = dut->rootp->SimTop__DOT__clint__DOT__mtimecmp;
 		uint8_t cur_mtip = (dut->rootp->SimTop__DOT__clint__DOT__mtimecmp != 0) &&
@@ -509,17 +767,9 @@ bool run_one_test(const std::string &bin_path,
 				   (uint64_t)dut->rootp->SimTop__DOT__clint__DOT__mtime,
 				   cur_mtimecmp);
 		}
+		irq.sample(dut, sim_time);
 
-		// UART TX: print char when tx_valid rises
-		bool cur_uart_tx = dut->io_uart_tx;
-		if (cur_uart_tx && !prev_uart_tx)
-		{
-			uint8_t ch = (uint8_t)(dut->io_uart_byte & 0xFF);
-			uart_output.push_back((char)ch);
-			putchar(ch);
-			fflush(stdout);
-		}
-		prev_uart_tx = cur_uart_tx;
+		uart.capture_tx(dut);
 
 		int a0_live = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
 		int a7_live = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
@@ -539,17 +789,18 @@ bool run_one_test(const std::string &bin_path,
 	int a0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
 	int a7 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
 
-	bool uart_pass = expected_uart.empty() || (uart_output.find(expected_uart) != std::string::npos);
+	bool uart_pass = opts.expected_uart.empty() || (uart.output().find(opts.expected_uart) != std::string::npos);
 	bool pass = (saw_exit && a7 == 93 && a0 == 0 && uart_pass);
 
 	if (pass)
-		printf("[%s]: gp=%d, a7=%d, a0=%d, test %spassed%s\n", test_name.c_str(), gp, a7, a0, GREEN, CEND);
+		printf("[%s]: gp=%d, a7=%d, a0=%d, test %spassed%s\n", opts.test_name.c_str(), gp, a7, a0, GREEN, CEND);
 	else if (a7 == 93)
-		printf("[%s]: gp=%d, a7=%d, a0=%d, uart=\"%s\", test %sfailed%s\n", test_name.c_str(), gp, a7, a0, uart_output.c_str(), RED, CEND);
+		printf("[%s]: gp=%d, a7=%d, a0=%d, uart=\"%s\", test %sfailed%s\n", opts.test_name.c_str(), gp, a7, a0, uart.output().c_str(), RED, CEND);
 	else
-		printf("[%s]: gp=%d, a7=%d, a0=%d, test %sunknown%s\n", test_name.c_str(), gp, a7, a0, YELLOW, CEND);
+		printf("[%s]: gp=%d, a7=%d, a0=%d, test %sunknown%s\n", opts.test_name.c_str(), gp, a7, a0, YELLOW, CEND);
 
-	tfp->close();
+	if (opts.trace_wave)
+		tfp->close();
 	dut->final();
 	delete dut;
 	delete tfp;
