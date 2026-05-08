@@ -15,8 +15,8 @@ class CacheCoreIO(params: TLParams) extends Bundle {
         val req  = Flipped(Decoupled(new CacheReq(params.addrWidth, params.dataWidth)))
         val resp = Decoupled(new CacheResp(params.dataWidth))
     }
-    // Whole-cache invalidation is intended for ICache/fence.i. DCache dirty
-    // writeback flushing is a separate operation and is not implemented here.
+    // Whole-cache maintenance. Dirty lines are written back before invalidation,
+    // so the same primitive is safe for ICache fence.i and future DCache flushes.
     val invalidate = Flipped(Decoupled(Bool()))
     val bus = new TLBundle(params)
 }
@@ -44,7 +44,10 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
     val dataArray  = SyncReadMem(nSets, UInt(params.dataWidth.W))
 
     // 状态机
-    val sIdle :: sCompare :: sWriteBackReq :: sWriteBackWait :: sRefillReq :: sRefillWait :: sResp :: Nil = Enum(7)
+    val (
+        sIdle :: sCompare :: sWriteBackReq :: sWriteBackWait :: sRefillReq :: sRefillWait :: sResp ::
+        sFlushRead :: sFlushWriteBackReq :: sFlushWriteBackWait :: sFlushInvalidate :: Nil
+    ) = Enum(11)
     val state = RegInit(sIdle)
 
     // 锁存 CPU 请求
@@ -53,10 +56,15 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
     val reqTag   = getTag(reqReg.addr)
     val victimTagReg  = Reg(UInt(tagBits.W))
     val victimDataReg = Reg(UInt(params.dataWidth.W))
+    val flushIdx = RegInit(0.U(indexBits.W))
+    val flushTagReg = Reg(UInt(tagBits.W))
+    val flushDataReg = Reg(UInt(params.dataWidth.W))
     
     // 从 SRAM 读出的数据
     val readTag  = tagArray.read(getIdx(io.cpu.req.bits.addr), io.cpu.req.valid && state === sIdle)
     val readData = dataArray.read(getIdx(io.cpu.req.bits.addr), io.cpu.req.valid && state === sIdle)
+    val flushReadTag = tagArray.read(flushIdx, state === sFlushRead)
+    val flushReadData = dataArray.read(flushIdx, state === sFlushRead)
 
     // Response data is registered so SyncReadMem outputs are never exposed
     // across CPU backpressure cycles.
@@ -80,19 +88,18 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
     switch(state) {
         is(sIdle) {
             when(io.invalidate.fire) {
-                validArray.foreach(_ := false.B)
-                dirtyArray.foreach(_ := false.B)
                 respErrReg := false.B
+                flushIdx := 0.U
+                state := sFlushRead
             }.elsewhen(io.cpu.req.valid) {
                 reqReg := io.cpu.req.bits
                 respErrReg := false.B
                 assert(!io.cpu.req.bits.device && io.cpu.req.bits.cacheable, "L1Cache: device/uncached request must bypass cache")
                 assert(!io.cpu.req.bits.atomic, "L1Cache: atomic request not supported yet")
                 when(io.cpu.req.bits.fence || io.cpu.req.bits.fencei) {
-                    validArray.foreach(_ := false.B)
-                    dirtyArray.foreach(_ := false.B)
+                    flushIdx := 0.U
                     refillReg := 0.U
-                    state := sResp
+                    state := sFlushRead
                 }.otherwise {
                     state := sCompare
                 }
@@ -190,6 +197,56 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
             // rdata 在顶层被上面 Mux 接走了 refillReg
             when(io.cpu.resp.ready) {
                 state := sIdle
+            }
+        }
+        is(sFlushRead) {
+            state := sFlushInvalidate
+        }
+        is(sFlushInvalidate) {
+            when(validArray(flushIdx) && dirtyArray(flushIdx)) {
+                flushTagReg := flushReadTag
+                flushDataReg := flushReadData
+                state := sFlushWriteBackReq
+            }.otherwise {
+                validArray(flushIdx) := false.B
+                dirtyArray(flushIdx) := false.B
+                when(flushIdx === (nSets - 1).U) {
+                    state := sResp
+                }.otherwise {
+                    flushIdx := flushIdx + 1.U
+                    state := sFlushRead
+                }
+            }
+        }
+        is(sFlushWriteBackReq) {
+            io.bus.a.valid         := true.B
+            io.bus.a.bits.opcode   := TLOpcode.PutFullData
+            io.bus.a.bits.param    := 0.U
+            io.bus.a.bits.size     := offsetBits.U
+            io.bus.a.bits.source   := 0.U
+            io.bus.a.bits.address  := Cat(flushTagReg, flushIdx, 0.U(offsetBits.W))
+            io.bus.a.bits.data     := flushDataReg
+            io.bus.a.bits.mask     := ((1 << (params.dataWidth/8)) - 1).U
+            io.bus.a.bits.corrupt  := false.B
+
+            when(io.bus.a.fire) {
+                state := sFlushWriteBackWait
+            }
+        }
+        is(sFlushWriteBackWait) {
+            io.bus.d.ready := true.B
+            when(io.bus.d.fire) {
+                respErrReg := io.bus.d.bits.denied
+                when(!io.bus.d.bits.denied) {
+                    validArray(flushIdx) := false.B
+                    dirtyArray(flushIdx) := false.B
+                }
+                when(io.bus.d.bits.denied || flushIdx === (nSets - 1).U) {
+                    state := sResp
+                }.otherwise {
+                    flushIdx := flushIdx + 1.U
+                    state := sFlushRead
+                }
             }
         }
     }

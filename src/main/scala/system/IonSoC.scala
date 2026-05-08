@@ -1,6 +1,7 @@
 package soc
 
 import chisel3._
+import chisel3.util._
 import _root_.circt.stage.ChiselStage
 
 import soc.config.Config
@@ -11,7 +12,7 @@ import soc.device.BROM
 import soc.device.TLROM
 import soc.device.UartTx
 import soc.device.CLINT
-import soc.device.TLError
+import soc.debug.DebugModule
 import soc.debug.JtagTap
 import soc.device.interrupt.PLIC
 import soc.bus.tilelink.TLXbar
@@ -45,7 +46,7 @@ class IonSoC(
     val core  = Module(new Core(Config.XLEN, hartID = 0, features, enabledExt))
     val brom  = Module(new BROM(Config.XLEN, Config.romDepth, Config.romInit))
     val sram  = Module(new TLRAM(dbusParams, Config.ramDepth))
-    val debugError = Module(new TLError(dbusParams))
+    val debugModule = Module(new DebugModule(dbusParams))
     val tlrom = Module(new TLROM(dbusParams))
     val uart  = if (features.uart) Some(Module(new UartTx(dbusParams))) else None
     val clint = if (features.clint) Some(Module(new CLINT(dbusParams))) else None
@@ -68,7 +69,11 @@ class IonSoC(
     jtag.io.jtag.tck := io.jtag_tck
     jtag.io.jtag.tdi := io.jtag_tdi
     io.jtag_tdo := jtag.io.jtag.tdo
-    jtag.io.dr_in := core.io.pc
+    jtag.io.dr_in := Cat(0.U(23.W), debugModule.io.dmi_rdata, 0.U(9.W))
+    debugModule.io.dmi_valid := jtag.io.update_dr
+    debugModule.io.dmi_write := jtag.io.dr_out(1, 0) === 2.U
+    debugModule.io.dmi_addr  := jtag.io.dr_out(8, 2)
+    debugModule.io.dmi_wdata := jtag.io.dr_out(40, 9)
 
     uart.foreach { device =>
         device.io.rx_valid := io.uart_rx_valid
@@ -90,7 +95,7 @@ class IonSoC(
         slaveIndex += 1
     }
 
-    connectSlave(debugError.io.tl)
+    connectSlave(debugModule.io.tl)
     connectSlave(tlrom.io.tl)
     connectSlave(sram.io.tl)
     uart.foreach(device => connectSlave(device.io.tl))

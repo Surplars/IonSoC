@@ -104,6 +104,24 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
         data
     }
 
+    private def issueInvalidate(dut: CacheRamHarness, maxCycles: Int = 80): Unit = {
+        dut.io.invalidate.valid.poke(true.B)
+        dut.io.invalidate.bits.poke(true.B)
+        dut.io.invalidate.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.invalidate.valid.poke(false.B)
+
+        var sawResp = false
+        for (_ <- 0 until maxCycles if !sawResp) {
+            if (dut.io.resp.valid.peek().litToBoolean) {
+                dut.io.resp.bits.err.expect(false.B)
+                sawResp = true
+            }
+            dut.clock.step()
+        }
+        assert(sawResp, "cache invalidate did not complete")
+    }
+
     test("Cache hit response remains stable under CPU backpressure") {
         simulate(new CacheRamHarness(params)) { dut =>
             dut.io.req.valid.poke(false.B)
@@ -171,15 +189,30 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
             issueReq(dut)
             waitResp(dut)
 
-            dut.io.invalidate.valid.poke(true.B)
-            dut.io.invalidate.bits.poke(true.B)
-            dut.io.invalidate.ready.expect(true.B)
-            dut.clock.step()
-            dut.io.invalidate.valid.poke(false.B)
+            issueInvalidate(dut)
 
             pokeReq(dut, addr = 0x100, cmd = CacheCmd.Read)
             issueReq(dut)
             assert(waitResp(dut) == BigInt("aaaabbbbccccdddd", 16))
+        }
+    }
+
+    test("Cache invalidate writes back dirty lines before dropping them") {
+        simulate(new CacheRamHarness(params)) { dut =>
+            dut.io.req.valid.poke(false.B)
+            dut.io.invalidate.valid.poke(false.B)
+            dut.io.invalidate.bits.poke(false.B)
+            dut.io.resp.ready.poke(true.B)
+
+            pokeReq(dut, addr = 0x80, cmd = CacheCmd.Write, data = BigInt("cafebabedeadbeef", 16))
+            issueReq(dut)
+            waitResp(dut, maxCycles = 40)
+
+            issueInvalidate(dut)
+
+            pokeReq(dut, addr = 0x80, cmd = CacheCmd.Read)
+            issueReq(dut)
+            assert(waitResp(dut, maxCycles = 40) == BigInt("cafebabedeadbeef", 16))
         }
     }
 

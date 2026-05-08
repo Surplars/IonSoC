@@ -128,8 +128,8 @@ class JtagTap(val irLen: Int = 5, val drLen: Int = 64, val idcode: BigInt = 0x10
     io.sel_inst := instr
     io.capture_dr := state === captureDR
     io.shift_dr := state === shiftDR
-    io.update_dr := state === updateDR
+    io.update_dr := tckRise && state === updateDR
     io.capture_ir := state === captureIR
     io.shift_ir := state === shiftIR
-    io.update_ir := state === updateIR
+    io.update_ir := tckRise && state === updateIR
 }

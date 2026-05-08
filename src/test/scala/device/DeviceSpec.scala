@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
 import soc.bus.tilelink._
+import soc.debug.{DebugModule, DebugModuleMap}
 import soc.device.{CLINT, TLError, TLROM, UartTx}
 
 class DeviceSpec extends AnyFunSuite with ChiselSim {
@@ -61,6 +62,23 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
         dut.io.tl.d.ready.poke(false.B)
         dut.io.rx_valid.poke(false.B)
         dut.io.rx_byte.poke(0.U)
+    }
+
+    private def driveDefaults(dut: DebugModule): Unit = {
+        dut.io.tl.a.valid.poke(false.B)
+        dut.io.tl.a.bits.opcode.poke(0.U)
+        dut.io.tl.a.bits.param.poke(0.U)
+        dut.io.tl.a.bits.size.poke(2.U)
+        dut.io.tl.a.bits.source.poke(0.U)
+        dut.io.tl.a.bits.address.poke(0.U)
+        dut.io.tl.a.bits.mask.poke(0.U)
+        dut.io.tl.a.bits.data.poke(0.U)
+        dut.io.tl.a.bits.corrupt.poke(false.B)
+        dut.io.tl.d.ready.poke(false.B)
+        dut.io.dmi_valid.poke(false.B)
+        dut.io.dmi_addr.poke(0.U)
+        dut.io.dmi_wdata.poke(0.U)
+        dut.io.dmi_write.poke(false.B)
     }
 
     private def clintWrite(dut: CLINT, address: BigInt, mask: BigInt, data: BigInt): Unit = {
@@ -145,6 +163,46 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
         dut.io.tl.d.bits.source.expect(6.U)
         dut.io.tl.d.bits.denied.expect(false.B)
         val data = (dut.io.tl.d.bits.data.peek().litValue >> (lane * 8)) & 0xff
+        dut.clock.step()
+        data
+    }
+
+    private def debugWrite(dut: DebugModule, address: BigInt, data: BigInt): Unit = {
+        val lane = (address & 0x7).toInt
+        dut.io.tl.d.ready.poke(true.B)
+        dut.io.tl.a.bits.opcode.poke(TLOpcode.PutPartialData)
+        dut.io.tl.a.bits.size.poke(2.U)
+        dut.io.tl.a.bits.source.poke(3.U)
+        dut.io.tl.a.bits.address.poke(address.U)
+        dut.io.tl.a.bits.mask.poke((0xf << lane).U)
+        dut.io.tl.a.bits.data.poke((data << (lane * 8)).U)
+        dut.io.tl.a.valid.poke(true.B)
+        dut.io.tl.a.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.tl.a.valid.poke(false.B)
+        dut.io.tl.d.valid.expect(true.B)
+        dut.io.tl.d.bits.opcode.expect(TLOpcode.AccessAck)
+        dut.io.tl.d.bits.denied.expect(false.B)
+        dut.clock.step()
+    }
+
+    private def debugRead(dut: DebugModule, address: BigInt): BigInt = {
+        val lane = (address & 0x7).toInt
+        dut.io.tl.d.ready.poke(true.B)
+        dut.io.tl.a.bits.opcode.poke(TLOpcode.Get)
+        dut.io.tl.a.bits.size.poke(2.U)
+        dut.io.tl.a.bits.source.poke(4.U)
+        dut.io.tl.a.bits.address.poke(address.U)
+        dut.io.tl.a.bits.mask.poke((0xf << lane).U)
+        dut.io.tl.a.bits.data.poke(0.U)
+        dut.io.tl.a.valid.poke(true.B)
+        dut.io.tl.a.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.tl.a.valid.poke(false.B)
+        dut.io.tl.d.valid.expect(true.B)
+        dut.io.tl.d.bits.opcode.expect(TLOpcode.AccessAckData)
+        dut.io.tl.d.bits.denied.expect(false.B)
+        val data = (dut.io.tl.d.bits.data.peek().litValue >> (lane * 8)) & BigInt("ffffffff", 16)
         dut.clock.step()
         data
     }
@@ -277,6 +335,24 @@ class DeviceSpec extends AnyFunSuite with ChiselSim {
             dut.io.irq.expect(true.B)
             assert(uartReadByte(dut, 0x2) == 0x02)
             dut.io.irq.expect(false.B)
+        }
+
+        simulate(new DebugModule(params)) { dut =>
+            driveDefaults(dut)
+
+            debugWrite(dut, DebugModuleMap.DMControl * 4, BigInt("80000001", 16))
+            assert(debugRead(dut, DebugModuleMap.DMControl * 4) == BigInt("80000001", 16))
+            dut.io.dmactive.expect(true.B)
+            dut.io.haltreq.expect(true.B)
+            assert((debugRead(dut, DebugModuleMap.DMStatus * 4) & 0xf) == 2)
+
+            dut.io.dmi_addr.poke(DebugModuleMap.Data0.U)
+            dut.io.dmi_wdata.poke("h12345678".U)
+            dut.io.dmi_write.poke(true.B)
+            dut.io.dmi_valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dmi_valid.poke(false.B)
+            assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt("12345678", 16))
         }
     }
 }
