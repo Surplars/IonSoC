@@ -149,11 +149,16 @@ regress: $(VSOC_BIN) $(TIMER_ELF) $(CLINT32_ELF) $(TLERROR_ELF) $(AMO_ELF) $(HAZ
 	./$(VSOC_BIN) --payload plic XP $(PLIC_ELF)
 	./$(VSOC_BIN) --payload plic_s SIP $(PLIC_S_ELF)
 
-regress-icache: $(ICACHE_VSOC_BIN) $(TIMER_ELF)
+regress-icache: $(ICACHE_VSOC_BIN) $(BASIC_ELF) $(TIMER_ELF) $(HAZARD_ELF)
+	./$(ICACHE_VSOC_BIN) --payload basic "Hello, World!" $(BASIC_ELF)
 	./$(ICACHE_VSOC_BIN) --payload timer S!!P $(TIMER_ELF)
+	./$(ICACHE_VSOC_BIN) --payload hazard HP $(HAZARD_ELF)
 
 regress-icache-basic: $(ICACHE_VSOC_BIN) $(BASIC_ELF)
 	./$(ICACHE_VSOC_BIN) --payload basic "Hello, World!" $(BASIC_ELF)
+
+regress-icache-hazard: $(ICACHE_VSOC_BIN) $(HAZARD_ELF)
+	./$(ICACHE_VSOC_BIN) --payload hazard HP $(HAZARD_ELF)
 
 gtkwave:
 	gtkwave $(BUILD_DIR)/wave.vcd
