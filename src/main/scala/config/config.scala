@@ -47,7 +47,7 @@ case class AddressRegion(name: String, base: BigInt, size: BigInt) {
 
 object Config {
     val XLEN: Int                        = 64
-    val enabledExt: Set[Extension.Value] = Set(Extension.RV64I, Extension.Zicsr, Extension.RV64M)
+    val enabledExt: Set[Extension.Value] = Set(Extension.RV64I, Extension.Zicsr, Extension.Zifencei, Extension.RV64M)
     val features: SoCFeatures            = SoCFeatures()
 
     val DebugBase: BigInt = 0x00000000L

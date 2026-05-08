@@ -105,6 +105,13 @@ class ALU(XLEN: Int = 64) extends Module {
     val op2_32  = op2(31, 0)
     val shamt64 = op2(5, 0).asUInt
     val shamt32 = op2(4, 0).asUInt
+    val xlenMin = (BigInt(1) << (XLEN - 1)).U(XLEN.W)
+    val wordMin = "h80000000".U(32.W)
+    val signedProduct = (Cat(op1(XLEN - 1), op1).asSInt * Cat(op2(XLEN - 1), op2).asSInt).asUInt
+    val signedUnsignedProduct = (Cat(op1(XLEN - 1), op1).asSInt * Cat(0.U(1.W), op2).asSInt).asUInt
+    val unsignedProduct = Cat(0.U(1.W), op1) * Cat(0.U(1.W), op2)
+
+    private def sext32(value: UInt): UInt = Cat(Fill(XLEN - 32, value(31)), value)
 
     when(io.stall) {
         stall_valid := true.B
@@ -216,7 +223,36 @@ class ALU(XLEN: Int = 64) extends Module {
                         ALUOps.SRAW -> {
                             val shifted = (op1_32.asSInt >> shamt32).asUInt(31, 0)
                             Cat(Fill(32, shifted(31)), shifted)
-                        }
+                        },
+                        ALUOps.MUL -> unsignedProduct(XLEN - 1, 0),
+                        ALUOps.MULH -> signedProduct((2 * XLEN) - 1, XLEN),
+                        ALUOps.MULHSU -> signedUnsignedProduct((2 * XLEN) - 1, XLEN),
+                        ALUOps.MULHU -> unsignedProduct((2 * XLEN) - 1, XLEN),
+                        ALUOps.DIV -> {
+                            val divByZero = op2 === 0.U
+                            val overflow = op1 === xlenMin && op2 === Fill(XLEN, 1.U(1.W))
+                            Mux(divByZero, Fill(XLEN, 1.U(1.W)), Mux(overflow, op1, (op1.asSInt / op2.asSInt).asUInt))
+                        },
+                        ALUOps.DIVU -> Mux(op2 === 0.U, Fill(XLEN, 1.U(1.W)), op1 / op2),
+                        ALUOps.REM -> {
+                            val divByZero = op2 === 0.U
+                            val overflow = op1 === xlenMin && op2 === Fill(XLEN, 1.U(1.W))
+                            Mux(divByZero, op1, Mux(overflow, 0.U, (op1.asSInt % op2.asSInt).asUInt))
+                        },
+                        ALUOps.REMU -> Mux(op2 === 0.U, op1, op1 % op2),
+                        ALUOps.MULW -> sext32((op1_32 * op2_32)(31, 0)),
+                        ALUOps.DIVW -> {
+                            val divByZero = op2_32 === 0.U
+                            val overflow = op1_32 === wordMin && op2_32 === Fill(32, 1.U(1.W))
+                            Mux(divByZero, Fill(XLEN, 1.U(1.W)), Mux(overflow, sext32(op1_32), sext32((op1_32.asSInt / op2_32.asSInt).asUInt)))
+                        },
+                        ALUOps.DIVUW -> Mux(op2_32 === 0.U, Fill(XLEN, 1.U(1.W)), sext32(op1_32 / op2_32)),
+                        ALUOps.REMW -> {
+                            val divByZero = op2_32 === 0.U
+                            val overflow = op1_32 === wordMin && op2_32 === Fill(32, 1.U(1.W))
+                            Mux(divByZero, sext32(op1_32), Mux(overflow, 0.U, sext32((op1_32.asSInt % op2_32.asSInt).asUInt)))
+                        },
+                        ALUOps.REMUW -> Mux(op2_32 === 0.U, sext32(op1_32), sext32(op1_32 % op2_32))
                     )
                 ),
                 op1 // CSR指令直接写回old CSR值

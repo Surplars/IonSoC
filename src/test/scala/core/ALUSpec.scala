@@ -104,4 +104,55 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.csr_write.expect(false.B)
         }
     }
+
+    test("ALU executes RV64M multiply variants") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            stepAlu(dut, ALUOps.MUL, BigInt("ffffffffffffffff", 16), 3)
+            dut.io.alu_out.result.expect(BigInt("fffffffffffffffd", 16))
+
+            stepAlu(dut, ALUOps.MULH, BigInt("ffffffffffffffff", 16), 3)
+            dut.io.alu_out.result.expect(BigInt("ffffffffffffffff", 16))
+
+            stepAlu(dut, ALUOps.MULHSU, BigInt("ffffffffffffffff", 16), 3)
+            dut.io.alu_out.result.expect(BigInt("ffffffffffffffff", 16))
+
+            stepAlu(dut, ALUOps.MULHU, BigInt("ffffffffffffffff", 16), 2)
+            dut.io.alu_out.result.expect(1.U)
+
+            stepAlu(dut, ALUOps.MULW, BigInt("ffffffffffffffff", 16), 2)
+            dut.io.alu_out.result.expect(BigInt("fffffffffffffffe", 16))
+        }
+    }
+
+    test("ALU executes RV64M divide and remainder edge cases") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            stepAlu(dut, ALUOps.DIV, 10, 3)
+            dut.io.alu_out.result.expect(3.U)
+
+            stepAlu(dut, ALUOps.REM, 10, 3)
+            dut.io.alu_out.result.expect(1.U)
+
+            stepAlu(dut, ALUOps.DIVU, 10, 0)
+            dut.io.alu_out.result.expect(BigInt("ffffffffffffffff", 16))
+
+            stepAlu(dut, ALUOps.REMU, 10, 0)
+            dut.io.alu_out.result.expect(10.U)
+
+            stepAlu(dut, ALUOps.DIV, BigInt("8000000000000000", 16), BigInt("ffffffffffffffff", 16))
+            dut.io.alu_out.result.expect(BigInt("8000000000000000", 16))
+
+            stepAlu(dut, ALUOps.REM, BigInt("8000000000000000", 16), BigInt("ffffffffffffffff", 16))
+            dut.io.alu_out.result.expect(0.U)
+
+            stepAlu(dut, ALUOps.DIVW, BigInt("fffffffffffffffe", 16), 2)
+            dut.io.alu_out.result.expect(BigInt("ffffffffffffffff", 16))
+
+            stepAlu(dut, ALUOps.REMUW, BigInt("ffffffffffffffff", 16), 2)
+            dut.io.alu_out.result.expect(1.U)
+        }
+    }
 }

@@ -115,8 +115,8 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     ctrl.reg_write   := reg_write
     ctrl.mem_read    := mem_read
     ctrl.mem_write   := mem_write
-    ctrl.mem_fence   := valid && opcode === Opcode.MISC_MEM && funct3 === 0.U
-    ctrl.mem_fence_i := valid && opcode === Opcode.MISC_MEM && funct3 === "b001".U
+    ctrl.mem_fence   := valid && ctrlSignals(0) === true.B && opcode === Opcode.MISC_MEM && funct3 === 0.U
+    ctrl.mem_fence_i := valid && ctrlSignals(0) === true.B && opcode === Opcode.MISC_MEM && funct3 === "b001".U
     ctrl.mem_atomic  := false.B
     ctrl.csr_op      := csr_op
     ctrl.branch_type := branch_type

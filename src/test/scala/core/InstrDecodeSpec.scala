@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
 import soc.core.pipeline._
-import soc.isa.{MCause, PrivilegeLevel}
+import soc.isa.{Extension, MCause, PrivilegeLevel}
 
 class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
     private def init(dut: InstrDecode): Unit = {
@@ -57,6 +57,34 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.trap_info.valid.expect(true.B)
             dut.io.trap_info.cause.expect(MCause.EcallFromUMode)
+        }
+    }
+
+    test("InstrDecode gates M and Zifencei instructions by enabled extensions") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h022081b3".U) // mul x3, x1, x2
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+
+            init(dut)
+            dut.io.instr_in.poke("h0000100f".U) // fence.i
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+        }
+
+        simulate(new InstrDecode(64, Set(Extension.RV64I, Extension.RV64M, Extension.Zifencei))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h022081b3".U) // mul x3, x1, x2
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.MUL)
+
+            init(dut)
+            dut.io.instr_in.poke("h0000100f".U) // fence.i
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.mem_fence_i.expect(true.B)
         }
     }
 }
