@@ -105,18 +105,23 @@ class Core(
     io.DBus <> dbusXbar.io.slave
     io.IBus <> DontCare
 
+    val aluMemOp = alu.io.alu_out.mem.op
+    def isLoadLikeOp(op: MemOpType.Type): Bool =
+        op === MemOpType.Load || op === MemOpType.LR || op === MemOpType.SC || op === MemOpType.AMO
+
+    def usesRd(rs1: UInt, rs2: UInt, rd: UInt): Bool =
+        rd =/= 0.U && ((rs1 === rd && rs1 =/= 0.U) || (rs2 === rd && rs2 =/= 0.U))
+
     val loadLikePending = RegInit(false.B)
     val loadLikePendingRd = RegInit(0.U(5.W))
-    val aluMemOp = alu.io.alu_out.mem.op
     val aluLoadLike = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
-        (aluMemOp === MemOpType.Load || aluMemOp === MemOpType.LR || aluMemOp === MemOpType.SC || aluMemOp === MemOpType.AMO)
+        isLoadLikeOp(aluMemOp)
     val loadLikeComplete =
         loadLikePending && (lsu.io.load_data_valid ||
             (wb.io.reg_wb.reg_write && wb.io.reg_wb.rd === loadLikePendingRd))
     val decodeUsesPending =
         loadLikePending && idecode.io.valid_out &&
-            ((idecode.io.decoded_out.rs1 === loadLikePendingRd && idecode.io.decoded_out.rs1 =/= 0.U) ||
-                (idecode.io.decoded_out.rs2 === loadLikePendingRd && idecode.io.decoded_out.rs2 =/= 0.U))
+            usesRd(idecode.io.decoded_out.rs1, idecode.io.decoded_out.rs2, loadLikePendingRd)
     when(loadLikeComplete) {
         loadLikePending := false.B
         loadLikePendingRd := 0.U
@@ -127,7 +132,7 @@ class Core(
 
     val aluResultFwdValid = RegNext(
         alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
-            !(aluMemOp === MemOpType.Load || aluMemOp === MemOpType.LR || aluMemOp === MemOpType.SC || aluMemOp === MemOpType.AMO),
+            !isLoadLikeOp(aluMemOp),
         false.B
     )
     val aluResultFwdRd = RegEnable(alu.io.alu_out.rd, 0.U, alu.io.valid_out)
@@ -222,21 +227,32 @@ class Core(
     idecode.io.priv          := csr.io.mem_cfg_out.priv
     idecode.io.pred_taken_in := ifetch.io.pred_taken_out
     val aluBypassValid = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
-        !(aluMemOp === MemOpType.Load || aluMemOp === MemOpType.LR || aluMemOp === MemOpType.SC || aluMemOp === MemOpType.AMO)
+        !isLoadLikeOp(aluMemOp)
+    def bypassSource(valid: Bool, rd: UInt, data: UInt): FwdSource = {
+        val source = Wire(new FwdSource(XLEN))
+        source.valid := valid && rd =/= 0.U
+        source.rd := rd
+        source.data := data
+        source
+    }
+    val decodeBypassSources = Seq(
+        bypassSource(wb.io.reg_wb.reg_write, wb.io.reg_wb.rd, wb.io.reg_wb.data),
+        bypassSource(lsu.io.mem_out.reg_write, lsu.io.mem_out.rd, lsu.io.mem_out.result),
+        bypassSource(aluBypassValid, alu.io.alu_out.rd, alu.io.alu_out.result)
+    )
     def decodeBypass(addr: UInt, regData: UInt): UInt = {
-        Mux(
-            addr === 0.U,
-            0.U,
-            Mux(
-                aluBypassValid && addr === alu.io.alu_out.rd,
-                alu.io.alu_out.result,
-                Mux(
-                    lsu.io.mem_out.reg_write && addr === lsu.io.mem_out.rd,
-                    lsu.io.mem_out.result,
-                    Mux(wb.io.reg_wb.reg_write && addr === wb.io.reg_wb.rd, wb.io.reg_wb.data, regData)
-                )
-            )
-        )
+        decodeBypassSources.foldLeft(Mux(addr === 0.U, 0.U, regData)) { (data, source) =>
+            Mux(addr =/= 0.U && source.valid && addr === source.rd, source.data, data)
+        }
+    }
+    val lsuFwd = bypassSource(lsu.io.mem_out.reg_write, lsu.io.mem_out.rd, lsu.io.mem_out.result)
+    val aluFwd = bypassSource(aluResultFwdValid, aluResultFwdRd, aluResultFwdData)
+    val prevAluFwd = bypassSource(aluResultPrevValid, aluResultPrevRd, aluResultPrevData)
+    val wbFwd = bypassSource(wb.io.reg_wb.reg_write, wb.io.reg_wb.rd, wb.io.reg_wb.data)
+    def driveFwdSource(targetValid: Bool, targetRd: UInt, targetData: UInt, source: FwdSource): Unit = {
+        targetValid := source.valid
+        targetRd := source.rd
+        targetData := source.data
     }
     idecode.io.reg_rs1_data  := decodeBypass(idecode.io.reg_rd_rs1, register.io.rs1_data)
     idecode.io.reg_rs2_data  := decodeBypass(idecode.io.reg_rd_rs2, register.io.rs2_data)
@@ -252,15 +268,11 @@ class Core(
     alu.io.csr_illegal    := csr.io.illegal
     alu.io.fwd.load_valid := lsu.io.load_data_valid
 	alu.io.fwd.load_data  := lsu.io.load_data
-    alu.io.fwd.reg_write  := aluResultFwdValid || lsu.io.mem_out.reg_write
-    alu.io.fwd.rd         := Mux(aluResultFwdValid, aluResultFwdRd, lsu.io.mem_out.rd)
-    alu.io.fwd.alu_result := Mux(aluResultFwdValid, aluResultFwdData, lsu.io.mem_out.result)
-    alu.io.fwd.wb_reg_write := wb.io.reg_wb.reg_write
-    alu.io.fwd.wb_rd        := wb.io.reg_wb.rd
-    alu.io.fwd.wb_data      := wb.io.reg_wb.data
-    alu.io.fwd.prev_reg_write := aluResultPrevValid
-    alu.io.fwd.prev_rd        := aluResultPrevRd
-    alu.io.fwd.prev_data      := aluResultPrevData
+    alu.io.fwd.reg_write  := aluFwd.valid || lsuFwd.valid
+    alu.io.fwd.rd         := Mux(aluFwd.valid, aluFwd.rd, lsuFwd.rd)
+    alu.io.fwd.alu_result := Mux(aluFwd.valid, aluFwd.data, lsuFwd.data)
+    driveFwdSource(alu.io.fwd.wb_reg_write, alu.io.fwd.wb_rd, alu.io.fwd.wb_data, wbFwd)
+    driveFwdSource(alu.io.fwd.prev_reg_write, alu.io.fwd.prev_rd, alu.io.fwd.prev_data, prevAluFwd)
     alu.io.csr_rdata      := csr.io.rdata
     // mem
     lsu.io.pc_in        := alu.io.pc_out

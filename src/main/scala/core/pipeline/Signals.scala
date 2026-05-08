@@ -147,6 +147,12 @@ class RegWrite(XLEN: Int) extends Bundle {
     val reg_write = Bool()
 }
 
+class FwdSource(XLEN: Int) extends Bundle {
+    val valid = Bool()
+    val rd    = UInt(5.W)
+    val data  = UInt(XLEN.W)
+}
+
 class FwdSignals(XLEN: Int) extends Bundle {
     val load_valid = Bool()
     val load_data  = UInt(XLEN.W)
