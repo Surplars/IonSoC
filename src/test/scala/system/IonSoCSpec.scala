@@ -11,6 +11,8 @@ class IonSoCSpec extends AnyFunSuite with ChiselSim {
         for (i <- 0 until dut.io.ext_irq_sources.length) {
             dut.io.ext_irq_sources(i).poke(false)
         }
+        dut.io.uart_rx_valid.poke(false)
+        dut.io.uart_rx_byte.poke(0)
     }
 
     test("IonSoC elaborates with instruction cache enabled") {

@@ -322,6 +322,8 @@ bool run_one_test(const std::string &bin_path,
 } while (0)
 
     CLEAR_EXT_IRQ_SOURCES(dut);
+    dut->io_uart_rx_valid = 0;
+    dut->io_uart_rx_byte = 0;
 
     if (trace_en)
     {
@@ -338,6 +340,8 @@ bool run_one_test(const std::string &bin_path,
     for (int i = 0; i < 6; ++i)
     {
         CLEAR_EXT_IRQ_SOURCES(dut);
+        dut->io_uart_rx_valid = 0;
+        dut->io_uart_rx_byte = 0;
         dut->clock ^= 1;
         dut->eval();
         tfp->dump(sim_time);
@@ -358,6 +362,8 @@ bool run_one_test(const std::string &bin_path,
     while (sim_time < MAX_SIM_CYCLES)
     {
         CLEAR_EXT_IRQ_SOURCES(dut);
+        dut->io_uart_rx_valid = 0;
+        dut->io_uart_rx_byte = 0;
         dut->io_ext_irq_sources_1 = ((test_name == "plic" || test_name == "plic_s") && sim_time >= 80) ? 1 : 0;
 
         dut->clock ^= 1;

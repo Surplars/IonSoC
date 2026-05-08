@@ -63,6 +63,7 @@ object Config {
     val PlicBase: BigInt  = 0x0c000000L
     val PlicSize: BigInt  = 0x4000000L  // standard PLIC aperture
     val plicSources: Int  = 31
+    val UartPlicSource: Int = 1
 
     val romDepth: Int     = 16384 // 16 KB
     val ramDepth: Int     = 65536 // 64 KB

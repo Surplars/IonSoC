@@ -30,6 +30,8 @@ class IonSoC(
 
     val io = IO(new Bundle {
         val debug     = new soc.debug.DebugIO
+        val uart_rx_valid = Input(Bool())
+        val uart_rx_byte  = Input(UInt(8.W))
         val uart_tx   = Output(Bool())
         val uart_byte = Output(UInt(8.W))
         val ext_irq_sources = Input(Vec(Config.plicSources + 1, Bool()))
@@ -56,8 +58,16 @@ class IonSoC(
     core.io.stip     := false.B
     core.io.seip     := plic.map(_.io.seip).getOrElse(false.B)
 
+    uart.foreach { device =>
+        device.io.rx_valid := io.uart_rx_valid
+        device.io.rx_byte  := io.uart_rx_byte
+    }
+
     plic.foreach { device =>
         device.io.sources := io.ext_irq_sources
+        uart.foreach { uartDevice =>
+            device.io.sources(Config.UartPlicSource) := io.ext_irq_sources(Config.UartPlicSource) || uartDevice.io.irq
+        }
     }
 
     TLCrossbar.io.masters(0) <> core.io.DBus
