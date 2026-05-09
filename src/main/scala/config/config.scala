@@ -8,10 +8,22 @@ object InterruptControllerKind extends Enumeration {
     val None, PLIC, AIA = Value
 }
 
+object MemorySizes {
+    val DefaultSramSize: Int = 0x10000
+    val FirmwareSramSize: Int = 0x01000000
+}
+
+object MemoryBases {
+    val DefaultSramBase: BigInt = 0x10000000L
+    val FirmwareSramBase: BigInt = 0x40000000L
+}
+
 case class SoCFeatures(
     mmu: Boolean = false,
     iCache: Boolean = false,
     dCache: Boolean = true,
+    sramBase: BigInt = MemoryBases.DefaultSramBase,
+    sramSizeBytes: Int = MemorySizes.DefaultSramSize,
     uart: Boolean = true,
     clint: Boolean = true,
     interruptController: InterruptControllerKind.Value = InterruptControllerKind.PLIC
@@ -31,6 +43,8 @@ object SoCProfiles {
         mmu = true,
         iCache = true,
         dCache = true,
+        sramBase = MemoryBases.FirmwareSramBase,
+        sramSizeBytes = MemorySizes.FirmwareSramSize,
         uart = true,
         clint = true,
         interruptController = InterruptControllerKind.PLIC
@@ -65,8 +79,10 @@ object Config {
     val DebugSize: BigInt = 0x4000L
     val RomBase: BigInt   = 0x80000000L
     val RomSize: BigInt   = 0x20000L
-    val SramBase: BigInt  = 0x10000000L
-    val SramSize: BigInt  = 0x10000L    // 64 KB
+    val SramBase: BigInt  = MemoryBases.DefaultSramBase
+    val DefaultSramSize: Int = MemorySizes.DefaultSramSize  // 64 KB
+    val FirmwareSramSize: Int = MemorySizes.FirmwareSramSize // 16 MB, enough for SBI firmware + payload smoke tests.
+    val SramSize: BigInt  = DefaultSramSize
     val UartBase: BigInt  = 0x10010000L // after SRAM region
     val UartSize: BigInt  = 0x1000L
     val ClintBase: BigInt = 0x2000000L  // CLINT base
@@ -77,7 +93,7 @@ object Config {
     val UartPlicSource: Int = 1
 
     val romDepth: Int     = 16384 // 16 KB
-    val ramDepth: Int     = 65536 // 64 KB
+    val ramDepth: Int     = DefaultSramSize
     val ramDataBytes: Int = XLEN / 8
     val romInit: Seq[Int] = Seq.fill(romDepth)(0)
 
@@ -90,6 +106,10 @@ object Config {
     val ClintRegion: AddressRegion = AddressRegion("clint", ClintBase, ClintSize)
     val PlicRegion: AddressRegion  = AddressRegion("plic", PlicBase, PlicSize)
 
+    def sramRegionFor(features: SoCFeatures): AddressRegion =
+        AddressRegion("sram", features.sramBase, BigInt(features.sramSizeBytes))
+    def alwaysOnRegionsFor(features: SoCFeatures): Seq[AddressRegion] =
+        Seq(DebugRegion, RomRegion, sramRegionFor(features))
     val alwaysOnRegions: Seq[AddressRegion]                           = Seq(DebugRegion, RomRegion, SramRegion)
     def optionalRegionsFor(features: SoCFeatures): Seq[AddressRegion] =
         Seq(
@@ -98,7 +118,7 @@ object Config {
             Option.when(features.interruptController == InterruptControllerKind.PLIC)(PlicRegion)
         ).flatten
 
-    def mmioRegionsFor(features: SoCFeatures): Seq[AddressRegion] = alwaysOnRegions ++ optionalRegionsFor(features)
+    def mmioRegionsFor(features: SoCFeatures): Seq[AddressRegion] = alwaysOnRegionsFor(features) ++ optionalRegionsFor(features)
     def mmioMapFor(features: SoCFeatures): Seq[(BigInt, BigInt)]  =
         mmioRegionsFor(features).map(region => (region.base, region.size))
     def addrMapFor(features: SoCFeatures): Seq[UInt => Bool] = mkAddrMap(mmioRegionsFor(features), XLEN)

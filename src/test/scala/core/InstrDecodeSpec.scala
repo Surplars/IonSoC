@@ -89,6 +89,18 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("InstrDecode accepts base FENCE as a no-op memory barrier") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h0310000f".U) // fence rw,w
+            dut.clock.step()
+
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.mem_fence.expect(true.B)
+            dut.io.decoded_out.ctrl.reg_write.expect(false.B)
+        }
+    }
+
     test("InstrDecode gates RV64A atomic instructions by enabled extensions") {
         simulate(new InstrDecode(64, Set(Extension.RV64I))) { dut =>
             init(dut)
@@ -191,6 +203,29 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.trap_info.valid.expect(false.B)
             dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.SUBW)
+        }
+    }
+
+    test("InstrDecode handles RV64 load/store register write semantics") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I))) { dut =>
+            init(dut)
+
+            dut.io.instr_in.poke("h00813403".U) // ld x8, 8(sp)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.mem_read.expect(true.B)
+            dut.io.decoded_out.ctrl.reg_write.expect(true.B)
+            dut.io.decoded_out.rd.expect(8.U)
+            dut.io.decoded_out.mem_imm.expect(8.U)
+
+            init(dut)
+            dut.io.instr_in.poke("h00813423".U) // sd x8, 8(sp)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.mem_write.expect(true.B)
+            dut.io.decoded_out.ctrl.reg_write.expect(false.B)
+            dut.io.decoded_out.rd.expect(8.U)
+            dut.io.decoded_out.mem_imm.expect(8.U)
         }
     }
 }

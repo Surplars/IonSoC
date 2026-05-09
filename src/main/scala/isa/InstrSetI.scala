@@ -199,20 +199,25 @@ object InstrSetI extends InstrProvider {
 			ALU(ALUOps.NOP, OpSel.ZERO, OpSel.ZERO, brType = BranchType.ECALL),
 			Extension.RV64I
 		),
-		// RV64I
+        // RV64I
         InstrEntry( // LWU
             genPat(Funct3.I.LWU, Opcode.LOAD),
-            ALU(ALUOps.NOP, OpSel.RS1, OpSel.RS2, mem_read = true),
+            MEM(true, OpSel.RS1, OpSel.IMM, ALUOps.ADD),
             Extension.RV64I
         ),
         InstrEntry( // LD
             genPat(Funct3.I.LD, Opcode.LOAD),
-            ALU(ALUOps.NOP, OpSel.RS1, OpSel.RS2, mem_read = true),
+            MEM(true, OpSel.RS1, OpSel.IMM, ALUOps.ADD),
             Extension.RV64I
         ),
         InstrEntry( // SD
             genPat(Funct3.I.SD, Opcode.STORE),
-            ALU(ALUOps.NOP, OpSel.RS1, OpSel.RS2, mem_write = true),
+            MEM(false, OpSel.RS1, OpSel.RS2),
+            Extension.RV64I
+        ),
+        InstrEntry( // FENCE
+            BitPat("b???????_?????_?????_000_?????_0001111"),
+            ALU(ALUOps.NOP, OpSel.ZERO, OpSel.ZERO, writeReg = false),
             Extension.RV64I
         ),
         InstrEntry( // ADDIW

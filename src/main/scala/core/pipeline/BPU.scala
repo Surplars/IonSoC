@@ -232,12 +232,13 @@ class BranchPredictor(val entries: Int = 512) extends Module {
   })
 
   val indexBits = log2Ceil(entries)
-  // Index 范围：PC[indexBits+1 : 2]
-  // Tag 范围：  PC[63 : indexBits+2]
-  val tagBits = 64 - indexBits - 2
+  // The C extension allows branch instructions and targets on 16-bit
+  // boundaries. Index/tag by halfword address so adjacent compressed
+  // instructions such as 0x...38 and 0x...3a do not alias in the BTB.
+  val tagBits = 64 - indexBits - 1
   
-  def getIndex(pc: UInt): UInt = pc(indexBits + 1, 2)
-  def getTag(pc: UInt): UInt = pc(63, indexBits + 2)
+  def getIndex(pc: UInt): UInt = pc(indexBits, 1)
+  def getTag(pc: UInt): UInt = pc(63, indexBits + 1)
 
   // --------------------------------------------------------
   // 存储结构 (使用 Mem 替代 Reg(Vec) 以加速仿真并减少逻辑资源)

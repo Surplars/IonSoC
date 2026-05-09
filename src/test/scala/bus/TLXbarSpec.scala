@@ -104,6 +104,30 @@ class TLXbarSpec extends AnyFunSuite with ChiselSim {
                 dut.clock.step()
             }
             assert(sawReadAck, "mapped read did not receive data")
+
+            dut.io.master.a.bits.opcode.poke(TLOpcode.Get)
+            dut.io.master.a.bits.size.poke(0.U)
+            dut.io.master.a.bits.source.poke(4.U)
+            dut.io.master.a.bits.address.poke("h1005".U)
+            dut.io.master.a.bits.mask.poke("h20".U)
+            dut.io.master.a.bits.data.poke(0.U)
+            dut.io.master.a.valid.poke(true.B)
+            dut.io.master.a.ready.expect(true.B)
+            dut.clock.step()
+            dut.io.master.a.valid.poke(false.B)
+
+            var sawByteReadAck = false
+            for (_ <- 0 until 8 if !sawByteReadAck) {
+                if (dut.io.master.d.valid.peek().litToBoolean) {
+                    dut.io.master.d.bits.opcode.expect(TLOpcode.AccessAckData)
+                    dut.io.master.d.bits.source.expect(4.U)
+                    dut.io.master.d.bits.denied.expect(false.B)
+                    dut.io.master.d.bits.data.expect(BigInt("0123456789abcdef", 16))
+                    sawByteReadAck = true
+                }
+                dut.clock.step()
+            }
+            assert(sawByteReadAck, "mapped byte read did not preserve beat lanes")
         }
     }
 }

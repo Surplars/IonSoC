@@ -59,7 +59,7 @@ class MemorySystemConfig(XLEN: Int) extends Bundle {
     val mmu_en  = Bool()
     val satp    = UInt(XLEN.W)
     val pmpcfg0 = UInt(XLEN.W)
-    val pmpaddr0 = UInt(XLEN.W)
+    val pmpaddr = Vec(8, UInt(XLEN.W))
     val mxr     = Bool()
     val sum     = Bool()
     val mprv    = Bool()

@@ -45,7 +45,7 @@ class IonSoC(
 
     val core  = Module(new Core(Config.XLEN, hartID = 0, features, enabledExt))
     val brom  = Module(new BROM(Config.XLEN, Config.romDepth, Config.romInit))
-    val sram  = Module(new TLRAM(dbusParams, Config.ramDepth))
+    val sram  = Module(new TLRAM(dbusParams, features.sramSizeBytes, features.sramBase))
     val debugModule = Module(new DebugModule(dbusParams))
     val tlrom = Module(new TLROM(dbusParams))
     val uart  = if (features.uart) Some(Module(new UartTx(dbusParams))) else None

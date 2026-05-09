@@ -35,6 +35,10 @@ object CSR {
     val MIE        = 0x304.U(12.W)
     val MTVEC      = 0x305.U(12.W)
     val MCOUNTEREN = 0x306.U(12.W)
+    val MENVCFG    = 0x30a.U(12.W)
+    val MCOUNTINHIBIT = 0x320.U(12.W)
+    val MHPMEVENT3 = 0x323.U(12.W)
+    val MHPMEVENT31 = 0x33f.U(12.W)
     // Machine Trap Handling
     val MSCRATCH = 0x340.U(12.W)
     val MEPC     = 0x341.U(12.W)
@@ -44,14 +48,19 @@ object CSR {
     // Machine Memory Protection
     val PMPcfg0  = 0x3a0.U(12.W)
     val PMPaddr0 = 0x3b0.U(12.W)
+    val PMPaddr7 = 0x3b7.U(12.W)
+    // Supervisor Counter Setup
+    val SCOUNTEREN = 0x106.U(12.W)
     // Machine Non-Maskable Interrupt Handling
     val MNSCRATCH = 0x740.U(12.W)
     val MNEPC     = 0x741.U(12.W)
     val MNCAUSE   = 0x742.U(12.W)
     val MNSTATUS  = 0x744.U(12.W)
     // Machine Counter/Timers
-    val MCYCLE   = 0xb00.U(12.W)
-    val MINSTRET = 0xb02.U(12.W)
+    val MCYCLE       = 0xb00.U(12.W)
+    val MINSTRET     = 0xb02.U(12.W)
+    val MHPMCOUNTER3 = 0xb03.U(12.W)
+    val MHPMCOUNTER31 = 0xb1f.U(12.W)
 }
 
 object MCause {

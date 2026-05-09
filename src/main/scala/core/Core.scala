@@ -86,14 +86,34 @@ class Core(
 
     val fenceIReq = alu.io.valid_out && alu.io.alu_out.mem.valid && alu.io.alu_out.mem.op === MemOpType.FenceI
     val fenceIPending = RegInit(false.B)
+    val fenceIFlushIssued = RegInit(false.B)
+    val fenceIStart = fenceIReq && !fenceIPending && !fenceIFlushIssued
+    val fenceIInvalidateFire = WireInit(false.B)
     val fenceIAck = WireInit(false.B)
-    when(fenceIReq) {
-        fenceIPending := true.B
-    }.elsewhen(fenceIAck) {
+
+    when(fenceIAck) {
         fenceIPending := false.B
+    }.elsewhen(fenceIStart) {
+        fenceIPending := true.B
     }
-    val fenceIActive = fenceIPending || fenceIReq
-    val fenceIHold = fenceIActive && !fenceIAck
+    when(fenceIAck) {
+        fenceIFlushIssued := false.B
+    }.elsewhen(fenceIInvalidateFire) {
+        fenceIFlushIssued := true.B
+    }
+
+    // fence.i is a frontend barrier: redirect to the fall-through PC, drain
+    // stale fetches, then release only after the I-cache reports completion.
+    val fenceIActive = fenceIPending || fenceIStart || fenceIFlushIssued
+    val fenceIHold = fenceIActive
+    dontTouch(fenceIReq)
+    dontTouch(fenceIStart)
+    dontTouch(fenceIPending)
+    dontTouch(fenceIFlushIssued)
+    dontTouch(fenceIInvalidateFire)
+    dontTouch(fenceIAck)
+    dontTouch(fenceIActive)
+    dontTouch(fenceIHold)
 
     dcache.io.cpu <> lsu.io.dcache
     dcache.io.invalidate.valid := false.B
@@ -106,15 +126,16 @@ class Core(
         val cache = icache.get
         dbusXbar.io.masters(2) <> cache.io.bus
         cache.io.cpu <> ifetch.io.cache
-        cache.io.invalidate.valid := fenceIPending || fenceIReq
+        cache.io.invalidate.valid := (fenceIStart || fenceIPending) && !fenceIFlushIssued
         cache.io.invalidate.bits := true.B
-        fenceIAck := cache.io.invalidate.fire
+        fenceIInvalidateFire := cache.io.invalidate.fire
+        fenceIAck := fenceIFlushIssued && cache.io.cpu.resp.fire
     } else {
         ifetch.io.cache.req.ready := false.B
         ifetch.io.cache.resp.valid := false.B
         ifetch.io.cache.resp.bits.rdata := 0.U
         ifetch.io.cache.resp.bits.err := false.B
-        fenceIAck := fenceIPending || fenceIReq
+        fenceIAck := fenceIPending || fenceIStart
     }
 
     io.DBus <> dbusXbar.io.slave
@@ -201,7 +222,9 @@ class Core(
             interruptTarget  := csr.io.tvec_out
         }
 	    val combined_trap     = has_pipeline_trap || interrupt_fire
-	    val pipeline_flush    = combined_trap || ret_redirect || fenceIActive
+	    val redirect_flush    = combined_trap || ret_redirect
+        val frontend_flush    = redirect_flush || fenceIActive
+        val pipeline_flush    = frontend_flush
 
     // pc
     io.pc            := pc.io.pc_out
@@ -212,7 +235,16 @@ class Core(
     pc.io.trap_ret   := ret_redirect
     pc.io.trap_epc   := csr.io.epc_out
     pc.io.instr_len  := ifetch.io.pc_step_len
-    pc.io.br_info <> alu.io.br_info
+    val pcBrInfo = WireInit(alu.io.br_info)
+    when(fenceIStart) {
+        val fenceStep = Mux(alu.io.instr_len_out === 2.U, 2.U(XLEN.W), 4.U(XLEN.W))
+        pcBrInfo.valid := false.B
+        pcBrInfo.is_branch := false.B
+        pcBrInfo.taken := true.B
+        pcBrInfo.target := alu.io.pc_out + fenceStep
+        pcBrInfo.redirect := true.B
+    }
+    pc.io.br_info <> pcBrInfo
     // register
     register.io.rs1_addr   := idecode.io.reg_rd_rs1
     register.io.rs2_addr   := idecode.io.reg_rd_rs2
@@ -249,12 +281,12 @@ class Core(
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken
     ifetch.io.redirect      := pc.io.redirect
-    ifetch.io.trap_valid    := pipeline_flush
+    ifetch.io.trap_valid    := frontend_flush
     io.debug_instr          := ifetch.io.instr_out
     // idcode
     idecode.io.valid_in      := ifetch.io.valid
     idecode.io.stall         := pipe_stall || decodeUsesPending || debugHalted
-	    idecode.io.trap_valid    := pipeline_flush
+	    idecode.io.trap_valid    := frontend_flush
     idecode.io.redirect      := ifetch.io.redirect
     idecode.io.pc_in         := ifetch.io.pc_out
     idecode.io.instr_in      := ifetch.io.instr_out
@@ -294,7 +326,7 @@ class Core(
     // alu
     alu.io.valid_in       := idecode.io.valid_out && !decodeUsesPending
     alu.io.stall          := pipe_stall || debugHalted
-	    alu.io.trap_valid     := pipeline_flush
+	    alu.io.trap_valid     := redirect_flush
     alu.io.pc_in          := idecode.io.pc_out
     alu.io.next_pc_in     := idecode.io.pc_in
     alu.io.pred_taken_in  := idecode.io.pred_taken_out

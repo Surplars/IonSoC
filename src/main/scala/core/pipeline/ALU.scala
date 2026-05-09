@@ -142,10 +142,11 @@ class ALU(XLEN: Int = 64) extends Module {
             BranchType.BGEU -> (op1 >= op2)
         )
     )
+    val jalrTarget = (op1 + op2) & ~1.U(XLEN.W)
     branch_target := Mux(
-        (branch_type === BranchType.JAL || branch_type === BranchType.JALR),
-        (op1 + op2),
-        (io.pc_in + io.decoded_in.br_imm)
+        branch_type === BranchType.JAL,
+        op1 + op2,
+        Mux(branch_type === BranchType.JALR, jalrTarget, io.pc_in + io.decoded_in.br_imm)
     )
 
     io.csr_valid := valid && csr_op =/= CSROps.None

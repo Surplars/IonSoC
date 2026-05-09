@@ -3,7 +3,7 @@ package soc.bus.tilelink
 import chisel3._
 import chisel3.util._
 
-class TLRAM(params: TLParams, sizeBytes: Int) extends Module {
+class TLRAM(params: TLParams, sizeBytes: Int, base: BigInt = 0) extends Module {
     val io = IO(new Bundle {
         val tl = Flipped(new TLBundle(params))
     })
@@ -20,8 +20,8 @@ class TLRAM(params: TLParams, sizeBytes: Int) extends Module {
 
     val req_queue = Queue(io.tl.a, 2)
 
-    val addr_idx   = req_queue.bits.address >> offsetBits.U
-    val byteOffset = req_queue.bits.address(offsetBits - 1, 0)
+    private val localAddr = req_queue.bits.address - base.U(params.addrWidth.W)
+    val addr_idx   = localAddr >> offsetBits.U
     val wdata_vec  = VecInit(Seq.tabulate(beatBytes)(i => req_queue.bits.data(8 * i + 7, 8 * i)))
     val mask_vec   = VecInit(Seq.tabulate(beatBytes)(i => req_queue.bits.mask(i)))
     val is_write   = req_queue.bits.opcode === TLOpcode.PutFullData || req_queue.bits.opcode === TLOpcode.PutPartialData
@@ -32,7 +32,6 @@ class TLRAM(params: TLParams, sizeBytes: Int) extends Module {
     val req_is_read    = RegInit(false.B)
     val req_size       = RegInit(0.U(params.sizeBits.W))
     val req_source     = RegInit(0.U(params.sourceBits.W))
-    val req_byteOffset = RegInit(0.U(offsetBits.W))
     val req_denied     = RegInit(false.B)
 
     val resp_valid   = RegInit(false.B)
@@ -57,16 +56,8 @@ class TLRAM(params: TLParams, sizeBytes: Int) extends Module {
         req_is_read    := is_read
         req_size       := req_queue.bits.size
         req_source     := req_queue.bits.source
-        req_byteOffset := byteOffset
         req_denied     := !is_legal
     }
-
-    val read_shift = req_byteOffset << 3
-    val shifted_rdata = (mem_rdata.asUInt >> read_shift)(params.dataWidth - 1, 0)
-    val resp_byte_count = (1.U((params.sizeBits + 1).W) << req_size)
-    val resp_bit_count  = resp_byte_count << 3
-    val full_mask       = Fill(params.dataWidth, 1.U(1.W))
-    val read_mask       = full_mask >> (params.dataWidth.U - resp_bit_count)
 
     when(req_valid && !resp_valid) {
         resp_valid  := true.B
@@ -74,7 +65,9 @@ class TLRAM(params: TLParams, sizeBytes: Int) extends Module {
         resp_size   := req_size
         resp_source := req_source
         resp_denied := req_denied
-        resp_data   := Mux(req_is_read && !req_denied, shifted_rdata & read_mask, 0.U)
+        // D-channel data keeps the requested byte lanes in their natural beat
+        // positions. LSU/cache clients perform size and address-based extraction.
+        resp_data   := Mux(req_is_read && !req_denied, mem_rdata.asUInt, 0.U)
         req_valid   := false.B
     }
 

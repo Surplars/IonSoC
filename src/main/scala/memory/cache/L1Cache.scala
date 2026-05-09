@@ -79,6 +79,8 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
     io.cpu.resp.valid := false.B
     io.cpu.resp.bits.rdata := Mux(state === sResp, refillReg, readData)
     io.cpu.resp.bits.err   := respErrReg
+    // ready/fire only accepts the maintenance request. Completion is reported
+    // later through cpu.resp, after all dirty writebacks and valid-bit clears.
     io.invalidate.ready := state === sIdle
 
     io.bus.a.valid := false.B

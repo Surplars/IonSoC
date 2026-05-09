@@ -53,6 +53,9 @@ class UartTx(params: TLParams) extends Module {
         "h04".U, // received data available
         Mux(txIrq, "h02".U, "h01".U) // THR empty, or no interrupt pending
     ) | Mux(fcr(0), "hc0".U, 0.U)
+    // 16550 LSR bits: DR, OE, PE, FE, BI, THRE, TEMT, FIFOERR.
+    // The simulator UART accepts a THR write every cycle, so THRE/TEMT are
+    // permanently set. Standard 16550 drivers poll these bits before writing.
     val lsrValue = Cat(0.U(1.W), 1.U(1.W), 1.U(1.W), 0.U(3.W), overrunError, rxReady)
 
     private def laneShift: UInt = Cat(io.tl.a.bits.address(beatOffsetBits - 1, 0), 0.U(3.W))

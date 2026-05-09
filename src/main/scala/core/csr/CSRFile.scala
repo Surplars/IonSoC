@@ -120,7 +120,15 @@ class CSRFile(
     val mtval     = RegInit(0.U(XLEN.W))
     val mscratch  = RegInit(0.U(XLEN.W))
     val pmpcfg0   = RegInit(0.U(XLEN.W))
-    val pmpaddr0  = RegInit(0.U(XLEN.W))
+    val pmpaddr   = RegInit(VecInit(Seq.fill(8)(0.U(XLEN.W))))
+    val mcounteren = RegInit(0.U(XLEN.W))
+    val scounteren = RegInit(0.U(XLEN.W))
+    val menvcfg    = RegInit(0.U(XLEN.W))
+    val mcountinhibit = RegInit(0.U(XLEN.W))
+    val mcycle     = RegInit(0.U(XLEN.W))
+    val minstret   = RegInit(0.U(XLEN.W))
+    val mhpmcounter = RegInit(VecInit(Seq.fill(29)(0.U(XLEN.W))))
+    val mhpmevent = RegInit(VecInit(Seq.fill(29)(0.U(XLEN.W))))
     val mnscratch = RegInit(0.U(XLEN.W))
     val mnepc     = RegInit(0.U(XLEN.W))
     val mncause   = RegInit(0.U(XLEN.W))
@@ -134,6 +142,15 @@ class CSRFile(
     val sscratch  = RegInit(0.U(XLEN.W))
     val ssipSw    = RegInit(false.B)
     val mip       = WireInit(0.U(XLEN.W))      // 中断 pending，部分由硬件连线
+
+    // Keep the base performance counters architecturally visible. minstret is
+    // currently cycle-backed until the core exposes a precise retire pulse.
+    when(!mcountinhibit(0)) {
+        mcycle := mcycle + 1.U
+    }
+    when(!mcountinhibit(2)) {
+        minstret := minstret + 1.U
+    }
 
     private def bitMask(bit: Int): UInt = (BigInt(1) << bit).U(XLEN.W)
     private def interruptCause(code: Int): UInt = ((BigInt(1) << (XLEN - 1)) | code).U(XLEN.W)
@@ -195,14 +212,18 @@ class CSRFile(
         CSR.MIDELEG    -> mideleg,
         CSR.MIE        -> mie,
         CSR.MTVEC      -> mtvec,
-        CSR.MCOUNTEREN -> 0.U(XLEN.W),
+        CSR.MCOUNTEREN -> mcounteren,
+        CSR.MENVCFG    -> menvcfg,
+        CSR.MCOUNTINHIBIT -> mcountinhibit,
+        CSR.SCOUNTEREN -> scounteren,
         CSR.MSCRATCH   -> mscratch,
         CSR.MEPC       -> mepc,
         CSR.MCAUSE     -> mcause,
         CSR.MTVAL      -> mtval,
         CSR.MIP        -> mip,
         CSR.PMPcfg0    -> pmpcfg0,
-        CSR.PMPaddr0   -> pmpaddr0,
+        CSR.MCYCLE     -> mcycle,
+        CSR.MINSTRET   -> minstret,
         CSR.MNSCRATCH  -> mnscratch,
         CSR.MNEPC      -> mnepc,
         CSR.MNCAUSE    -> mncause,
@@ -210,11 +231,35 @@ class CSRFile(
         CSR.SATP       -> satp
     )
 
-    val rdata_pre = MuxLookup(io.addr, 0.U)(mapping.toSeq)
-    val debug_rdata_pre = MuxLookup(io.debug_addr, 0.U)(mapping.toSeq)
+    private def isPmpAddr(addr: UInt): Bool = addr >= CSR.PMPaddr0 && addr <= CSR.PMPaddr7
+    private def pmpAddrIndex(addr: UInt): UInt = (addr - CSR.PMPaddr0)(2, 0)
+    private def isMhpmCounter(addr: UInt): Bool = addr >= CSR.MHPMCOUNTER3 && addr <= CSR.MHPMCOUNTER31
+    private def mhpmCounterIndex(addr: UInt): UInt = (addr - CSR.MHPMCOUNTER3)(4, 0)
+    private def isMhpmEvent(addr: UInt): Bool = addr >= CSR.MHPMEVENT3 && addr <= CSR.MHPMEVENT31
+    private def mhpmEventIndex(addr: UInt): UInt = (addr - CSR.MHPMEVENT3)(4, 0)
 
-    val addr_valid = mapping.keys.map(_ === io.addr).reduce(_ || _)
-    val debug_addr_valid = mapping.keys.map(_ === io.debug_addr).reduce(_ || _)
+    val rdata_pre = Mux(
+        isPmpAddr(io.addr),
+        pmpaddr(pmpAddrIndex(io.addr)),
+        Mux(
+            isMhpmCounter(io.addr),
+            mhpmcounter(mhpmCounterIndex(io.addr)),
+            Mux(isMhpmEvent(io.addr), mhpmevent(mhpmEventIndex(io.addr)), MuxLookup(io.addr, 0.U)(mapping.toSeq))
+        )
+    )
+    val debug_rdata_pre = Mux(
+        isPmpAddr(io.debug_addr),
+        pmpaddr(pmpAddrIndex(io.debug_addr)),
+        Mux(
+            isMhpmCounter(io.debug_addr),
+            mhpmcounter(mhpmCounterIndex(io.debug_addr)),
+            Mux(isMhpmEvent(io.debug_addr), mhpmevent(mhpmEventIndex(io.debug_addr)), MuxLookup(io.debug_addr, 0.U)(mapping.toSeq))
+        )
+    )
+
+    val addr_valid = mapping.keys.map(_ === io.addr).reduce(_ || _) || isPmpAddr(io.addr) || isMhpmCounter(io.addr) || isMhpmEvent(io.addr)
+    val debug_addr_valid =
+        mapping.keys.map(_ === io.debug_addr).reduce(_ || _) || isPmpAddr(io.debug_addr) || isMhpmCounter(io.debug_addr) || isMhpmEvent(io.debug_addr)
     val csrRequiredPriv = io.addr(9, 8)
     val csrReadOnly = io.addr(11, 10) === 3.U
     val debugCsrReadOnly = io.debug_addr(11, 10) === 3.U
@@ -270,6 +315,24 @@ class CSRFile(
             is(CSR.MTVEC) {
                 mtvec := writeData
             }
+            is(CSR.MCOUNTEREN) {
+                mcounteren := writeData
+            }
+            is(CSR.SCOUNTEREN) {
+                scounteren := writeData
+            }
+            is(CSR.MENVCFG) {
+                menvcfg := writeData
+            }
+            is(CSR.MCOUNTINHIBIT) {
+                mcountinhibit := writeData
+            }
+            is(CSR.MCYCLE) {
+                mcycle := writeData
+            }
+            is(CSR.MINSTRET) {
+                minstret := writeData
+            }
             is(CSR.STVEC) {
                 stvec := writeData
             }
@@ -305,9 +368,6 @@ class CSRFile(
             is(CSR.PMPcfg0) {
                 pmpcfg0 := writeData
             }
-            is(CSR.PMPaddr0) {
-                pmpaddr0 := writeData
-            }
             is(CSR.MNSCRATCH) {
                 mnscratch := writeData
             }
@@ -317,6 +377,15 @@ class CSRFile(
             is(CSR.SATP) {
                 satp := writeData
             }
+        }
+        when(isPmpAddr(writeAddr)) {
+            pmpaddr(pmpAddrIndex(writeAddr)) := writeData
+        }
+        when(isMhpmCounter(writeAddr)) {
+            mhpmcounter(mhpmCounterIndex(writeAddr)) := writeData
+        }
+        when(isMhpmEvent(writeAddr)) {
+            mhpmevent(mhpmEventIndex(writeAddr)) := writeData
         }
     }
 
@@ -404,7 +473,7 @@ class CSRFile(
     io.mem_cfg_out.mmu_en := features.mmu.B
     io.mem_cfg_out.satp := satp
     io.mem_cfg_out.pmpcfg0 := pmpcfg0
-    io.mem_cfg_out.pmpaddr0 := pmpaddr0
+    io.mem_cfg_out.pmpaddr := pmpaddr
     io.mem_cfg_out.mxr := false.B
     io.mem_cfg_out.sum := false.B
     io.mem_cfg_out.mprv := false.B

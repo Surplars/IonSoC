@@ -24,6 +24,7 @@ class PC(XLEN: Int, RESET_VECTOR: BigInt) extends Module {
     val ProgramCounter = RegInit(RESET_VECTOR.U(XLEN.W))
     val bpu            = Module(new BranchPredictor(512))
     val redirect       = io.br_info.redirect || io.trap_valid || io.trap_ret
+    val redirectHold   = RegNext(redirect, false.B)
 
     bpu.io.req_pc := ProgramCounter
 
@@ -39,7 +40,7 @@ class PC(XLEN: Int, RESET_VECTOR: BigInt) extends Module {
         rst            := false.B
     }.elsewhen(redirect) {
         ProgramCounter := Mux(io.trap_ret, io.trap_epc, Mux(io.trap_valid, io.trap_pc, io.br_info.target))
-    }.elsewhen(io.stall) {
+    }.elsewhen(io.stall || redirectHold) {
         ProgramCounter := ProgramCounter
     }.otherwise {
         ProgramCounter := pred_pc

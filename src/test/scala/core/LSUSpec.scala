@@ -50,7 +50,9 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         dut.io.mem_cfg.mmu_en.poke(false.B)
         dut.io.mem_cfg.satp.poke(0.U)
         dut.io.mem_cfg.pmpcfg0.poke(0.U)
-        dut.io.mem_cfg.pmpaddr0.poke(0.U)
+        for (i <- 0 until 8) {
+            dut.io.mem_cfg.pmpaddr(i).poke(0.U)
+        }
         dut.io.mem_cfg.mxr.poke(false.B)
         dut.io.mem_cfg.sum.poke(false.B)
         dut.io.mem_cfg.mprv.poke(false.B)
@@ -240,7 +242,7 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
-            dut.io.mem_cfg.pmpaddr0.poke(BigInt("ffffffffffffffff", 16).U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
             driveLoad(dut, BigInt("10000008", 16))
             dut.clock.step()
 
@@ -257,7 +259,7 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.pmpcfg0.poke(0x19.U) // NAPOT, read-only
-            dut.io.mem_cfg.pmpaddr0.poke(BigInt("ffffffffffffffff", 16).U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
             dut.io.pc_in.poke("h80000140".U)
             driveStore(dut, BigInt("10000010", 16), BigInt("feedfacecafebeef", 16))
             dut.io.dcache.req.valid.expect(false.B)
@@ -271,6 +273,24 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             driveNoMem(dut)
             dut.clock.step()
             dut.io.dcache.req.valid.expect(false.B)
+        }
+    }
+
+    test("LSU uses the first matching TOR PMP entry") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.pmpcfg0.poke(BigInt("090f00", 16).U) // entry1 RWX TOR, entry2 R-only TOR
+            dut.io.mem_cfg.pmpaddr(1).poke((BigInt("40000000", 16) >> 2).U)
+            dut.io.mem_cfg.pmpaddr(2).poke((BigInt("40010000", 16) >> 2).U)
+            driveStore(dut, BigInt("40000008", 16), BigInt("12345678", 16))
+            dut.io.dcache.req.valid.expect(false.B)
+
+            dut.clock.step()
+            dut.io.trap_info_out.valid.expect(true.B)
+            dut.io.trap_info_out.cause.expect(MCause.StoreAccessFault)
+            dut.io.trap_info_out.value.expect(BigInt("40000008", 16))
         }
     }
 

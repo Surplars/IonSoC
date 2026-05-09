@@ -64,6 +64,70 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("InstrFetch cache path assembles a 32-bit instruction crossing a 64-bit beat") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+
+            dut.io.pc.poke("h1000000e".U)
+            dut.io.cache.req.ready.poke(true.B)
+
+            dut.clock.step()
+            dut.io.cache.req.valid.expect(true.B)
+            dut.io.cache.req.bits.addr.expect("h1000000e".U)
+
+            dut.clock.step()
+            dut.io.cache.resp.valid.poke(true.B)
+            dut.io.cache.resp.bits.rdata.poke("ha2af000000000000".U)
+            dut.clock.step()
+
+            dut.io.cache.resp.valid.poke(false.B)
+            dut.io.cache.req.valid.expect(true.B)
+            dut.io.cache.req.bits.addr.expect("h10000010".U)
+
+            dut.clock.step()
+            dut.io.cache.resp.valid.poke(true.B)
+            dut.io.cache.resp.bits.rdata.poke("h0000000000000062".U)
+            dut.clock.step()
+
+            dut.io.cache.resp.valid.poke(false.B)
+            dut.io.valid.expect(true.B)
+            dut.io.instr_len.expect(0.U)
+            dut.io.instr_out.expect("h0062a2af".U)
+        }
+    }
+
+    test("InstrFetch cache path reports current compressed length for PC stepping") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+            dut.io.cache.req.ready.poke(true.B)
+
+            dut.io.pc.poke("h4000f1d4".U)
+            dut.clock.step()
+            dut.clock.step()
+            dut.io.cache.resp.bits.rdata.poke("h0000100ffe62c3e3".U) // previous blt; fence.i
+            dut.io.cache.resp.bits.err.poke(false.B)
+            dut.io.cache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.valid.expect(true.B)
+            dut.io.instr_out.expect("h0000100f".U)
+            dut.io.instr_len.expect(0.U)
+            dut.io.pc_step_len.expect(0.U)
+
+            dut.io.cache.resp.valid.poke(false.B)
+            dut.clock.step()
+            dut.io.pc.poke("h4000f1d8".U)
+            dut.clock.step()
+            dut.clock.step()
+            dut.io.cache.resp.bits.rdata.poke("h0000000000008082".U) // c.jr ra; c.unimp; c.unimp
+            dut.io.cache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.valid.expect(true.B)
+            dut.io.instr_out.expect("h00008067".U) // c.jr ra expands to jalr x0, 0(ra)
+            dut.io.instr_len.expect(2.U)
+            dut.io.pc_step_len.expect(2.U)
+        }
+    }
+
     test("InstrFetch expands common compressed memory and register forms") {
         simulate(new InstrFetch(64, useCompressed = true)) { dut =>
             init(dut)

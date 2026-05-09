@@ -98,19 +98,15 @@ class TLROM(params: TLParams) extends Module {
     when(io.tl.a.fire) {
         val isRead = io.tl.a.bits.opcode === TLOpcode.Get
         val rawBeat = Cat(hiRom.io.instr_out, loRom.io.instr_out)
-        val shiftBits = Cat(io.tl.a.bits.address(offsetBits - 1, 0), 0.U(3.W))
-        val shiftedData = (rawBeat >> shiftBits)(params.dataWidth - 1, 0)
-        val respByteCount = (1.U((params.sizeBits + 1).W) << io.tl.a.bits.size)
-        val respBitCount = respByteCount << 3
-        val fullMask = Fill(params.dataWidth, 1.U(1.W))
-        val readMask = fullMask >> (params.dataWidth.U - respBitCount)
 
         respValid  := true.B
         respOpcode := Mux(isRead, TLOpcode.AccessAckData, TLOpcode.AccessAck)
         respSize   := io.tl.a.bits.size
         respSource := io.tl.a.bits.source
         respDenied := !isRead
-        respData   := Mux(isRead, shiftedData & readMask, 0.U)
+        // Return the whole aligned beat. Downstream LSU/cache logic is
+        // responsible for selecting bytes according to the original address.
+        respData   := Mux(isRead, rawBeat, 0.U)
     }
 
     io.tl.d.valid        := respValid

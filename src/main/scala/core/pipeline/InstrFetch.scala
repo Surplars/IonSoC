@@ -77,60 +77,97 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
     io.pred_taken_out := RegEnable(io.pred_taken_in, false.B, directUpdate)
 
     if (useCache) {
-        val pending = RegInit(false.B)
-        val sent = RegInit(false.B)
+        val sIdle :: sFirstReq :: sFirstWait :: sSecondReq :: sSecondWait :: sRelease :: Nil = Enum(6)
+        val state = RegInit(sIdle)
         val reqPc = RegInit(0.U(XLEN.W))
         val reqPredTaken = RegInit(false.B)
         val dropResp = RegInit(false.B)
-        val releasePc = RegInit(false.B)
+        val crossBeatLowHalf = RegInit(0.U(16.W))
+        val releaseLen = RegInit(0.U(2.W))
 
-        val canIssue = !pending && !releasePc && !io.stall && !io.redirect && !io.trap_valid
+        val flush = io.redirect || io.trap_valid
+        val canIssue = state === sIdle && !io.stall && !flush
         when(canIssue) {
-            pending := true.B
-            sent := false.B
             reqPc := io.pc
             reqPredTaken := io.pred_taken_in
             dropResp := false.B
+            state := sFirstReq
         }
 
-        when(releasePc && !io.stall) {
-            releasePc := false.B
+        when(state === sRelease && !io.stall) {
+            state := sIdle
         }
 
-        when(pending && (io.redirect || io.trap_valid)) {
-            when(sent) {
-                dropResp := true.B
-            }.otherwise {
-                pending := false.B
-                dropResp := false.B
-            }
+        when((state === sFirstWait || state === sSecondWait) && flush) {
+            dropResp := true.B
         }
 
-        io.cache.req.valid := pending && !sent
-        io.cache.req.bits.addr := reqPc
-        io.cache.req.bits.vaddr := reqPc
+        io.cache.req.valid := (state === sFirstReq || state === sSecondReq) && !flush
+        val secondReqPc = reqPc + 2.U
+        val cacheReqPc = Mux(state === sSecondReq, secondReqPc, reqPc)
+        io.cache.req.bits.addr := cacheReqPc
+        io.cache.req.bits.vaddr := cacheReqPc
+        // Keep the response channel drainable even after a frontend flush has
+        // cancelled the matching fetch. Otherwise a late cache response can
+        // leave the I-cache in its response state and block fence.i invalidation.
         io.cache.resp.ready := !io.stall
-        when(io.cache.req.fire) {
-            sent := true.B
-        }
 
-        val respFire = pending && sent && io.cache.resp.valid && io.cache.resp.ready
-        val respExpanded = selectAndExpand(io.cache.resp.bits.rdata, reqPc, reqPc(beatOffsetBits - 1, 0))
-        val acceptResp = respFire && !dropResp && !io.cache.resp.bits.err && !io.redirect && !io.trap_valid
-
-        when(respFire) {
-            pending := false.B
-            sent := false.B
+        when((state === sFirstReq || state === sSecondReq) && flush) {
             dropResp := false.B
-            releasePc := acceptResp
+            state := sIdle
+        }.elsewhen(state === sFirstReq && io.cache.req.fire) {
+            state := sFirstWait
+        }.elsewhen(state === sSecondReq && io.cache.req.fire) {
+            state := sSecondWait
         }
 
-        io.fetch_stall := pending || canIssue
-        io.pc_step_len := io.instr_len
+        val respFire = io.cache.resp.valid && io.cache.resp.ready
+        val respExpanded = selectAndExpand(io.cache.resp.bits.rdata, reqPc, reqPc(beatOffsetBits - 1, 0))
+        val firstHalf = (io.cache.resp.bits.rdata >> Cat(reqPc(beatOffsetBits - 1, 0), 0.U(3.W)))(15, 0)
+        val needsCrossBeat = if (useCompressed) {
+            reqPc(beatOffsetBits - 1, 0) === ((XLEN / 8) - 2).U && firstHalf(1, 0) === "b11".U
+        } else {
+            false.B
+        }
+        val acceptFirstResp =
+            state === sFirstWait && respFire && !needsCrossBeat && !dropResp && !io.cache.resp.bits.err && !flush
+        val acceptSecondResp =
+            state === sSecondWait && respFire && !dropResp && !io.cache.resp.bits.err && !flush
+        val assembledCrossBeat = Cat(io.cache.resp.bits.rdata(15, 0), crossBeatLowHalf)
+        val acceptResp = acceptFirstResp || acceptSecondResp
+        val acceptedInstr = Mux(acceptSecondResp, assembledCrossBeat, respExpanded._1)
+        val acceptedLen = Mux(acceptSecondResp, 0.U(2.W), respExpanded._2)
+
+        when(acceptResp) {
+            releaseLen := acceptedLen
+        }
+
+        when(state === sFirstWait && respFire) {
+            when(dropResp || io.cache.resp.bits.err || flush) {
+                dropResp := false.B
+                state := sIdle
+            }.elsewhen(needsCrossBeat) {
+                crossBeatLowHalf := firstHalf
+                state := sSecondReq
+            }.otherwise {
+                dropResp := false.B
+                state := sRelease
+            }
+        }.elsewhen(state === sSecondWait && respFire) {
+            dropResp := false.B
+            state := Mux(dropResp || io.cache.resp.bits.err || flush, sIdle, sRelease)
+        }
+
+        io.fetch_stall := canIssue || (state =/= sIdle && state =/= sRelease)
+        // The PC consumes the step length in the same cycle that a cache
+        // response is accepted. Use the just-decoded length instead of the
+        // registered previous instruction length, otherwise a 16-bit
+        // instruction following a 32-bit instruction advances by 4 bytes.
+        io.pc_step_len := Mux(acceptResp, acceptedLen, Mux(state === sRelease, releaseLen, io.instr_len))
         io.valid := RegEnable(acceptResp, false.B, !io.stall)
         io.pc_out := RegEnable(reqPc, 0.U, acceptResp)
-        io.instr_out := RegEnable(respExpanded._1, 0.U, acceptResp)
-        io.instr_len := RegEnable(respExpanded._2, 0.U, acceptResp)
+        io.instr_out := RegEnable(acceptedInstr, 0.U, acceptResp)
+        io.instr_len := RegEnable(acceptedLen, 0.U, acceptResp)
         io.pred_taken_out := RegEnable(reqPredTaken, false.B, acceptResp)
     }
 }

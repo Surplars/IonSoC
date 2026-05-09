@@ -14,10 +14,12 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <vector>
+#include <algorithm>
 #include <verilated.h>
 #include <verilated_vcd_c.h>
 #include "VSoc.h"
 #include "VSoc___024root.h"
+#include "VSoc_L1Cache.h"
 
 #define RED "\033[31m"
 #define GREEN "\033[32m"
@@ -27,7 +29,9 @@
 #define BROM_BASE 0x80000000
 #define ROM_SIZE 0x10000 // 64KB = 16384 words * 4 bytes
 #define SRAM_BASE 0x10000000
-#define SRAM_SIZE 0x10000
+#define FIRMWARE_SRAM_BASE 0x40000000
+#define DEFAULT_SRAM_SIZE 0x10000
+#define DEFAULT_FIRMWARE_SRAM_SIZE 0x01000000
 
 #define MAX_SIM_CYCLES 10000
 static const char *kPayloadElfPath = "simulator/build/payload/payload.elf";
@@ -37,6 +41,8 @@ vluint64_t sim_time = 0;
 struct SimOptions;
 
 void load_elf(VSoc *dut, const char *path);
+void load_elf_to_regions(VSoc *dut, const char *path, uint64_t sram_base, size_t sram_size);
+void load_blob_to_sram(VSoc *dut, const char *path, uint64_t paddr, uint64_t sram_base, size_t sram_size);
 bool run_one_test(const std::string &bin_path,
 				  const std::string &test_name, bool trace_en,
 				  const std::string &expected_uart = "");
@@ -61,6 +67,9 @@ static uint64_t env_u64(const char *name, uint64_t fallback)
 struct SimOptions
 {
 	std::string elf_path = kPayloadElfPath;
+	std::string second_elf_path;
+	std::string third_elf_path;
+	std::string dtb_path;
 	std::string test_name = "payload";
 	std::string expected_uart;
 	std::string flash_image;
@@ -71,6 +80,13 @@ struct SimOptions
 	bool trace_dmi = false;
 	bool jtag_only = false;
 	int jtag_rbb_port = 0;
+	bool inject_boot_args = false;
+	uint64_t boot_a0 = 0;
+	uint64_t boot_a1 = 0;
+	uint64_t boot_a2 = 0;
+	uint64_t dtb_addr = SRAM_BASE + 0x00f00000;
+	uint64_t sram_base = SRAM_BASE;
+	size_t sram_size = DEFAULT_SRAM_SIZE;
 	uint64_t max_cycles = MAX_SIM_CYCLES;
 };
 
@@ -191,15 +207,13 @@ class UartStdio
 
 	void capture_tx(VSoc *dut)
 	{
-		bool cur_uart_tx = dut->io_uart_tx;
-		if (cur_uart_tx && !prev_uart_tx_)
+		if (dut->io_uart_tx)
 		{
 			uint8_t ch = (uint8_t)(dut->io_uart_byte & 0xFF);
 			output_.push_back((char)ch);
 			putchar(ch);
 			fflush(stdout);
 		}
-		prev_uart_tx_ = cur_uart_tx;
 	}
 
 	const std::string &output() const { return output_; }
@@ -207,7 +221,6 @@ class UartStdio
   private:
 	bool enable_stdin_ = false;
 	int old_flags_ = -1;
-	bool prev_uart_tx_ = false;
 	std::string output_;
 };
 
@@ -522,6 +535,37 @@ int main(int argc, char **argv, char **env)
 		std::string elf_path = (argc > 4) ? argv[4] : kPayloadElfPath;
 		all_pass &= run_one_test(elf_path, name, true, expected_uart);
 	}
+	else if (std::string(argv[1]) == "--rustsbi")
+	{
+		if (argc < 6)
+		{
+			fprintf(stderr, "usage: %s --rustsbi <trampoline.elf> <firmware.elf> <payload.elf> <dtb>\n", argv[0]);
+			return 1;
+		}
+		SimOptions opts;
+		opts.test_name = "rustsbi";
+		opts.elf_path = argv[2];
+		opts.second_elf_path = argv[3];
+		opts.third_elf_path = argv[4];
+		opts.dtb_path = argv[5];
+		const char *expected_uart = std::getenv("ION_EXPECT_UART");
+		opts.expected_uart = expected_uart != nullptr ? expected_uart : "IonSoC SBI smoke";
+		opts.trace_wave = env_enabled("ION_TRACE_WAVE");
+		opts.direct_elf_load = true;
+		opts.uart_stdin = env_enabled("ION_UART_STDIN");
+		opts.trace_irq = env_enabled("ION_TRACE_IRQ");
+		opts.trace_dmi = env_enabled("ION_TRACE_DMI");
+		opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
+		opts.max_cycles = env_u64("ION_MAX_CYCLES", 8000000);
+		opts.sram_base = env_u64("ION_SRAM_BASE", FIRMWARE_SRAM_BASE);
+		opts.sram_size = (size_t)env_u64("ION_SRAM_SIZE", DEFAULT_FIRMWARE_SRAM_SIZE);
+		opts.dtb_addr = env_u64("ION_DTB_ADDR", opts.sram_base + 0x00f00000);
+		opts.inject_boot_args = true;
+		opts.boot_a0 = env_u64("ION_BOOT_A0", 0);
+		opts.boot_a1 = env_u64("ION_BOOT_A1", opts.dtb_addr);
+		opts.boot_a2 = env_u64("ION_BOOT_A2", opts.sram_base + 0x00100000);
+		all_pass &= run_sim(opts);
+	}
 	else
 	{
 		std::vector<std::string> tests;
@@ -586,7 +630,39 @@ int main(int argc, char **argv, char **env)
 	return all_pass ? 0 : 1;
 }
 
+static uint8_t *sram_bytes(VSoc *dut)
+{
+	return (uint8_t *)&(dut->rootp->SimTop__DOT__sram__DOT__mem_ext__DOT__Memory[0]);
+}
+
+static size_t rtl_sram_capacity_bytes(VSoc *dut)
+{
+	return sizeof(dut->rootp->SimTop__DOT__sram__DOT__mem_ext__DOT__Memory);
+}
+
+static void write_sram_bytes(VSoc *dut, uint64_t sram_base, size_t sram_size, uint64_t paddr, const uint8_t *src, size_t len)
+{
+	if (paddr < sram_base)
+	{
+		fprintf(stderr, "SRAM write below base: paddr=0x%016" PRIx64 "\n", paddr);
+		exit(1);
+	}
+	uint64_t off = paddr - sram_base;
+	if (off + len > sram_size)
+	{
+		fprintf(stderr, "SRAM write out of range: paddr=0x%016" PRIx64 " len=%zu sram=%zu\n",
+		        paddr, len, sram_size);
+		exit(1);
+	}
+	memcpy(sram_bytes(dut) + off, src, len);
+}
+
 void load_elf(VSoc *dut, const char *path)
+{
+	load_elf_to_regions(dut, path, SRAM_BASE, DEFAULT_SRAM_SIZE);
+}
+
+void load_elf_to_regions(VSoc *dut, const char *path, uint64_t sram_base, size_t sram_size)
 {
 	FILE *f = fopen(path, "rb");
 	if (!f)
@@ -657,13 +733,13 @@ void load_elf(VSoc *dut, const char *path)
 	uint32_t *brom_hi_words = (uint32_t *)&(dut->rootp->SimTop__DOT__brom__DOT__hiRom__DOT__mem[0]);
 	uint32_t *tlrom_lo_words = (uint32_t *)&(dut->rootp->SimTop__DOT__tlrom__DOT__loRom__DOT__mem[0]);
 	uint32_t *tlrom_hi_words = (uint32_t *)&(dut->rootp->SimTop__DOT__tlrom__DOT__hiRom__DOT__mem[0]);
-	uint32_t *sram_words = (uint32_t *)&(dut->rootp->SimTop__DOT__sram__DOT__mem_ext__DOT__Memory[0]);
+	uint32_t *sram_words = (uint32_t *)sram_bytes(dut);
 	std::vector<uint8_t> brom_image(ROM_SIZE, 0);
 	uint8_t *brom_bytes = brom_image.data();
 	uint8_t *sram_bytes = (uint8_t *)sram_words;
 
 	const size_t rom_bytes_size = (size_t)ROM_SIZE;
-	const size_t sram_bytes_size = (size_t)SRAM_SIZE;
+	const size_t sram_bytes_size = sram_size;
 
 	// Helper lambda: safe write (reads from file and writes into target_bytes at byte offset)
 	auto write_bytes_to_region = [&](uint8_t *target_bytes, size_t region_bytes,
@@ -784,11 +860,11 @@ void load_elf(VSoc *dut, const char *path)
 			offset_in_region = vaddr - (uint64_t)BROM_BASE;
 			region_name = "ROM";
 		}
-		else if (vaddr >= (uint64_t)SRAM_BASE && vaddr < (uint64_t)SRAM_BASE + (uint64_t)SRAM_SIZE)
+		else if (vaddr >= sram_base && vaddr < sram_base + (uint64_t)sram_bytes_size)
 		{
 			target_bytes = sram_bytes;
 			region_bytes = sram_bytes_size;
-			offset_in_region = vaddr - (uint64_t)SRAM_BASE;
+			offset_in_region = vaddr - sram_base;
 			region_name = "SRAM";
 		}
 		else
@@ -832,10 +908,51 @@ void load_elf(VSoc *dut, const char *path)
 	fclose(f);
 }
 
-void ram_init(VSoc *dut)
+void load_blob_to_sram(VSoc *dut, const char *path, uint64_t paddr, uint64_t sram_base, size_t sram_size)
 {
-	const size_t WORDS = SRAM_SIZE / 8; // Memory is 64-bit wide
-	for (int i = 0; i < WORDS; ++i)
+	FILE *f = fopen(path, "rb");
+	if (!f)
+	{
+		perror("blob fopen");
+		exit(1);
+	}
+	if (fseek(f, 0, SEEK_END) != 0)
+	{
+		perror("blob fseek");
+		fclose(f);
+		exit(1);
+	}
+	long size = ftell(f);
+	if (size < 0)
+	{
+		perror("blob ftell");
+		fclose(f);
+		exit(1);
+	}
+	rewind(f);
+	std::vector<uint8_t> data((size_t)size);
+	if (!data.empty() && fread(data.data(), 1, data.size(), f) != data.size())
+	{
+		fprintf(stderr, "short blob read: %s\n", path);
+		fclose(f);
+		exit(1);
+	}
+	fclose(f);
+	write_sram_bytes(dut, sram_base, sram_size, paddr, data.data(), data.size());
+	printf("[boot]: loaded blob %s -> SRAM 0x%016" PRIx64 " (%zu bytes)\n", path, paddr, data.size());
+}
+
+void ram_init(VSoc *dut, size_t sram_size = DEFAULT_SRAM_SIZE)
+{
+	size_t rtl_capacity = rtl_sram_capacity_bytes(dut);
+	if (sram_size > rtl_capacity)
+	{
+		fprintf(stderr, "Requested SRAM size 0x%zx exceeds RTL SRAM capacity 0x%zx. Rebuild the matching Verilator profile.\n",
+		        sram_size, rtl_capacity);
+		exit(1);
+	}
+	const size_t WORDS = sram_size / 8; // Memory is 64-bit wide
+	for (size_t i = 0; i < WORDS; ++i)
 	{
 		dut->rootp->SimTop__DOT__sram__DOT__mem_ext__DOT__Memory[i] = 0x0;
 	}
@@ -869,7 +986,7 @@ bool run_sim(const SimOptions &opts)
 
 	sim_time = 0;
 
-	ram_init(dut);
+	ram_init(dut, opts.sram_size);
 
 	FlashImage flash;
 	if (!flash.load(opts.flash_image))
@@ -880,7 +997,13 @@ bool run_sim(const SimOptions &opts)
 	}
 	if (opts.direct_elf_load)
 	{
-		load_elf(dut, opts.elf_path.c_str());
+		load_elf_to_regions(dut, opts.elf_path.c_str(), opts.sram_base, opts.sram_size);
+		if (!opts.second_elf_path.empty())
+			load_elf_to_regions(dut, opts.second_elf_path.c_str(), opts.sram_base, opts.sram_size);
+		if (!opts.third_elf_path.empty())
+			load_elf_to_regions(dut, opts.third_elf_path.c_str(), opts.sram_base, opts.sram_size);
+		if (!opts.dtb_path.empty())
+			load_blob_to_sram(dut, opts.dtb_path.c_str(), opts.dtb_addr, opts.sram_base, opts.sram_size);
 	}
 	else
 	{
@@ -930,10 +1053,26 @@ bool run_sim(const SimOptions &opts)
 	}
 
 	dut->reset = 0;
+	if (opts.inject_boot_args)
+	{
+		dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10] = opts.boot_a0;
+		dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[11] = opts.boot_a1;
+		dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[12] = opts.boot_a2;
+		printf("[boot]: sram_base=0x%016" PRIx64 " sram_size=0x%zx dtb=0x%016" PRIx64 " payload=0x%016" PRIx64 "\n",
+		       opts.sram_base, opts.sram_size, opts.dtb_addr, opts.boot_a2);
+		printf("[boot]: injected a0=0x%016" PRIx64 " a1=0x%016" PRIx64 " a2=0x%016" PRIx64 "\n",
+		       opts.boot_a0, opts.boot_a1, opts.boot_a2);
+	}
 
 	printf("\n--- UART output ---\n");
 	bool saw_exit = false;
 	bool trace_cpu = std::getenv("ION_TRACE_CPU") != nullptr;
+	uint64_t trace_pc_start = env_u64("ION_TRACE_PC_START", 0);
+	uint64_t trace_pc_end = env_u64("ION_TRACE_PC_END", UINT64_MAX);
+	bool trace_boot = env_enabled("ION_TRACE_BOOT");
+	bool saw_rom_pc = false;
+	bool saw_sram_pc = false;
+	bool saw_payload_pc = false;
 	uint64_t last_pc = UINT64_MAX;
 	uint64_t last_mtimecmp = UINT64_MAX;
 	uint8_t last_mtip = 0xff;
@@ -954,42 +1093,103 @@ bool run_sim(const SimOptions &opts)
 		uint8_t cur_mtip = (dut->rootp->SimTop__DOT__clint__DOT__mtimecmp != 0) &&
 						   (dut->rootp->SimTop__DOT__clint__DOT__mtime >= dut->rootp->SimTop__DOT__clint__DOT__mtimecmp);
 		bool trace_state_change = cur_mtip != last_mtip || cur_mtimecmp != last_mtimecmp;
+		uint64_t pc_now = dut->io_debug_pc;
 
-		if (trace_cpu && dut->clock && (sim_time < 150 || dut->io_debug_pc != last_pc || trace_state_change))
+		if (trace_boot && dut->clock)
 		{
-			last_pc = dut->io_debug_pc;
+			if (!saw_rom_pc && pc_now >= BROM_BASE && pc_now < BROM_BASE + ROM_SIZE)
+			{
+				saw_rom_pc = true;
+				printf("[boot-trace %6" PRIu64 "] entered ROM pc=0x%016" PRIx64 "\n", sim_time, pc_now);
+			}
+			if (!saw_sram_pc && pc_now >= opts.sram_base && pc_now < opts.sram_base + opts.sram_size)
+			{
+				saw_sram_pc = true;
+				printf("[boot-trace %6" PRIu64 "] entered SRAM pc=0x%016" PRIx64 "\n", sim_time, pc_now);
+			}
+			if (!saw_payload_pc && pc_now >= opts.boot_a2 && pc_now < opts.boot_a2 + 0x10000)
+			{
+				saw_payload_pc = true;
+				printf("[boot-trace %6" PRIu64 "] entered payload pc=0x%016" PRIx64 "\n", sim_time, pc_now);
+			}
+			if (dut->rootp->SimTop__DOT__core__DOT__combined_trap)
+			{
+				printf("[boot-trace %6" PRIu64 "] trap pc=0x%016" PRIx64 " mtvec=0x%016" PRIx64
+				       " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64 "\n",
+				       sim_time,
+				       pc_now,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtvec,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause);
+			}
+		}
+
+		bool trace_pc_match = pc_now >= trace_pc_start && pc_now <= trace_pc_end;
+		if (trace_cpu && trace_pc_match && dut->clock && (sim_time < 150 || dut->io_debug_pc != last_pc || trace_state_change))
+		{
+			last_pc = pc_now;
 			last_mtimecmp = cur_mtimecmp;
 			last_mtip = cur_mtip;
+			uint64_t ra = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[1];
 			uint64_t t0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[5];
+			uint64_t s0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[8];
 			uint64_t t3 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[28];
 			uint64_t a0_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
 			uint64_t a7_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
-			printf("[trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x t0=0x%016" PRIx64 " t3=0x%016" PRIx64 " a0=0x%016" PRIx64 " a7=0x%016" PRIx64
-				   " lsu_stall=%u load_valid=%u load=0x%016" PRIx64 " alu_rd=%u alu_w=%u alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
-				   " br_v=%u br_t=%u br_target=0x%016" PRIx64 " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
+			printf("[trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x ra=0x%016" PRIx64 " t0=0x%016" PRIx64 " s0=0x%016" PRIx64 " t3=0x%016" PRIx64 " a0=0x%016" PRIx64 " a7=0x%016" PRIx64
+				   " id_v=%u id_rd=%u id_w=%u id_op1=0x%016" PRIx64 " id_op2=0x%016" PRIx64
+				   " lsu_stall=%u load_valid=%u load=0x%016" PRIx64 " alu_v=%u alu_rd=%u alu_w=%u alu_res=0x%016" PRIx64 " alu_pc=0x%016" PRIx64 " alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
+				   " lsu_v=%u lsu_rd=%u lsu_w=%u lsu_res=0x%016" PRIx64 " wb_rd=%u wb_w=%u wb_data=0x%016" PRIx64
+				   " if_state=%u if_acc=%u if_req_pc=0x%016" PRIx64 " if_pc=0x%016" PRIx64 " if_instr=0x%08x if_len=%u if_rel_len=%u pc_step=%u pc_hold=%u bpu_taken=%u bpu_target=0x%016" PRIx64
+				   " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
 				   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " plic_src1=%u mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
 				   sim_time,
 				   (uint64_t)dut->io_debug_pc,
 				   (uint32_t)dut->io_debug_instr,
+				   ra,
 				   t0,
+				   s0,
 				   t3,
 				   a0_trace,
 				   a7_trace,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_valid_out_r,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_r_rd,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_r_ctrl_reg_write,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_r_op1,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_r_op2,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_req_0,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_load_data_valid,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_load_data,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_valid_out_r,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_rd_r,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_reg_write_r,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_result_r,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_pc_out_r,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__op1,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__op2,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_valid,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_taken,
-				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_target,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_valid_out_REG,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_reg_rd,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_reg_write,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_result,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_rd,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_reg_write,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_data,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__state,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__acceptResp,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__reqPc,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_pc_out_r_1,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_instr_out_r_1,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__acceptedLen,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__releaseLen,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT___io_pc_step_len_T,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirectHold,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT___bpu_io_pred_taken,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT___bpu_io_pred_target,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirect,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__interruptPending,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__interrupt_fire,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__combined_trap,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pipeline_flush,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__combined_trap,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtvec,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause,
@@ -1019,7 +1219,8 @@ bool run_sim(const SimOptions &opts)
 			last_dmi_valid = dmi_valid;
 		}
 
-		uart.capture_tx(dut);
+		if (dut->clock)
+			uart.capture_tx(dut);
 
 		int a0_live = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
 		int a7_live = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
@@ -1038,6 +1239,40 @@ bool run_sim(const SimOptions &opts)
 	int gp = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[3];
 	int a0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
 	int a7 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
+	if (trace_boot)
+	{
+		printf("[boot-trace end] cycles=%" PRIu64 " pc=0x%016" PRIx64 " instr=0x%08x mtvec=0x%016" PRIx64
+		       " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64 " a0=0x%016" PRIx64 " a1=0x%016" PRIx64
+		       " a2=0x%016" PRIx64 " a7=0x%016" PRIx64
+		       " fence_start=%u fence_pending=%u fence_issued=%u fence_active=%u fence_ack=%u\n",
+		       sim_time,
+		       (uint64_t)dut->io_debug_pc,
+		       (uint32_t)dut->io_debug_instr,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtvec,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10],
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[11],
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[12],
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17],
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__fenceIStart,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__fenceIPending,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__fenceIFlushIssued,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__fenceIActive,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__fenceIAck);
+		if (dut->rootp->__PVT__SimTop__DOT__core__DOT__icache != nullptr)
+		{
+			printf("[boot-trace cache] ifetch_state=%u ifetch_req=%u icache_state=%u icache_req_ready=%u icache_resp_valid=%u icache_inv_ready=%u bus_a_valid=%u bus_d_ready=%u\n",
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__state,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_cache_req_valid_0,
+			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->__PVT__state,
+			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_cpu_req_ready,
+			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_cpu_resp_valid,
+			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_invalidate_ready,
+			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_bus_a_valid,
+			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_bus_d_ready);
+		}
+	}
 
 	bool uart_pass = opts.expected_uart.empty() || (uart.output().find(opts.expected_uart) != std::string::npos);
 	bool pass = opts.jtag_only ? true : (saw_exit && a7 == 93 && a0 == 0 && uart_pass);

@@ -328,4 +328,20 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.br_info.target.expect(BigInt("80000002", 16))
         }
     }
+
+    test("ALU clears bit zero for JALR branch targets") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.decoded_in.ctrl.branch_type.poke(BranchType.JALR)
+            dut.io.decoded_in.op1.poke("h4000001f".U)
+            dut.io.decoded_in.op2.poke(0.U)
+            dut.clock.step()
+
+            dut.io.br_info.valid.expect(true.B)
+            dut.io.br_info.taken.expect(true.B)
+            dut.io.br_info.redirect.expect(true.B)
+            dut.io.br_info.target.expect("h4000001e".U)
+        }
+    }
 }

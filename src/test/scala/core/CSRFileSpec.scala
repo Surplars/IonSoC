@@ -205,4 +205,64 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
             dut.io.ret_type.poke(TrapReturnType.None)
         }
     }
+
+    test("CSRFile exposes RustSBI platform CSRs without illegal traps") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+
+            Seq(CSR.MCOUNTEREN, CSR.SCOUNTEREN, CSR.MENVCFG, CSR.MCOUNTINHIBIT).zipWithIndex.foreach { case (addr, idx) =>
+                val value = BigInt("100", 16) + idx
+                writeCsr(dut, addr, value)
+                dut.io.valid.poke(true.B)
+                dut.io.write.poke(false.B)
+                dut.io.addr.poke(addr)
+                dut.io.illegal.expect(false.B)
+                dut.io.rdata.expect(value.U)
+                dut.io.valid.poke(false.B)
+            }
+
+            for (i <- 0 until 8) {
+                val addr = (0x3b0 + i).U(12.W)
+                val value = BigInt("40000000", 16) + i
+                writeCsr(dut, addr, value)
+                dut.io.valid.poke(true.B)
+                dut.io.write.poke(false.B)
+                dut.io.addr.poke(addr)
+                dut.io.illegal.expect(false.B)
+                dut.io.rdata.expect(value.U)
+                dut.io.mem_cfg_out.pmpaddr(i).expect(value.U)
+                dut.io.valid.poke(false.B)
+            }
+        }
+    }
+
+    test("CSRFile exposes machine performance counter CSRs for RustSBI probing") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+
+            Seq(CSR.MCYCLE, CSR.MINSTRET).foreach { addr =>
+                dut.io.valid.poke(true.B)
+                dut.io.write.poke(false.B)
+                dut.io.addr.poke(addr)
+                dut.io.illegal.expect(false.B)
+                dut.io.valid.poke(false.B)
+            }
+
+            val mhpmcounter3 = 0xb03.U(12.W)
+            writeCsr(dut, mhpmcounter3, 1)
+            dut.io.valid.poke(true.B)
+            dut.io.write.poke(true.B)
+            dut.io.cmd.poke(CSROps.RW.asUInt)
+            dut.io.addr.poke(mhpmcounter3)
+            dut.io.wdata.poke(BigInt("1234", 16).U)
+            dut.io.illegal.expect(false.B)
+            dut.io.rdata.expect(1.U)
+            dut.clock.step()
+
+            dut.io.write.poke(false.B)
+            dut.io.wdata.poke(0.U)
+            dut.io.rdata.expect(BigInt("1234", 16).U)
+            dut.io.valid.poke(false.B)
+        }
+    }
 }
