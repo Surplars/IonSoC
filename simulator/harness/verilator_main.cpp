@@ -653,11 +653,13 @@ void load_elf(VSoc *dut, const char *path)
 
 	// memory pointers: treat DUT mem[] as word array but provide byte view
 	// 原代码使用 32-bit word pointers；这里保留相同写法（假设目标内存为 32-bit word 存储）
-	uint32_t *brom_words = (uint32_t *)&(dut->rootp->SimTop__DOT__brom__DOT__rom__DOT__mem[0]);
+	uint32_t *brom_lo_words = (uint32_t *)&(dut->rootp->SimTop__DOT__brom__DOT__loRom__DOT__mem[0]);
+	uint32_t *brom_hi_words = (uint32_t *)&(dut->rootp->SimTop__DOT__brom__DOT__hiRom__DOT__mem[0]);
 	uint32_t *tlrom_lo_words = (uint32_t *)&(dut->rootp->SimTop__DOT__tlrom__DOT__loRom__DOT__mem[0]);
 	uint32_t *tlrom_hi_words = (uint32_t *)&(dut->rootp->SimTop__DOT__tlrom__DOT__hiRom__DOT__mem[0]);
 	uint32_t *sram_words = (uint32_t *)&(dut->rootp->SimTop__DOT__sram__DOT__mem_ext__DOT__Memory[0]);
-	uint8_t *brom_bytes = (uint8_t *)brom_words;
+	std::vector<uint8_t> brom_image(ROM_SIZE, 0);
+	uint8_t *brom_bytes = brom_image.data();
 	uint8_t *sram_bytes = (uint8_t *)sram_words;
 
 	const size_t rom_bytes_size = (size_t)ROM_SIZE;
@@ -731,7 +733,7 @@ void load_elf(VSoc *dut, const char *path)
 		}
 	};
 
-	auto mirror_rom_to_tlrom = [&](uint64_t offset_byte, uint64_t filesz)
+	auto mirror_rom_to_rtl = [&](uint64_t offset_byte, uint64_t filesz)
 	{
 		uint64_t end = offset_byte + filesz;
 		if (end > rom_bytes_size)
@@ -742,6 +744,8 @@ void load_elf(VSoc *dut, const char *path)
 		{
 			uint32_t word = ((uint32_t *)brom_bytes)[byte / 4];
 			uint64_t word_idx = byte / 4;
+			brom_lo_words[word_idx] = word;
+			brom_hi_words[word_idx] = word;
 			if ((word_idx & 1) == 0)
 			{
 				tlrom_lo_words[word_idx] = word;
@@ -799,7 +803,7 @@ void load_elf(VSoc *dut, const char *path)
 			write_bytes_to_region(target_bytes, region_bytes, offset_in_region, ph.p_offset, filesz);
 			if (target_bytes == brom_bytes)
 			{
-				mirror_rom_to_tlrom(offset_in_region, filesz);
+				mirror_rom_to_rtl(offset_in_region, filesz);
 			}
 			printf("  -> wrote %" PRIu64 " bytes to %s @ offset 0x%016" PRIx64 "\n", filesz, region_name, offset_in_region);
 		}
