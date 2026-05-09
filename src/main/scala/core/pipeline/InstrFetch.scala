@@ -11,7 +11,7 @@ import soc.memory.cache.CacheCmd
 class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = false) extends Module {
     val io = IO(new Bundle {
         val pc            = Input(UInt(XLEN.W))
-        val instr_in      = Input(UInt(32.W))
+        val instr_in      = Input(UInt(64.W))
         val pred_taken_in = Input(Bool())
         val redirect      = Input(Bool())
         val trap_valid    = Input(Bool())
@@ -49,18 +49,22 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
     io.cache.resp.ready         := true.B
 
     val directUpdate = !io.stall
-    private def selectAndExpand(raw: UInt, pc: UInt): (UInt, UInt) = {
+    private def selectAndExpand(raw: UInt, pc: UInt, byteOffset: UInt): (UInt, UInt) = {
+        val shift = Cat(byteOffset, 0.U(3.W))
+        val rawInstr = (raw >> shift)(31, 0)
         if (useCompressed) {
-            val half = Mux(pc(1), raw(31, 16), raw(15, 0))
+            val half = rawInstr(15, 0)
             val isCompressed = half(1, 0) =/= "b11".U
             val expanded = Compressed.expand(half)
             val instr = Mux(expanded._2, expanded._1, Common.instrIllegal)
-            (Mux(isCompressed, instr, raw), Mux(isCompressed, 2.U(2.W), 0.U(2.W)))
+            (Mux(isCompressed, instr, rawInstr), Mux(isCompressed, 2.U(2.W), 0.U(2.W)))
         } else {
-            (raw, 0.U(2.W))
+            (rawInstr, 0.U(2.W))
         }
     }
-    val directExpanded = selectAndExpand(io.instr_in, io.pc)
+    // Direct ROM supplies the word containing PC plus the following word, so
+    // bit 1 is enough to assemble 32-bit instructions starting at a high halfword.
+    val directExpanded = selectAndExpand(io.instr_in, io.pc, Cat(0.U(1.W), io.pc(1, 0)))
     val directInstr = Mux(io.redirect, Common.instrNop, directExpanded._1)
     val directLen = Mux(io.redirect, 0.U(2.W), directExpanded._2)
 
@@ -111,9 +115,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         }
 
         val respFire = pending && sent && io.cache.resp.valid && io.cache.resp.ready
-        val respShift = Cat(reqPc(beatOffsetBits - 1, 0), 0.U(3.W))
-        val respInstr = (io.cache.resp.bits.rdata >> respShift)(31, 0)
-        val respExpanded = selectAndExpand(respInstr, reqPc)
+        val respExpanded = selectAndExpand(io.cache.resp.bits.rdata, reqPc, reqPc(beatOffsetBits - 1, 0))
         val acceptResp = respFire && !dropResp && !io.cache.resp.bits.err && !io.redirect && !io.trap_valid
 
         when(respFire) {

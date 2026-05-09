@@ -29,7 +29,8 @@ class Core(
     private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + log2Ceil(nMasters))
 
     val io = IO(new Bundle {
-        val instr = Input(UInt(32.W))
+        val instr = Input(UInt(64.W))
+        val debug_instr = Output(UInt(32.W))
 
         val fetch_en = Output(Bool())
         val pc       = Output(UInt(XLEN.W))
@@ -208,7 +209,7 @@ class Core(
     pc.io.stall      := global_stall
 	    pc.io.trap_valid := combined_trap
     pc.io.trap_pc    := Mux(has_pipeline_trap, csr.io.tvec_out, interruptTarget)
-	    pc.io.trap_ret   := ret_redirect
+    pc.io.trap_ret   := ret_redirect
     pc.io.trap_epc   := csr.io.epc_out
     pc.io.instr_len  := ifetch.io.pc_step_len
     pc.io.br_info <> alu.io.br_info
@@ -248,7 +249,8 @@ class Core(
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken
     ifetch.io.redirect      := pc.io.redirect
-	    ifetch.io.trap_valid    := pipeline_flush
+    ifetch.io.trap_valid    := pipeline_flush
+    io.debug_instr          := ifetch.io.instr_out
     // idcode
     idecode.io.valid_in      := ifetch.io.valid
     idecode.io.stall         := pipe_stall || decodeUsesPending || debugHalted

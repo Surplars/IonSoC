@@ -54,14 +54,17 @@ class BROM(XLEN: Int, depth: Int, init: Seq[Int]) extends Module {
     val io = IO(new Bundle {
         val fetch_en = Input(Bool())
         val addr     = Input(UInt(XLEN.W))
-        val instr    = Output(UInt(32.W))
+        val instr    = Output(UInt(64.W))
     })
 
-	val rom = Module(new ROM)
+	val loRom = Module(new ROM)
+	val hiRom = Module(new ROM)
 
-	rom.io.en := io.fetch_en
-	rom.io.pc_in := io.addr
-	io.instr := rom.io.instr_out
+	loRom.io.en := io.fetch_en
+	loRom.io.pc_in := io.addr
+	hiRom.io.en := io.fetch_en
+	hiRom.io.pc_in := io.addr + 4.U
+	io.instr := Cat(hiRom.io.instr_out, loRom.io.instr_out)
 }
 
 class TLROM(params: TLParams) extends Module {

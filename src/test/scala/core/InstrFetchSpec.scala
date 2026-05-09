@@ -8,7 +8,7 @@ import soc.core.pipeline.InstrFetch
 class InstrFetchSpec extends AnyFunSuite with ChiselSim {
     private def init(dut: InstrFetch): Unit = {
         dut.io.pc.poke("h80000000".U)
-        dut.io.instr_in.poke("h00000013".U)
+        dut.io.instr_in.poke("h0000000000000013".U)
         dut.io.pred_taken_in.poke(false.B)
         dut.io.redirect.poke(false.B)
         dut.io.trap_valid.poke(false.B)
@@ -24,14 +24,14 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             init(dut)
 
             dut.io.pc.poke("h80000000".U)
-            dut.io.instr_in.poke("h00850001".U) // high c.addi x1,1; low c.nop
+            dut.io.instr_in.poke("h0000000000850001".U) // high c.addi x1,1; low c.nop
             dut.clock.step()
             dut.io.valid.expect(true.B)
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h00000013".U)
 
             dut.io.pc.poke("h80000002".U)
-            dut.io.instr_in.poke("h00850001".U)
+            dut.io.instr_in.poke("h0000000000850001".U)
             dut.clock.step()
             dut.io.valid.expect(true.B)
             dut.io.instr_len.expect(2.U)
@@ -43,7 +43,20 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         simulate(new InstrFetch(64, useCompressed = true)) { dut =>
             init(dut)
 
-            dut.io.instr_in.poke("h00500113".U)
+            dut.io.instr_in.poke("h0000000000500113".U)
+            dut.clock.step()
+            dut.io.valid.expect(true.B)
+            dut.io.instr_len.expect(0.U)
+            dut.io.instr_out.expect("h00500113".U)
+        }
+    }
+
+    test("InstrFetch assembles a 32-bit instruction starting at a high halfword") {
+        simulate(new InstrFetch(64, useCompressed = true)) { dut =>
+            init(dut)
+
+            dut.io.pc.poke("h80000002".U)
+            dut.io.instr_in.poke("h0000005001130001".U)
             dut.clock.step()
             dut.io.valid.expect(true.B)
             dut.io.instr_len.expect(0.U)
@@ -55,17 +68,17 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         simulate(new InstrFetch(64, useCompressed = true)) { dut =>
             init(dut)
 
-            dut.io.instr_in.poke("h00004104".U) // c.lw x9, 0(x10)
+            dut.io.instr_in.poke("h0000000000004104".U) // c.lw x9, 0(x10)
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h00052483".U)
 
-            dut.io.instr_in.poke("h0000c104".U) // c.sw x9, 0(x10)
+            dut.io.instr_in.poke("h000000000000c104".U) // c.sw x9, 0(x10)
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h00952023".U)
 
-            dut.io.instr_in.poke("h0000908a".U) // c.add x1, x2
+            dut.io.instr_in.poke("h000000000000908a".U) // c.add x1, x2
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h002080b3".U)
@@ -76,22 +89,22 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         simulate(new InstrFetch(64, useCompressed = true)) { dut =>
             init(dut)
 
-            dut.io.instr_in.poke("h000064c2".U) // c.ldsp x9, 16(sp)
+            dut.io.instr_in.poke("h00000000000064c2".U) // c.ldsp x9, 16(sp)
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h01013483".U)
 
-            dut.io.instr_in.poke("h0000ec26".U) // c.sdsp x9, 24(sp)
+            dut.io.instr_in.poke("h000000000000ec26".U) // c.sdsp x9, 24(sp)
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h00913c23".U)
 
-            dut.io.instr_in.poke("h00009ca9".U) // c.addw x9, x10
+            dut.io.instr_in.poke("h0000000000009ca9".U) // c.addw x9, x10
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h00a484bb".U)
 
-            dut.io.instr_in.poke("h00009c89".U) // c.subw x9, x10
+            dut.io.instr_in.poke("h0000000000009c89".U) // c.subw x9, x10
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h40a484bb".U)
@@ -102,7 +115,7 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         simulate(new InstrFetch(64, useCompressed = true)) { dut =>
             init(dut)
 
-            dut.io.instr_in.poke("h00000000".U) // reserved compressed encoding
+            dut.io.instr_in.poke("h0000000000000000".U) // reserved compressed encoding
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h00000000".U)
