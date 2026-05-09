@@ -27,6 +27,8 @@ class IonSoC(
 ) extends Module {
     private val tlParams = TLParams()
     private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + 2)
+    private val debugBusMasters = 2 // core DBus plus Debug Module SBA.
+    private val deviceParams = dbusParams.copy(sourceBits = dbusParams.sourceBits + log2Ceil(debugBusMasters))
     private val mmioRegions = Config.mmioRegionsFor(features)
     private val slaveCount = mmioRegions.length
 
@@ -45,15 +47,15 @@ class IonSoC(
 
     val core  = Module(new Core(Config.XLEN, hartID = 0, features, enabledExt))
     val brom  = Module(new BROM(Config.XLEN, Config.romDepth, Config.romInit))
-    val sram  = Module(new TLRAM(dbusParams, features.sramSizeBytes, features.sramBase))
-    val debugModule = Module(new DebugModule(dbusParams))
-    val tlrom = Module(new TLROM(dbusParams))
-    val uart  = if (features.uart) Some(Module(new UartTx(dbusParams))) else None
-    val clint = if (features.clint) Some(Module(new CLINT(dbusParams))) else None
-    val plic  = if (features.interruptController == InterruptControllerKind.PLIC) Some(Module(new PLIC(dbusParams, Config.plicSources))) else None
+    val sram  = Module(new TLRAM(deviceParams, features.sramSizeBytes, features.sramBase))
+    val debugModule = Module(new DebugModule(deviceParams, dbusParams))
+    val tlrom = Module(new TLROM(deviceParams))
+    val uart  = if (features.uart) Some(Module(new UartTx(deviceParams))) else None
+    val clint = if (features.clint) Some(Module(new CLINT(deviceParams))) else None
+    val plic  = if (features.interruptController == InterruptControllerKind.PLIC) Some(Module(new PLIC(deviceParams, Config.plicSources))) else None
     val jtag  = Module(new JtagTap(drLen = Config.XLEN))
 
-    val TLCrossbar = Module(new TLXbar(dbusParams, 1, slaveCount, Config.addrMapFor(features)))
+    val TLCrossbar = Module(new TLXbar(dbusParams, debugBusMasters, slaveCount, Config.addrMapFor(features)))
 
     brom.io.fetch_en := core.io.fetch_en
     brom.io.addr     := core.io.pc
@@ -77,12 +79,13 @@ class IonSoC(
     jtag.io.jtag.tck := io.jtag_tck
     jtag.io.jtag.tdi := io.jtag_tdi
     io.jtag_tdo := jtag.io.jtag.tdo
-    jtag.io.dr_in := Cat(0.U(23.W), 0.U(2.W), debugModule.io.dmi_rdata, 0.U(2.W))
+    jtag.io.dr_in := Cat(0.U(30.W), debugModule.io.dmi_rdata, debugModule.io.dmi_resp_op)
     debugModule.io.dmi_valid := RegNext(jtag.io.update_dr, false.B)
     debugModule.io.dmi_write := jtag.io.dr_out(1, 0) === 2.U
     debugModule.io.dmi_addr  := jtag.io.dr_out(40, 34)
     debugModule.io.dmi_wdata := jtag.io.dr_out(33, 2)
     debugModule.io.hart_halted := core.io.debug_halted
+    debugModule.io.hart_pc := core.io.pc
     debugModule.io.gpr_rdata := core.io.debug_gpr_rdata
     debugModule.io.csr_rdata := core.io.debug_csr_rdata
     debugModule.io.csr_valid := core.io.debug_csr_valid
@@ -101,6 +104,7 @@ class IonSoC(
     }
 
     TLCrossbar.io.masters(0) <> core.io.DBus
+    TLCrossbar.io.masters(1) <> debugModule.io.sba
 
     private var slaveIndex = 0
     private def connectSlave(tl: TLBundle): Unit = {

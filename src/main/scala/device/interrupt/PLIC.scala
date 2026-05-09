@@ -36,17 +36,22 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
 
     val priority = RegInit(VecInit(Seq.fill(nSources + 1)(0.U(priorityWidth.W))))
     val pending  = RegInit(VecInit(Seq.fill(nSources + 1)(false.B)))
+    val gatewayBusy = RegInit(VecInit(Seq.fill(nSources + 1)(false.B)))
     val enable   = RegInit(VecInit(Seq.fill(nContexts)(0.U((nSources + 1).W))))
     val threshold = RegInit(VecInit(Seq.fill(nContexts)(0.U(priorityWidth.W))))
 
     priority(0) := 0.U
     pending(0) := false.B
+    gatewayBusy(0) := false.B
 
     // Source 0 is reserved by the PLIC spec. External gateways feed source IDs
-    // starting at 1; a high level latches pending until claim/complete clears it.
+    // starting at 1. A level source is forwarded once, then held busy until
+    // software completes that source. If the level is still high at completion,
+    // the gateway immediately forwards a fresh pending request.
     for (id <- 1 to nSources) {
-        when(io.sources(id)) {
+        when(io.sources(id) && !gatewayBusy(id)) {
             pending(id) := true.B
+            gatewayBusy(id) := true.B
         }
     }
 
@@ -99,6 +104,7 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
     val respOpcode = RegInit(TLOpcode.AccessAck)
     val respSize   = RegInit(0.U(params.sizeBits.W))
     val respSource = RegInit(0.U(params.sourceBits.W))
+    val respDenied = RegInit(false.B)
 
     io.tl.a.ready := !respValid
 
@@ -107,26 +113,27 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
         val isRead = io.tl.a.bits.opcode === TLOpcode.Get
         val isWrite = io.tl.a.bits.opcode === TLOpcode.PutFullData ||
             io.tl.a.bits.opcode === TLOpcode.PutPartialData
+        val isLegal = isRead || isWrite
         val wordOffset = offset(25, 2) << 2
         val readData = Wire(UInt(params.dataWidth.W))
         readData := 0.U
 
-        when(wordOffset >= (PLICMap.PriorityBase + 4).U && wordOffset <= (PLICMap.PriorityBase + nSources * 4).U) {
+        when(isRead && wordOffset >= (PLICMap.PriorityBase + 4).U && wordOffset <= (PLICMap.PriorityBase + nSources * 4).U) {
             val id = wordOffset(priorityAddrBits - 1, 2)
             readData := placeRead(priority(id))
-        }.elsewhen(wordOffset === PLICMap.PendingBase.U) {
+        }.elsewhen(isRead && wordOffset === PLICMap.PendingBase.U) {
             readData := placeRead(pending.asUInt)
-        }.elsewhen(wordOffset === PLICMap.EnableBase.U) {
+        }.elsewhen(isRead && wordOffset === PLICMap.EnableBase.U) {
             readData := placeRead(enable(0))
-        }.elsewhen(wordOffset === (PLICMap.EnableBase + PLICMap.EnableStride).U) {
+        }.elsewhen(isRead && wordOffset === (PLICMap.EnableBase + PLICMap.EnableStride).U) {
             readData := placeRead(enable(1))
-        }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ThresholdOffset).U) {
+        }.elsewhen(isRead && wordOffset === (PLICMap.ContextBase + PLICMap.ThresholdOffset).U) {
             readData := placeRead(threshold(0))
-        }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ClaimCompleteOffset).U) {
+        }.elsewhen(isRead && wordOffset === (PLICMap.ContextBase + PLICMap.ClaimCompleteOffset).U) {
             readData := placeRead(claimIds(0))
-        }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ThresholdOffset).U) {
+        }.elsewhen(isRead && wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ThresholdOffset).U) {
             readData := placeRead(threshold(1))
-        }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ClaimCompleteOffset).U) {
+        }.elsewhen(isRead && wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ClaimCompleteOffset).U) {
             readData := placeRead(claimIds(1))
         }
 
@@ -148,12 +155,24 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
             }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ClaimCompleteOffset).U) {
                 val completeId = mergeLaneMasked(0.U)(sourceIdWidth - 1, 0)
                 when(completeId =/= 0.U && completeId <= nSources.U) {
-                    pending(completeId) := false.B
+                    when(io.sources(completeId)) {
+                        pending(completeId) := true.B
+                        gatewayBusy(completeId) := true.B
+                    }.otherwise {
+                        pending(completeId) := false.B
+                        gatewayBusy(completeId) := false.B
+                    }
                 }
             }.elsewhen(wordOffset === (PLICMap.ContextBase + PLICMap.ContextStride + PLICMap.ClaimCompleteOffset).U) {
                 val completeId = mergeLaneMasked(0.U)(sourceIdWidth - 1, 0)
                 when(completeId =/= 0.U && completeId <= nSources.U) {
-                    pending(completeId) := false.B
+                    when(io.sources(completeId)) {
+                        pending(completeId) := true.B
+                        gatewayBusy(completeId) := true.B
+                    }.otherwise {
+                        pending(completeId) := false.B
+                        gatewayBusy(completeId) := false.B
+                    }
                 }
             }
         }.elsewhen(isRead && wordOffset === (PLICMap.ContextBase + PLICMap.ClaimCompleteOffset).U && claimIds(0) =/= 0.U) {
@@ -169,6 +188,7 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
         respSize   := io.tl.a.bits.size
         respSource := io.tl.a.bits.source
         respData   := readData
+        respDenied := !isLegal
     }
 
     io.tl.d.valid        := respValid
@@ -177,7 +197,7 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
     io.tl.d.bits.size    := respSize
     io.tl.d.bits.source  := respSource
     io.tl.d.bits.sink    := 0.U
-    io.tl.d.bits.denied  := false.B
+    io.tl.d.bits.denied  := respDenied
     io.tl.d.bits.data    := respData
     io.tl.d.bits.corrupt := false.B
 

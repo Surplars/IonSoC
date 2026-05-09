@@ -3,10 +3,17 @@ package sim
 import chisel3._
 import _root_.circt.stage.ChiselStage
 import soc._
+import soc.config.ISAProfiles
 import soc.config.SoCFeatures
 import soc.config.SoCProfiles
 
 class SimTop extends IonSoC
+
+// Explicit MCU emission target. Keeping this separate from SimTop lets tests
+// and Makefile targets depend on a stable platform contract.
+class SimTopMCU extends IonSoC(SoCProfiles.BareMetalMCU, ISAProfiles.RV64IMACB) {
+    override def desiredName: String = "SimTop"
+}
 class SimTopICache extends IonSoC(SoCFeatures(iCache = true)) {
     override def desiredName: String = "SimTop"
 }
@@ -26,6 +33,10 @@ object EmitHelper {
 
 object TopMain extends App {
     EmitHelper.emit(new SimTop, "build/rtl")
+}
+
+object McuTopMain extends App {
+    EmitHelper.emit(new SimTopMCU, "build/rtl-mcu")
 }
 
 object ICacheTopMain extends App {

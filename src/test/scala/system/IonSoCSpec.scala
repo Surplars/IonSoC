@@ -4,7 +4,7 @@ import chisel3.simulator.scalatest.ChiselSim
 import chisel3._
 import org.scalatest.funsuite.AnyFunSuite
 import soc.IonSoC
-import soc.config.{InterruptControllerKind, SoCFeatures}
+import soc.config.{ISAProfiles, InterruptControllerKind, SoCFeatures, SoCProfiles}
 import soc.debug.DebugModuleMap
 import soc.isa.Extension
 
@@ -24,6 +24,10 @@ class IonSoCSpec extends AnyFunSuite with ChiselSim {
         simulate(new IonSoC(SoCFeatures(iCache = true))) { dut => tieOffExternalInterrupts(dut) }
     }
 
+    test("IonSoC elaborates the fixed bare-metal MCU profile") {
+        simulate(new IonSoC(SoCProfiles.BareMetalMCU, ISAProfiles.RV64IMACB)) { dut => tieOffExternalInterrupts(dut) }
+    }
+
     test("IonSoC elaborates with optional MMIO devices disabled") {
         simulate(new IonSoC(SoCFeatures(uart = false, clint = false, interruptController = InterruptControllerKind.None))) { dut =>
             tieOffExternalInterrupts(dut)
@@ -41,7 +45,10 @@ class IonSoCSpec extends AnyFunSuite with ChiselSim {
     }
 
     test("Debug halt request freezes and resume releases the core PC") {
-        simulate(new IonSoC()) { dut =>
+        // Keep this slow JTAG/debug test on a direct-fetch frontend. The fixed
+        // MCU profile has I-cache enabled, while this test only needs the TAP,
+        // DM, and PC halt/resume contract.
+        simulate(new IonSoC(SoCFeatures(iCache = false))) { dut =>
             tieOffExternalInterrupts(dut)
             resetTap(dut)
             shiftIR(dut, value = 0x11, irLen = 5)

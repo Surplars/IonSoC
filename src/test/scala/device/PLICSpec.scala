@@ -68,6 +68,25 @@ class PLICSpec extends AnyFunSuite with ChiselSim {
         (read(dut, address) >> (((address & 0x7) * 8).toInt)) & 0xffffffffL
     }
 
+    private def illegal(dut: PLIC, address: BigInt): Unit = {
+        dut.io.tl.d.ready.poke(true.B)
+        dut.io.tl.a.bits.opcode.poke(TLOpcode.Intent)
+        dut.io.tl.a.bits.size.poke(3.U)
+        dut.io.tl.a.bits.source.poke(9.U)
+        dut.io.tl.a.bits.address.poke(address.U)
+        dut.io.tl.a.bits.mask.poke("hff".U)
+        dut.io.tl.a.bits.data.poke(0.U)
+        dut.io.tl.a.valid.poke(true.B)
+        dut.io.tl.a.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.tl.a.valid.poke(false.B)
+        dut.io.tl.d.valid.expect(true.B)
+        dut.io.tl.d.bits.opcode.expect(TLOpcode.AccessAck)
+        dut.io.tl.d.bits.source.expect(9.U)
+        dut.io.tl.d.bits.denied.expect(true.B)
+        dut.clock.step()
+    }
+
     test("PLIC raises MEIP for enabled pending source and claim clears pending") {
         simulate(new PLIC(params, nSources = 4)) { dut =>
             init(dut)
@@ -126,6 +145,62 @@ class PLICSpec extends AnyFunSuite with ChiselSim {
             dut.io.seip.expect(true.B)
             assert(readWord(dut, 0x201004) == 1)
             dut.io.seip.expect(false.B)
+        }
+    }
+
+    test("PLIC resolves equal priority sources by the lowest source ID") {
+        simulate(new PLIC(params, nSources = 4)) { dut =>
+            init(dut)
+
+            write(dut, 0x000004, 3)
+            write(dut, 0x000008, 3)
+            write(dut, 0x002000, 0x6)
+            write(dut, 0x200000, 0)
+
+            dut.io.sources(1).poke(true.B)
+            dut.io.sources(2).poke(true.B)
+            dut.clock.step()
+            dut.io.sources(1).poke(false.B)
+            dut.io.sources(2).poke(false.B)
+
+            dut.io.meip.expect(true.B)
+            assert(readWord(dut, 0x200004) == 1)
+            assert(readWord(dut, 0x200004) == 2)
+            dut.io.meip.expect(false.B)
+        }
+    }
+
+    test("PLIC level gateway redelivers only after completion") {
+        simulate(new PLIC(params, nSources = 4)) { dut =>
+            init(dut)
+
+            write(dut, 0x000004, 3)
+            write(dut, 0x002000, 0x2)
+            write(dut, 0x200000, 0)
+
+            dut.io.sources(1).poke(true.B)
+            dut.clock.step()
+            dut.io.meip.expect(true.B)
+            assert(readWord(dut, 0x200004) == 1)
+
+            dut.io.meip.expect(false.B)
+            assert((readWord(dut, 0x001000) & 0x2) == 0)
+
+            write(dut, 0x200004, 1)
+            dut.io.meip.expect(true.B)
+            assert(readWord(dut, 0x200004) == 1)
+
+            dut.io.sources(1).poke(false.B)
+            write(dut, 0x200004, 1)
+            dut.io.meip.expect(false.B)
+            assert((readWord(dut, 0x001000) & 0x2) == 0)
+        }
+    }
+
+    test("PLIC denies unsupported TileLink opcodes") {
+        simulate(new PLIC(params, nSources = 4)) { dut =>
+            init(dut)
+            illegal(dut, 0x200000)
         }
     }
 }

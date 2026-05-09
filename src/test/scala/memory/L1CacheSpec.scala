@@ -59,6 +59,13 @@ class CacheRamHarness(params: TLParams) extends Module {
 class L1CacheSpec extends AnyFunSuite with ChiselSim {
     private val params = TLParams(addrWidth = 32, dataWidth = 64, sourceBits = 4, sinkBits = 1, sizeBits = 3)
 
+    private def init(dut: CacheRamHarness): Unit = {
+        dut.io.req.valid.poke(false.B)
+        dut.io.invalidate.valid.poke(false.B)
+        dut.io.invalidate.bits.poke(false.B)
+        dut.io.resp.ready.poke(true.B)
+    }
+
     private def pokeReq(
         dut: CacheRamHarness,
         addr: BigInt,
@@ -172,10 +179,7 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
 
     test("Cache invalidate forces a later refill") {
         simulate(new CacheRamHarness(params)) { dut =>
-            dut.io.req.valid.poke(false.B)
-            dut.io.invalidate.valid.poke(false.B)
-            dut.io.invalidate.bits.poke(false.B)
-            dut.io.resp.ready.poke(true.B)
+            init(dut)
 
             pokeReq(dut, addr = 0x100, cmd = CacheCmd.Write, data = BigInt("aaaabbbbccccdddd", 16))
             issueReq(dut)
@@ -199,10 +203,7 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
 
     test("Cache invalidate writes back dirty lines before dropping them") {
         simulate(new CacheRamHarness(params)) { dut =>
-            dut.io.req.valid.poke(false.B)
-            dut.io.invalidate.valid.poke(false.B)
-            dut.io.invalidate.bits.poke(false.B)
-            dut.io.resp.ready.poke(true.B)
+            init(dut)
 
             pokeReq(dut, addr = 0x80, cmd = CacheCmd.Write, data = BigInt("cafebabedeadbeef", 16))
             issueReq(dut)
@@ -213,6 +214,44 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
             pokeReq(dut, addr = 0x80, cmd = CacheCmd.Read)
             issueReq(dut)
             assert(waitResp(dut, maxCycles = 40) == BigInt("cafebabedeadbeef", 16))
+        }
+    }
+
+    test("Cache CPU fence request flushes dirty lines") {
+        simulate(new CacheRamHarness(params)) { dut =>
+            init(dut)
+
+            pokeReq(dut, addr = 0x1c0, cmd = CacheCmd.Write, data = BigInt("0102030405060708", 16))
+            issueReq(dut)
+            waitResp(dut, maxCycles = 40)
+
+            // The core sends fence/fence.i through the CPU request side. The
+            // cache uses the same maintenance FSM as the explicit invalidate port.
+            pokeReq(dut, addr = 0x0, cmd = CacheCmd.Read, fence = true)
+            issueReq(dut)
+            waitResp(dut, maxCycles = 80)
+
+            pokeReq(dut, addr = 0x1c0, cmd = CacheCmd.Read)
+            issueReq(dut)
+            assert(waitResp(dut, maxCycles = 40) == BigInt("0102030405060708", 16))
+        }
+    }
+
+    test("Cache write hit preserves unmasked byte lanes") {
+        simulate(new CacheRamHarness(params)) { dut =>
+            init(dut)
+
+            pokeReq(dut, addr = 0x180, cmd = CacheCmd.Write, data = BigInt("1122334455667788", 16))
+            issueReq(dut)
+            waitResp(dut, maxCycles = 40)
+
+            pokeReq(dut, addr = 0x180, cmd = CacheCmd.Write, data = BigInt("0000000000aa0000", 16), mask = 0x04)
+            issueReq(dut)
+            waitResp(dut, maxCycles = 20)
+
+            pokeReq(dut, addr = 0x180, cmd = CacheCmd.Read)
+            issueReq(dut)
+            assert(waitResp(dut, maxCycles = 20) == BigInt("1122334455aa7788", 16))
         }
     }
 

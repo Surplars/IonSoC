@@ -18,6 +18,28 @@ object MemoryBases {
     val FirmwareSramBase: BigInt = 0x40000000L
 }
 
+object ISAProfiles {
+    // Baseline MCU ISA: RV64IMAC plus the privileged/CSR pieces required by
+    // bare-metal firmware and SBI-style supervisor handoff.
+    val RV64IMAC: Set[Extension.Value] = Set(
+        Extension.RV64I,
+        Extension.Zicsr,
+        Extension.Zifencei,
+        Extension.S,
+        Extension.C,
+        Extension.RV64M,
+        Extension.RV64A
+    )
+
+    // Default bring-up ISA keeps a small bitmanip subset enabled so the same
+    // core can run compiler-generated embedded code without changing profiles.
+    val RV64IMACB: Set[Extension.Value] = RV64IMAC ++ Set(
+        Extension.Zba,
+        Extension.Zbb,
+        Extension.Zbs
+    )
+}
+
 case class SoCFeatures(
     mmu: Boolean = false,
     iCache: Boolean = false,
@@ -30,6 +52,8 @@ case class SoCFeatures(
 )
 
 object SoCProfiles {
+    // Smallest useful profile for smoke tests: no caches and no external
+    // interrupt controller. Keep this available for fast direct-fetch tests.
     val MinimalMCU: SoCFeatures = SoCFeatures(
         mmu = false,
         iCache = false,
@@ -39,6 +63,21 @@ object SoCProfiles {
         interruptController = InterruptControllerKind.None
     )
 
+    // Fixed MCU profile for the default build: no MMU, but keep the platform
+    // devices expected by embedded firmware and RustSBI/OpenSBI-style probing.
+    val BareMetalMCU: SoCFeatures = SoCFeatures(
+        mmu = false,
+        iCache = true,
+        dCache = true,
+        sramBase = MemoryBases.DefaultSramBase,
+        sramSizeBytes = MemorySizes.DefaultSramSize,
+        uart = true,
+        clint = true,
+        interruptController = InterruptControllerKind.PLIC
+    )
+
+    // Large-SRAM firmware profile. MMU is represented in the feature contract,
+    // but current FirmwareTopMain overrides it off until Sv39/TLB lands.
     val LinuxCapablePLIC: SoCFeatures = SoCFeatures(
         mmu = true,
         iCache = true,
@@ -61,19 +100,10 @@ case class AddressRegion(name: String, base: BigInt, size: BigInt) {
 
 object Config {
     val XLEN: Int                        = 64
-    val enabledExt: Set[Extension.Value] = Set(
-        Extension.RV64I,
-        Extension.Zicsr,
-        Extension.Zifencei,
-        Extension.S,
-        Extension.C,
-        Extension.RV64M,
-        Extension.RV64A,
-        Extension.Zba,
-        Extension.Zbb,
-        Extension.Zbs
-    )
-    val features: SoCFeatures            = SoCFeatures()
+    // Repository default is now the MCU contract. More advanced SoC profiles
+    // are selected explicitly by simulation emission targets.
+    val enabledExt: Set[Extension.Value] = ISAProfiles.RV64IMACB
+    val features: SoCFeatures            = SoCProfiles.BareMetalMCU
 
     val DebugBase: BigInt = 0x00000000L
     val DebugSize: BigInt = 0x4000L

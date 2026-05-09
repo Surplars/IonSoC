@@ -16,7 +16,9 @@
 #include <vector>
 #include <algorithm>
 #include <verilated.h>
+#if VM_TRACE
 #include <verilated_vcd_c.h>
+#endif
 #include "VSoc.h"
 #include "VSoc___024root.h"
 #include "VSoc_L1Cache.h"
@@ -73,7 +75,7 @@ struct SimOptions
 	std::string test_name = "payload";
 	std::string expected_uart;
 	std::string flash_image;
-	bool trace_wave = true;
+	bool trace_wave = false;
 	bool direct_elf_load = true;
 	bool uart_stdin = false;
 	bool trace_irq = false;
@@ -169,7 +171,11 @@ static void set_ext_irq_source(VSoc *dut, unsigned source, bool value)
 class UartStdio
 {
   public:
-	explicit UartStdio(bool enable_stdin) : enable_stdin_(enable_stdin)
+	explicit UartStdio(bool enable_stdin)
+	    : enable_stdin_(enable_stdin),
+	      inject_cycle_(env_u64("ION_UART_RX_CYCLE", UINT64_MAX)),
+	      inject_byte_(env_u64("ION_UART_RX_BYTE", 0)),
+	      inject_enabled_(inject_cycle_ != UINT64_MAX)
 	{
 		if (enable_stdin_)
 		{
@@ -185,10 +191,17 @@ class UartStdio
 			fcntl(STDIN_FILENO, F_SETFL, old_flags_);
 	}
 
-	void drive_rx(VSoc *dut)
+	void drive_rx(VSoc *dut, uint64_t cycle)
 	{
 		dut->io_uart_rx_valid = 0;
 		dut->io_uart_rx_byte = 0;
+		if (inject_enabled_ && !injected_ && cycle >= inject_cycle_)
+		{
+			dut->io_uart_rx_valid = 1;
+			dut->io_uart_rx_byte = (uint8_t)(inject_byte_ & 0xff);
+			injected_ = true;
+			return;
+		}
 		if (!enable_stdin_)
 			return;
 
@@ -222,6 +235,10 @@ class UartStdio
 	bool enable_stdin_ = false;
 	int old_flags_ = -1;
 	std::string output_;
+	uint64_t inject_cycle_ = UINT64_MAX;
+	uint64_t inject_byte_ = 0;
+	bool inject_enabled_ = false;
+	bool injected_ = false;
 };
 
 class InterruptModel
@@ -526,14 +543,14 @@ int main(int argc, char **argv, char **env)
 	else if (argc < 2)
 	{
 		// 默认测试 payload (假设无后缀)
-		all_pass &= run_one_test(kPayloadElfPath, "payload", true, "S!!P");
+		all_pass &= run_one_test(kPayloadElfPath, "payload", env_enabled("ION_TRACE_WAVE"), "S!!P");
 	}
 	else if (std::string(argv[1]) == "--payload")
 	{
 		std::string name = (argc > 2) ? argv[2] : "payload";
 		std::string expected_uart = (argc > 3) ? argv[3] : "";
 		std::string elf_path = (argc > 4) ? argv[4] : kPayloadElfPath;
-		all_pass &= run_one_test(elf_path, name, true, expected_uart);
+		all_pass &= run_one_test(elf_path, name, env_enabled("ION_TRACE_WAVE"), expected_uart);
 	}
 	else if (std::string(argv[1]) == "--rustsbi")
 	{
@@ -621,7 +638,7 @@ int main(int argc, char **argv, char **env)
 					continue;
 				}
 
-				all_pass &= run_one_test(bin, t, true);
+				all_pass &= run_one_test(bin, t, env_enabled("ION_TRACE_WAVE"));
 			}
 		}
 	}
@@ -973,6 +990,8 @@ bool run_one_test(const std::string &bin_path,
 	opts.trace_dmi = env_enabled("ION_TRACE_DMI");
 	opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
 	opts.max_cycles = env_u64("ION_MAX_CYCLES", MAX_SIM_CYCLES);
+	if (test_name == "uart_irq")
+		opts.max_cycles = env_u64("ION_MAX_CYCLES", 200000);
 	const char *flash = std::getenv("ION_FLASH_IMAGE");
 	if (flash != nullptr)
 		opts.flash_image = flash;
@@ -982,7 +1001,13 @@ bool run_one_test(const std::string &bin_path,
 bool run_sim(const SimOptions &opts)
 {
 	VSoc *dut = new VSoc;
+#if VM_TRACE
 	VerilatedVcdC *tfp = new VerilatedVcdC;
+#else
+	void *tfp = nullptr;
+	if (opts.trace_wave)
+		printf("[trace]: ION_TRACE_WAVE requested, but this binary was built without TRACE=1; VCD disabled.\n");
+#endif
 
 	sim_time = 0;
 
@@ -992,7 +1017,9 @@ bool run_sim(const SimOptions &opts)
 	if (!flash.load(opts.flash_image))
 	{
 		delete dut;
+#if VM_TRACE
 		delete tfp;
+#endif
 		return false;
 	}
 	if (opts.direct_elf_load)
@@ -1020,9 +1047,11 @@ bool run_sim(const SimOptions &opts)
 
 	if (opts.trace_wave)
 	{
+#if VM_TRACE
 		Verilated::traceEverOn(true);
 		dut->trace(tfp, 99);
 		tfp->open(kWavePath);
+#endif
 	}
 	else
 		Verilated::traceEverOn(false);
@@ -1036,19 +1065,25 @@ bool run_sim(const SimOptions &opts)
 	if (!jtag.init())
 	{
 		delete dut;
+#if VM_TRACE
 		delete tfp;
+#endif
 		return false;
 	}
 
 	for (int i = 0; i < 6; ++i)
 	{
 		irq.drive(dut, opts.test_name, sim_time);
-		uart.drive_rx(dut);
+		uart.drive_rx(dut, sim_time);
 		jtag.drive(dut);
 		dut->clock ^= 1;
 		dut->eval();
 		if (opts.trace_wave)
+#if VM_TRACE
 			tfp->dump(sim_time);
+#else
+			(void)tfp;
+#endif
 		sim_time++;
 	}
 
@@ -1081,13 +1116,17 @@ bool run_sim(const SimOptions &opts)
 	while (opts.max_cycles == 0 || sim_time < opts.max_cycles)
 	{
 		irq.drive(dut, opts.test_name, sim_time);
-		uart.drive_rx(dut);
+		uart.drive_rx(dut, sim_time);
 		jtag.drive(dut);
 
 		dut->clock ^= 1;
 		dut->eval();
 		if (opts.trace_wave)
+#if VM_TRACE
 			tfp->dump(sim_time);
+#else
+			(void)tfp;
+#endif
 
 		uint64_t cur_mtimecmp = dut->rootp->SimTop__DOT__clint__DOT__mtimecmp;
 		uint8_t cur_mtip = (dut->rootp->SimTop__DOT__clint__DOT__mtimecmp != 0) &&
@@ -1287,9 +1326,15 @@ bool run_sim(const SimOptions &opts)
 		printf("[%s]: gp=%d, a7=%d, a0=%d, test %sunknown%s\n", opts.test_name.c_str(), gp, a7, a0, YELLOW, CEND);
 
 	if (opts.trace_wave)
+#if VM_TRACE
 		tfp->close();
+#else
+		(void)tfp;
+#endif
 	dut->final();
 	delete dut;
+#if VM_TRACE
 	delete tfp;
+#endif
 	return pass;
 }

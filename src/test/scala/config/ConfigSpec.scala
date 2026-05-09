@@ -1,7 +1,7 @@
 package config
 
 import org.scalatest.funsuite.AnyFunSuite
-import soc.config.{Config, InterruptControllerKind, SoCFeatures, SoCProfiles}
+import soc.config.{Config, ISAProfiles, InterruptControllerKind, SoCFeatures, SoCProfiles}
 
 class ConfigSpec extends AnyFunSuite {
     test("default MMIO region order matches IonSoC slave connection order") {
@@ -24,8 +24,26 @@ class ConfigSpec extends AnyFunSuite {
 
     test("named SoC profiles describe MCU and OS-capable configurations") {
         assert(Config.mmioRegionsFor(SoCProfiles.MinimalMCU).map(_.name) == Seq("debug", "rom", "sram", "uart", "clint"))
+        assert(Config.mmioRegionsFor(SoCProfiles.BareMetalMCU).map(_.name) == Seq("debug", "rom", "sram", "uart", "clint", "plic"))
+        assert(!SoCProfiles.BareMetalMCU.mmu)
+        assert(SoCProfiles.BareMetalMCU.iCache)
+        assert(SoCProfiles.BareMetalMCU.dCache)
         assert(Config.mmioRegionsFor(SoCProfiles.LinuxCapablePLIC).map(_.name).contains("plic"))
         assert(!Config.mmioRegionsFor(SoCProfiles.ModernAIA).map(_.name).contains("plic"))
         assert(SoCProfiles.ModernAIA.mmu)
+    }
+
+    test("ISA profiles keep the MCU baseline at RV64IMAC plus privileged support") {
+        assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.RV64I))
+        assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.RV64M))
+        assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.RV64A))
+        assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.C))
+        assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.Zicsr))
+        assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.Zifencei))
+        assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.S))
+        assert(!ISAProfiles.RV64IMAC.contains(soc.isa.Extension.Zba))
+        assert(ISAProfiles.RV64IMACB.contains(soc.isa.Extension.Zba))
+        assert(ISAProfiles.RV64IMACB.contains(soc.isa.Extension.Zbb))
+        assert(ISAProfiles.RV64IMACB.contains(soc.isa.Extension.Zbs))
     }
 }
