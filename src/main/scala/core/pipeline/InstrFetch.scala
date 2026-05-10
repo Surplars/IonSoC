@@ -26,6 +26,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val pred_taken_out = Output(Bool())
         val pred_target_out = Output(UInt(XLEN.W))
         val fetch_stall    = Output(Bool())
+        val cache_busy     = Output(Bool())
 
         val cache = new Bundle {
             val req  = Decoupled(new CacheReq(XLEN, XLEN))
@@ -71,6 +72,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
     val directLen = Mux(io.redirect, 0.U(2.W), directExpanded._2)
 
     io.fetch_stall := false.B
+    io.cache_busy  := false.B
     io.pc_step_len    := directExpanded._2
     io.valid          := RegEnable(!io.redirect && !io.trap_valid, false.B, directUpdate)
     io.pc_out         := RegEnable(io.pc, 0.U, directUpdate)
@@ -80,7 +82,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
     io.pred_target_out := RegEnable(io.pred_target_in, 0.U, directUpdate)
 
     if (useCache) {
-        val sIdle :: sFirstReq :: sFirstWait :: sSecondReq :: sSecondWait :: sPrefetchWait :: sRelease :: Nil = Enum(7)
+        val sIdle :: sFirstReq :: sFirstWait :: sSecondReq :: sSecondWait :: sPrefetchWait :: Nil = Enum(6)
         val state = RegInit(sIdle)
         val reqPc = RegInit(0.U(XLEN.W))
         val prefetchPc = RegInit(0.U(XLEN.W))
@@ -88,7 +90,6 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val reqPredTarget = RegInit(0.U(XLEN.W))
         val dropResp = RegInit(false.B)
         val crossBeatLowHalf = RegInit(0.U(16.W))
-        val releaseLen = RegInit(0.U(2.W))
         val beatBufferValid = RegInit(false.B)
         val beatBufferAddr = RegInit(0.U((XLEN - beatOffsetBits).W))
         val beatBufferData = RegInit(0.U(XLEN.W))
@@ -126,10 +127,6 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
             prefetchPc := bufferedNextPc
             dropResp := false.B
             state := sPrefetchWait
-        }
-
-        when(state === sRelease && !io.stall) {
-            state := sIdle
         }
 
         when((state === sFirstWait || state === sSecondWait || state === sPrefetchWait) && flush) {
@@ -184,9 +181,6 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val acceptedLen = Mux(acceptSecondResp, 0.U(2.W), Mux(acceptPrefetchResp, prefetchExpanded._2, respExpanded._2))
         val acceptedPc = Mux(acceptPrefetchResp, prefetchPc, reqPc)
 
-        when(acceptResp) {
-            releaseLen := acceptedLen
-        }
         when(acceptFirstResp) {
             beatBufferValid := true.B
             beatBufferAddr := reqPc(XLEN - 1, beatOffsetBits)
@@ -210,36 +204,38 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
                 state := sSecondReq
             }.otherwise {
                 dropResp := false.B
-                state := sRelease
+                state := sIdle
             }
         }.elsewhen(state === sSecondWait && respFire) {
             dropResp := false.B
-            state := Mux(dropResp || io.cache.resp.bits.err || flush, sIdle, sRelease)
+            state := sIdle
         }.elsewhen(state === sPrefetchWait && respFire) {
             dropResp := false.B
-            state := Mux(dropResp || io.cache.resp.bits.err || flush, sIdle, sRelease)
+            state := sIdle
         }
 
-        io.fetch_stall := canIssue || (state =/= sIdle && state =/= sRelease)
+        val responseAdvancesPc = acceptResp && !io.stall
+        io.fetch_stall := canIssue || ((state =/= sIdle) && !responseAdvancesPc)
+        io.cache_busy := state =/= sIdle || canIssue
         // The PC consumes the step length in the same cycle that a cache
         // response is accepted. Use the just-decoded length instead of the
         // registered previous instruction length, otherwise a 16-bit
         // instruction following a 32-bit instruction advances by 4 bytes.
         val outputLen = Mux(canServeBuffered, bufferedExpanded._2, acceptedLen)
-        io.pc_step_len := Mux(canServeBuffered || acceptResp, outputLen, Mux(state === sRelease, releaseLen, io.instr_len))
-        io.valid := Mux(canServeBuffered, true.B, RegEnable(acceptResp, false.B, !io.stall))
-        io.pc_out := Mux(canServeBuffered, io.pc, RegEnable(acceptedPc, 0.U, acceptResp))
-        io.instr_out := Mux(canServeBuffered, bufferedExpanded._1, RegEnable(acceptedInstr, 0.U, acceptResp))
-        io.instr_len := Mux(canServeBuffered, bufferedExpanded._2, RegEnable(acceptedLen, 0.U, acceptResp))
+        io.pc_step_len := Mux(canServeBuffered || acceptResp, outputLen, io.instr_len)
+        io.valid := canServeBuffered || acceptResp
+        io.pc_out := Mux(canServeBuffered, io.pc, acceptedPc)
+        io.instr_out := Mux(canServeBuffered, bufferedExpanded._1, acceptedInstr)
+        io.instr_len := Mux(canServeBuffered, bufferedExpanded._2, acceptedLen)
         io.pred_taken_out := Mux(
             canServeBuffered,
             io.pred_taken_in,
-            RegEnable(Mux(acceptPrefetchResp, io.pred_taken_in, reqPredTaken), false.B, acceptResp)
+            Mux(acceptPrefetchResp, io.pred_taken_in, reqPredTaken)
         )
         io.pred_target_out := Mux(
             canServeBuffered,
             io.pred_target_in,
-            RegEnable(Mux(acceptPrefetchResp, io.pred_target_in, reqPredTarget), 0.U, acceptResp)
+            Mux(acceptPrefetchResp, io.pred_target_in, reqPredTarget)
         )
     }
 }

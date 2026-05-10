@@ -1233,7 +1233,7 @@ bool run_sim(const SimOptions &opts)
 				   " id_v=%u id_rd=%u id_w=%u id_op1=0x%016" PRIx64 " id_op2=0x%016" PRIx64
 				   " lsu_stall=%u load_valid=%u load=0x%016" PRIx64 " alu_v=%u alu_rd=%u alu_w=%u alu_res=0x%016" PRIx64 " alu_pc=0x%016" PRIx64 " alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
 				   " lsu_v=%u lsu_rd=%u lsu_w=%u lsu_res=0x%016" PRIx64 " wb_rd=%u wb_w=%u wb_data=0x%016" PRIx64
-					   " if_state=%u if_acc=%u if_req_pc=0x%016" PRIx64 " if_pc=0x%016" PRIx64 " if_instr=0x%08x if_len=%u if_rel_len=%u pc_step=%u pc_hold=%u bpu_taken=%u"
+					   " if_state=%u if_acc=%u if_req_pc=0x%016" PRIx64 " if_pc=0x%016" PRIx64 " if_instr=0x%08x if_len=%u pc_step=%u pc_hold=%u bpu_taken=%u"
 				   " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
 				   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " plic_src1=%u mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
 				   sim_time,
@@ -1270,11 +1270,10 @@ bool run_sim(const SimOptions &opts)
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__state,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__acceptResp,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__reqPc,
-				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_pc_out_r_1,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_instr_out_r_1,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__acceptedLen,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__releaseLen,
-					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__releaseLen,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___ifetch_io_pc_out,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___ifetch_io_instr_out,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___ifetch_io_instr_len,
+					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___ifetch_io_pc_step_len,
 					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirectHold,
 					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT___bpu_io_pred_taken,
 					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirect,

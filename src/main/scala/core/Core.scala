@@ -191,7 +191,7 @@ class Core(
         // Let normal fence.i and any already-issued fetch response drain before
         // taking ownership, otherwise a debug request can hide the response that
         // would complete a frontend/cache maintenance transaction.
-        val debugIcacheUsesPort = debugIcachePending && !fenceIActive && !ifetch.io.fetch_stall
+        val debugIcacheUsesPort = debugIcachePending && !fenceIActive && !ifetch.io.cache_busy
         val debugIcacheReqValid = debugIcacheUsesPort && !debugIcacheIssued
         val debugIcacheRespReady = debugIcacheUsesPort && debugIcacheIssued
         val debugIcacheReqBits = WireInit(ifetch.io.cache.req.bits)

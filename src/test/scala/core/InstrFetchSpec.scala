@@ -87,12 +87,13 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.cache.resp.valid.poke(true.B)
             dut.io.cache.resp.bits.rdata.poke("h0000000000000062".U)
-            dut.clock.step()
-
-            dut.io.cache.resp.valid.poke(false.B)
             dut.io.valid.expect(true.B)
             dut.io.instr_len.expect(0.U)
             dut.io.instr_out.expect("h0062a2af".U)
+            dut.clock.step()
+
+            dut.io.cache.resp.valid.poke(false.B)
+            dut.io.valid.expect(false.B)
         }
     }
 
@@ -138,19 +139,19 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.cache.resp.bits.rdata.poke("h0071019300500113".U) // addi x2,0,5; addi x3,x2,7
             dut.io.cache.resp.valid.poke(true.B)
-            dut.clock.step()
             dut.io.valid.expect(true.B)
             dut.io.instr_out.expect("h00500113".U)
             dut.io.pc_step_len.expect(0.U)
+            dut.clock.step()
 
             dut.io.cache.resp.valid.poke(false.B)
             dut.io.pc.poke("h1004".U)
-            dut.clock.step()
             dut.io.valid.expect(true.B)
             dut.io.instr_out.expect("h00710193".U)
             dut.io.cache.req.valid.expect(true.B)
             dut.io.cache.req.bits.addr.expect("h1008".U)
             dut.io.fetch_stall.expect(false.B)
+            dut.clock.step()
         }
     }
 
