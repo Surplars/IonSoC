@@ -7,6 +7,7 @@ LD = $(COMPILER)ld
 OBJCOPY = $(COMPILER)objcopy
 VERILATOR = verilator
 OPENOCD ?= /opt/openocd/bin/openocd
+NPROC ?= $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
 # Keep Verilator trace instrumentation compiled because the C++ harness reaches
 # several public RTL internals for ELF loading and diagnostics. VCD dumping is
 # still runtime-gated by ION_TRACE_WAVE and defaults off.
@@ -76,7 +77,7 @@ SIM_TOP = sim.TopMain
 # Scala test groups are deliberately split so edit loops can target the block
 # that changed instead of paying for every Chisel simulator suite.
 SCALA_PROFILE_TESTS = config.ConfigSpec
-SCALA_BUS_TESTS = bus.TLXbarSpec
+SCALA_BUS_TESTS = bus.TLXbarSpec bus.TLSystemXbarSpec
 SCALA_CLINT_TESTS = device.CLINTSpec
 SCALA_UART_TESTS = device.UartSpec
 SCALA_PLIC_TESTS = device.PLICSpec
@@ -224,19 +225,19 @@ $(RUSTSBI_FW_ELF): $(IONSOC_DTB) $(RUSTSBI_DIR)/$(RUSTSBI_CONFIG)
 
 $(VSOC_BIN): $(RTL_STAMP) $(TB) $(FILE_LIST) $(SIM_RTL_DIR)/filelist.f
 	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(SYSTEM_VERILOG_DIR) -f $(FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) $(VERILATOR_TRACE_FLAGS) --Mdir $(VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
-	@$(MAKE) -C $(VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j 15
+	@$(MAKE) -C $(VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j $(NPROC)
 
 $(MCU_VSOC_BIN): $(MCU_RTL_STAMP) $(TB) $(MCU_FILE_LIST) $(SIM_RTL_DIR)/filelist.f
 	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(MCU_SYSTEM_VERILOG_DIR) -f $(MCU_FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) $(VERILATOR_TRACE_FLAGS) --Mdir $(MCU_VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
-	@$(MAKE) -C $(MCU_VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j 15
+	@$(MAKE) -C $(MCU_VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j $(NPROC)
 
 $(ICACHE_VSOC_BIN): $(ICACHE_RTL_STAMP) $(TB) $(ICACHE_FILE_LIST) $(SIM_RTL_DIR)/filelist.f
 	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(ICACHE_SYSTEM_VERILOG_DIR) -f $(ICACHE_FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) $(VERILATOR_TRACE_FLAGS) --Mdir $(ICACHE_VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
-	@$(MAKE) -C $(ICACHE_VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j 15
+	@$(MAKE) -C $(ICACHE_VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j $(NPROC)
 
 $(FIRMWARE_VSOC_BIN): $(FIRMWARE_RTL_STAMP) $(TB) $(FIRMWARE_FILE_LIST) $(SIM_RTL_DIR)/filelist.f
 	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(FIRMWARE_SYSTEM_VERILOG_DIR) -f $(FIRMWARE_FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) $(VERILATOR_TRACE_FLAGS) --Mdir $(FIRMWARE_VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
-	@$(MAKE) -C $(FIRMWARE_VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j 15
+	@$(MAKE) -C $(FIRMWARE_VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j $(NPROC)
 
 verilator-build: $(VSOC_BIN)
 
