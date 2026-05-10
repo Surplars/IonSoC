@@ -77,7 +77,7 @@ SIM_TOP = sim.TopMain
 # Scala test groups are deliberately split so edit loops can target the block
 # that changed instead of paying for every Chisel simulator suite.
 SCALA_PROFILE_TESTS = config.ConfigSpec
-SCALA_BUS_TESTS = bus.TLXbarSpec bus.TLSystemXbarSpec
+SCALA_BUS_TESTS = bus.TLXbarSpec bus.TLSystemXbarSpec bus.TLCoherenceHubSpec
 SCALA_CLINT_TESTS = device.CLINTSpec
 SCALA_UART_TESTS = device.UartSpec
 SCALA_PLIC_TESTS = device.PLICSpec
