@@ -19,6 +19,7 @@ object DebugModuleMap {
     val SBData0      = 0x3c
     val SBData1      = 0x3d
     val HaltSum0     = 0x40
+    val IonCacheCtl  = 0x70
 }
 
 object DebugModuleConstants {

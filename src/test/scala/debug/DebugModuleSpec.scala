@@ -27,6 +27,12 @@ class DebugModuleSbaHarness(params: TLParams) extends Module {
     dm.io.csr_rdata := 0.U
     dm.io.csr_valid := true.B
     dm.io.csr_writable := true.B
+    dm.io.cache.dcacheAck := false.B
+    dm.io.cache.icacheAck := false.B
+    dm.io.cache.dcacheBusy := false.B
+    dm.io.cache.icacheBusy := false.B
+    dm.io.cache.dcacheErr := false.B
+    dm.io.cache.icacheErr := false.B
 }
 
 class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTestUtils {
@@ -52,6 +58,12 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
         dut.io.csr_rdata.poke(0.U)
         dut.io.csr_valid.poke(true.B)
         dut.io.csr_writable.poke(true.B)
+        dut.io.cache.dcacheAck.poke(false.B)
+        dut.io.cache.icacheAck.poke(false.B)
+        dut.io.cache.dcacheBusy.poke(false.B)
+        dut.io.cache.icacheBusy.poke(false.B)
+        dut.io.cache.dcacheErr.poke(false.B)
+        dut.io.cache.icacheErr.poke(false.B)
     }
 
     private def debugWrite(dut: DebugModule, address: BigInt, data: BigInt): Unit =
@@ -306,6 +318,46 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
             startDebugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("00002003", 16)) // unsupported lw, autoexec fails
             dut.clock.step()
             assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 2)
+        }
+    }
+
+    test("DebugModule exposes Ion cache maintenance control") {
+        simulate(new DebugModule(deviceParams)) { dut =>
+            init(dut)
+
+            assert(debugRead(dut, DebugModuleMap.IonCacheCtl * 4) == BigInt(0))
+
+            dut.io.dmi_addr.poke(DebugModuleMap.IonCacheCtl.U)
+            dut.io.dmi_wdata.poke("h00000003".U)
+            dut.io.dmi_write.poke(true.B)
+            dut.io.dmi_valid.poke(true.B)
+            dut.io.cache.dcacheReq.expect(true.B)
+            dut.io.cache.icacheReq.expect(true.B)
+            dut.clock.step()
+            dut.io.dmi_valid.poke(false.B)
+            dut.io.dmi_write.poke(false.B)
+            dut.io.cache.dcacheReq.expect(false.B)
+            dut.io.cache.icacheReq.expect(false.B)
+
+            dut.io.cache.dcacheBusy.poke(true.B)
+            dut.io.cache.icacheBusy.poke(true.B)
+            assert((debugRead(dut, DebugModuleMap.IonCacheCtl * 4) & BigInt("00000003", 16)) == BigInt("00000003", 16))
+            dut.io.cache.dcacheBusy.poke(false.B)
+            dut.io.cache.icacheBusy.poke(false.B)
+
+            dut.io.cache.dcacheAck.poke(true.B)
+            dut.io.cache.dcacheErr.poke(true.B)
+            dut.clock.step()
+            dut.io.cache.dcacheAck.poke(false.B)
+            dut.io.cache.dcacheErr.poke(false.B)
+            assert((debugRead(dut, DebugModuleMap.IonCacheCtl * 4) & BigInt("00010100", 16)) == BigInt("00010100", 16))
+
+            debugWrite(dut, DebugModuleMap.IonCacheCtl * 4, BigInt("00010100", 16))
+            assert((debugRead(dut, DebugModuleMap.IonCacheCtl * 4) & BigInt("00010100", 16)) == BigInt(0))
+
+            debugWrite(dut, DebugModuleMap.IonCacheCtl * 4, BigInt("00000003", 16))
+            dut.io.cache.dcacheReq.expect(false.B)
+            dut.io.cache.icacheReq.expect(false.B)
         }
     }
 

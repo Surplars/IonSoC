@@ -333,6 +333,8 @@ OpenOCD 能连接 remote_bitbang，但早期无法稳定识别 TAP/CPU，或者 
 
 后续加入 SBA 后，`read_memory/write_memory` smoke 曾出现写入 `0x10000000` 后读回 0 或旧值。
 
+SBA 可以直接改 SRAM，但当前 TileLink/Cache 不是 coherent 系统。若 hart 已缓存过目标地址，debugger 改内存后可能继续看到旧 D-cache 数据，或 I-cache 继续取旧指令。
+
 ### 根因
 
 JTAG TAP/DTM/DM 仍处于第一阶段实现。remote-bitbang socket 与 simulator 生命周期强相关；如果 simulator 被外部 kill，OpenOCD 可能还在等待 socket/TAP 状态。
@@ -360,6 +362,8 @@ SBA 侧另有两个兼容性问题：
 - `sbreadonaddr` 写 `sbaddress0` 时使用刚写入的新地址旁路发起 SBA 读，避免 64-bit 地址半更新时误发请求
 - SBA 支持跨 beat split 访问，覆盖 unaligned 32/64-bit 读写，并按原始 `sbaccess` 做 `sbautoincrement`
 - SBA 忙时访问 `sbaddress/sbdata` 返回 DMI busy op，给 OpenOCD 重试机会
+- 增加 IonSoC 私有 DMI register `IonCacheCtl`，地址 `0x70`。写 bit 0 触发 D-cache clean+invalidate，写 bit 1 触发 I-cache invalidate；bit 8/9 是 done sticky，bit 16/17 是 error sticky，sticky 位写 1 清除。
+- Core 对 debug cache maintenance 做仲裁：D-cache 维护期间冻结流水线，I-cache 维护等待已有 `fence.i` 或 fetch response drain 后再占用 I-cache CPU port，避免抢走普通 frontend/fence 响应。
 - harness remote-bitbang server
 
 ### 验证
@@ -370,7 +374,7 @@ openocd -f openocd/ionsoc-rbb.cfg
 make openocd-smoke
 ```
 
-`make openocd-smoke` 已覆盖 TAP identify、CPU examine、halt/resume、OpenOCD fence/postexec 探测和直接 DMI-SBA SRAM 写读。日志应包含 `progbufsize=2` 与 `ION_OPENOCD_SBA_OK`，且不应再出现 fence execution error。完整调试功能仍需要继续补真实 hart program buffer 执行入口、cache 一致性和更完整 debug spec 细节。
+`make openocd-smoke` 已覆盖 TAP identify、CPU examine、halt/resume、OpenOCD fence/postexec 探测、直接 DMI-SBA SRAM 写读，以及 `IonCacheCtl` cache maintenance。日志应包含 `progbufsize=2`、`ION_OPENOCD_SBA_OK` 与 `ION_OPENOCD_CACHE_OK`，且不应再出现 fence execution error。完整调试功能仍需要继续补真实 hart program buffer 执行入口、cache 一致性和更完整 debug spec 细节。
 
 ## 11. Verilator ELF loader 与真实启动流
 

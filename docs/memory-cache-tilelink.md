@@ -192,13 +192,15 @@ Miss 行为：
 
 普通 `fence` 被 ALU 标记为 `MemOpType.Fence`，LSU 会先等待 store buffer、MMIO、atomic 和 cache load 路径清空，再向 D-cache 发 whole-cache clean+invalidate。D-cache 关闭时，`UncachedTileLinkBridge` 对 maintenance request 直接返回 no-op ack。
 
-当前 TileLink 仍是 TL-UL-like non-coherent 子集。SBA、后续 DMA/QSPI 等非 CPU master 写入 SRAM 后，软件或调试器需要让 hart 执行 `fence`/`fence.i`，或使用未来显式 cache maintenance/debug hook，来保证 D-cache/I-cache 可见性。
+当前 TileLink 仍是 TL-UL-like non-coherent 子集。SBA、后续 DMA/QSPI 等非 CPU master 写入 SRAM 后，软件或调试器需要让 hart 执行 `fence`/`fence.i`，或通过 Debug Module 的 IonSoC 私有 `IonCacheCtl` register 触发显式 cache maintenance，来保证 D-cache/I-cache 可见性。
+
+`IonCacheCtl` 位于 Debug Module DMI 地址 `0x70`，不是 RISC-V Debug Spec 标准 register。写 bit 0 请求 D-cache whole-cache clean+invalidate，写 bit 1 请求 I-cache whole-cache invalidate；读 bit 8/9 获取 done sticky，bit 16/17 获取 error sticky，done/error sticky 均写 1 清除。Core 内部会在 debug 维护期间冻结流水线；I-cache 维护会等待已有 `fence.i` 或 fetch response drain 完成后再占用 cache CPU port。
 
 ## 后续优化方向
 
 - 将 I-cache/D-cache line size 提升到多 beat，并支持 burst refill。
 - 引入 set-associative cache 或 victim buffer。
-- 增加 debug/DMA 可调用的显式 cache maintenance hook，减少对软件 trampoline 的依赖。
+- 将 debug cache maintenance 扩展成可按地址范围维护的接口，减少 whole-cache flush 成本。
 - MMU 前先统一物理地址宽度和 TileLink address width。
 - 为 LR/SC/AMO 加入 coherence-aware reservation invalidation。
 - 对 firmware profile 增加 SRAM latency/cache miss 性能统计。

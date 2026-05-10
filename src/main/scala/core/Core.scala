@@ -12,6 +12,7 @@ import soc.bus.tilelink.TLSystemXbar
 import soc.memory.cache.HasCacheCoreIO
 import soc.memory.cache.L1Cache
 import soc.memory.cache.UncachedTileLinkBridge
+import soc.debug.DebugCacheControl
 import soc.config.Config
 import soc.config.SoCFeatures
 import soc.isa.Extension
@@ -57,6 +58,7 @@ class Core(
         val debug_csr_writable = Output(Bool())
         val debug_csr_write = Input(Bool())
         val debug_csr_wdata = Input(UInt(XLEN.W))
+        val debug_cache = Flipped(new DebugCacheControl)
     })
 
     val dcache: HasCacheCoreIO = if (hasDCache) Module(new L1Cache(tlParams, 256)) else Module(new UncachedTileLinkBridge(tlParams))
@@ -85,6 +87,32 @@ class Core(
     dontTouch(wb.io)
 
     val fenceIReq = alu.io.valid_out && alu.io.alu_out.mem.valid && alu.io.alu_out.mem.op === MemOpType.FenceI
+    val debugDcachePending = RegInit(false.B)
+    val debugDcacheIssued = RegInit(false.B)
+    val debugDcacheAck = WireInit(false.B)
+    val debugDcacheErr = RegInit(false.B)
+    val debugIcachePending = RegInit(false.B)
+    val debugIcacheIssued = RegInit(false.B)
+    val debugIcacheAck = WireInit(false.B)
+    val debugIcacheErr = RegInit(false.B)
+
+    when(io.debug_cache.dcacheReq && !debugDcachePending) {
+        debugDcachePending := true.B
+        debugDcacheIssued := false.B
+        debugDcacheErr := false.B
+    }.elsewhen(debugDcacheAck) {
+        debugDcachePending := false.B
+        debugDcacheIssued := false.B
+    }
+    when(io.debug_cache.icacheReq && !debugIcachePending) {
+        debugIcachePending := true.B
+        debugIcacheIssued := false.B
+        debugIcacheErr := false.B
+    }.elsewhen(debugIcacheAck) {
+        debugIcachePending := false.B
+        debugIcacheIssued := false.B
+    }
+
     val fenceIPending = RegInit(false.B)
     val fenceIFlushIssued = RegInit(false.B)
     val fenceIStart = fenceIReq && !fenceIPending && !fenceIFlushIssued
@@ -116,8 +144,20 @@ class Core(
     dontTouch(fenceIHold)
 
     dcache.io.cpu <> lsu.io.dcache
-    dcache.io.invalidate.valid := false.B
+    val debugDcacheInvalidateValid = debugDcachePending && !debugDcacheIssued
+    dcache.io.invalidate.valid := hasDCache.B && debugDcacheInvalidateValid
     dcache.io.invalidate.bits := false.B
+    when(debugDcacheInvalidateValid && dcache.io.invalidate.fire) {
+        debugDcacheIssued := true.B
+    }
+    when(debugDcachePending && debugDcacheIssued && dcache.io.cpu.resp.fire) {
+        debugDcacheErr := dcache.io.cpu.resp.bits.err
+        debugDcacheAck := true.B
+    }
+    when(!hasDCache.B && debugDcachePending) {
+        debugDcacheErr := false.B
+        debugDcacheAck := true.B
+    }
     lsu.io.mmio <> tracker.io.master
     dbusXbar.io.masters(0) <> dcache.io.bus
     dbusXbar.io.masters(1) <> tracker.io.tl
@@ -125,18 +165,61 @@ class Core(
     if (hasICache) {
         val cache = icache.get
         dbusXbar.io.masters(2) <> cache.io.bus
-        cache.io.cpu <> ifetch.io.cache
+        // Debug-driven I-cache maintenance shares the cache CPU port with IF.
+        // Let normal fence.i and any already-issued fetch response drain before
+        // taking ownership, otherwise a debug request can hide the response that
+        // would complete a frontend/cache maintenance transaction.
+        val debugIcacheUsesPort = debugIcachePending && !fenceIActive && !ifetch.io.fetch_stall
+        val debugIcacheReqValid = debugIcacheUsesPort && !debugIcacheIssued
+        val debugIcacheRespReady = debugIcacheUsesPort && debugIcacheIssued
+        val debugIcacheReqBits = WireInit(ifetch.io.cache.req.bits)
+        debugIcacheReqBits.addr := 0.U
+        debugIcacheReqBits.vaddr := 0.U
+        debugIcacheReqBits.cmd := soc.memory.cache.CacheCmd.Read
+        debugIcacheReqBits.wdata := 0.U
+        debugIcacheReqBits.mask := 0.U
+        debugIcacheReqBits.size := 0.U
+        debugIcacheReqBits.signed := false.B
+        debugIcacheReqBits.fence := false.B
+        debugIcacheReqBits.fencei := true.B
+        debugIcacheReqBits.atomic := false.B
+        debugIcacheReqBits.cacheable := true.B
+        debugIcacheReqBits.device := false.B
+        cache.io.cpu.req.valid := Mux(debugIcacheUsesPort, debugIcacheReqValid, ifetch.io.cache.req.valid)
+        cache.io.cpu.req.bits := Mux(debugIcacheUsesPort, debugIcacheReqBits, ifetch.io.cache.req.bits)
+        ifetch.io.cache.req.ready := !debugIcacheUsesPort && cache.io.cpu.req.ready
+        ifetch.io.cache.resp.valid := !debugIcacheUsesPort && cache.io.cpu.resp.valid
+        ifetch.io.cache.resp.bits := cache.io.cpu.resp.bits
+        cache.io.cpu.resp.ready := Mux(debugIcacheUsesPort, debugIcacheRespReady, ifetch.io.cache.resp.ready)
         cache.io.invalidate.valid := (fenceIStart || fenceIPending) && !fenceIFlushIssued
         cache.io.invalidate.bits := true.B
         fenceIInvalidateFire := cache.io.invalidate.fire
         fenceIAck := fenceIFlushIssued && cache.io.cpu.resp.fire
+        when(debugIcacheReqValid && cache.io.cpu.req.fire) {
+            debugIcacheIssued := true.B
+        }
+        when(debugIcacheRespReady && cache.io.cpu.resp.fire) {
+            debugIcacheErr := cache.io.cpu.resp.bits.err
+            debugIcacheAck := true.B
+        }
     } else {
         ifetch.io.cache.req.ready := false.B
         ifetch.io.cache.resp.valid := false.B
         ifetch.io.cache.resp.bits.rdata := 0.U
         ifetch.io.cache.resp.bits.err := false.B
         fenceIAck := fenceIPending || fenceIStart
+        when(debugIcachePending) {
+            debugIcacheAck := true.B
+            debugIcacheErr := false.B
+        }
     }
+
+    io.debug_cache.dcacheAck := debugDcacheAck
+    io.debug_cache.icacheAck := debugIcacheAck
+    io.debug_cache.dcacheBusy := debugDcachePending
+    io.debug_cache.icacheBusy := debugIcachePending
+    io.debug_cache.dcacheErr := debugDcacheErr
+    io.debug_cache.icacheErr := debugIcacheErr
 
     io.DBus <> dbusXbar.io.slave
     io.IBus <> DontCare
@@ -185,7 +268,8 @@ class Core(
     }
     io.debug_halted := debugHalted
 
-    global_stall := pipe_stall || decodeUsesPending || ifetch.io.fetch_stall || fenceIHold || debugHalted
+    val debugCacheHold = debugDcachePending || debugIcachePending
+    global_stall := pipe_stall || decodeUsesPending || ifetch.io.fetch_stall || fenceIHold || debugHalted || debugCacheHold
 
     // Interrupt inputs. Supervisor-level lines are reserved for the future
     // S-mode trap path and can be tied off by the SoC until a controller exists.
@@ -223,7 +307,7 @@ class Core(
         }
 	    val combined_trap     = has_pipeline_trap || interrupt_fire
 	    val redirect_flush    = combined_trap || ret_redirect
-        val frontend_flush    = redirect_flush || fenceIActive
+        val frontend_flush    = redirect_flush || fenceIActive || debugIcachePending
         val pipeline_flush    = frontend_flush
 
     // pc
@@ -276,7 +360,7 @@ class Core(
     csr.io.ret_type   := lsu.io.trap_info_out.ret_type
     csr.io.ie_out     := DontCare
     // ifetch
-    ifetch.io.stall         := pipe_stall || decodeUsesPending || debugHalted
+    ifetch.io.stall         := pipe_stall || decodeUsesPending || debugDcachePending || (debugHalted && !debugIcachePending)
     ifetch.io.pc            := pc.io.pc_out
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken

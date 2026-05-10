@@ -229,7 +229,7 @@ openocd -f openocd/ionsoc-rbb.cfg
 make openocd-smoke
 ```
 
-该目标启动 Verilator remote-bitbang，验证 TAP IDCODE、OpenOCD examine、halt/resume，以及通过直接 DMI 操作 `sbcs/sbaddress/sbdata` 做一次 SBA SRAM 写读。smoke 同时确认 OpenOCD 能看到 `progbufsize=2`，并覆盖其 fence/postexec 探测路径。
+该目标启动 Verilator remote-bitbang，验证 TAP IDCODE、OpenOCD examine、halt/resume，通过直接 DMI 操作 `sbcs/sbaddress/sbdata` 做一次 SBA SRAM 写读，并触发一次 IonSoC 私有 cache maintenance 寄存器。smoke 同时确认 OpenOCD 能看到 `progbufsize=2`，并覆盖其 fence/postexec 探测路径。
 
 当前 JTAG TAP 是同步到 SoC clock 的第一阶段实现，通过 TCK edge detect 驱动 TAP FSM。生产级设计应替换为真实 TCK clock domain + CDC。
 
@@ -253,11 +253,31 @@ Debug Module 当前支持：
 - hart halted 时捕获 `dpc`
 - SBA 通过 TileLink 作为低优先级 master 访问系统总线，当前支持单 outstanding、8/16/32/64-bit 访问、跨 beat split、`sbreadonaddr/sbreadondata`、`sbautoincrement` 和基础 error/busy 状态
 - DMI 在 SBA 忙时可返回 busy op，便于 OpenOCD 重试
+- IonSoC 私有 `IonCacheCtl` DMI register，地址 `0x70`，供 debugger/SBA 流程触发 D-cache clean+invalidate 和 I-cache invalidate
+
+`IonCacheCtl` bit 定义：
+
+| bit | 含义 |
+| --- | --- |
+| 0 | 写 1 请求 D-cache whole-cache clean+invalidate |
+| 1 | 写 1 请求 I-cache whole-cache invalidate |
+| 8 | D-cache done sticky，写 1 清除 |
+| 9 | I-cache done sticky，写 1 清除 |
+| 16 | D-cache error sticky，写 1 清除 |
+| 17 | I-cache error sticky，写 1 清除 |
+
+示例 DMI 流程：
+
+```tcl
+riscv dmi_write 0x70 0x00030300 ;# clear done/error sticky bits
+riscv dmi_write 0x70 0x00000003 ;# request D-cache and I-cache maintenance
+set ctl [riscv dmi_read 0x70]   ;# poll until bits 8 and 9 are set
+```
 
 限制：
 
 - program buffer 当前是 DM 内部安全解释子集，不是真实 hart 指令执行入口。`abstractcs.progbufsize=2` 仅承诺 `nop/fence/fence.i/ebreak` postexec 探测可用；load/store 等 helper 序列会返回 `cmderr`，避免误改 architectural state。
-- SBA 尚未实现硬件 cache 一致性；调试器直接改内存后，hart 侧需执行 `fence`/`fence.i`，或后续接入显式 debug cache maintenance hook。
+- SBA 尚未实现硬件 cache 一致性；调试器直接改内存后，应使用 `IonCacheCtl`，或让 hart 侧执行 `fence`/`fence.i`。
 - OpenOCD 高级功能可能仍会触发 unsupported command。
 - 若 simulator 被 kill，OpenOCD 可能卡在 remote_bitbang socket 状态，需要单独终止 OpenOCD 进程。
 

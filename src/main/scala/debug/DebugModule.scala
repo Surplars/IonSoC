@@ -30,6 +30,7 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         val csr_writable = Input(Bool())
         val csr_write = Output(Bool())
         val csr_wdata = Output(UInt(64.W))
+        val cache = new DebugCacheControl
     })
 
     private val beatBytes = params.dataWidth / 8
@@ -58,9 +59,21 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     val sbError = RegInit(0.U(3.W))
     val sbBusyError = RegInit(false.B)
     val dmiRespOp = RegInit(0.U(2.W))
+    val dcacheDone = RegInit(false.B)
+    val icacheDone = RegInit(false.B)
+    val dcacheErrSticky = RegInit(false.B)
+    val icacheErrSticky = RegInit(false.B)
 
     when(io.hart_halted && !hartHaltedPrev) {
         dpc := io.hart_pc
+    }
+    when(io.cache.dcacheAck) {
+        dcacheDone := true.B
+        dcacheErrSticky := dcacheErrSticky || io.cache.dcacheErr
+    }
+    when(io.cache.icacheAck) {
+        icacheDone := true.B
+        icacheErrSticky := icacheErrSticky || io.cache.icacheErr
     }
 
     private val progbuf = RegInit(VecInit(Seq.fill(DebugModuleConstants.BackingProgBufWords)(0.U(32.W))))
@@ -170,6 +183,13 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
             statusBit(17, hartSelected && resumeAck)
 
     private def readReg(addr: UInt): UInt = {
+        val ionCacheCtl =
+            statusBit(0, io.cache.dcacheBusy) |
+                statusBit(1, io.cache.icacheBusy) |
+                statusBit(8, dcacheDone) |
+                statusBit(9, icacheDone) |
+                statusBit(16, dcacheErrSticky) |
+                statusBit(17, icacheErrSticky)
         MuxLookup(addr, 0.U(32.W))(
             Seq(
                 DebugModuleMap.DMControl.U  -> dmcontrol,
@@ -187,7 +207,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
                 DebugModuleMap.SBAddress0.U -> sbAddress(31, 0),
                 DebugModuleMap.SBAddress1.U -> sbAddress(63, 32),
                 DebugModuleMap.SBData0.U    -> sbData(31, 0),
-                DebugModuleMap.SBData1.U    -> sbData(63, 32)
+                DebugModuleMap.SBData1.U    -> sbData(63, 32),
+                DebugModuleMap.IonCacheCtl.U -> ionCacheCtl
             )
         )
     }
@@ -371,8 +392,16 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
             }
         }.elsewhen(addr === DebugModuleMap.Command.U) {
             executeCommand(data, data0, data1, progbuf(0), progbuf(1))
+        }.elsewhen(addr === DebugModuleMap.IonCacheCtl.U) {
+            when(data(8)) { dcacheDone := false.B }
+            when(data(9)) { icacheDone := false.B }
+            when(data(16)) { dcacheErrSticky := false.B }
+            when(data(17)) { icacheErrSticky := false.B }
         }
     }
+
+    io.cache.dcacheReq := false.B
+    io.cache.icacheReq := false.B
 
     when(io.dmi_valid) {
         val busySbaData = sbaBusy && (
@@ -385,6 +414,10 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         when(io.dmi_write) {
             when(!busySbaData) {
                 writeReg(io.dmi_addr, io.dmi_wdata)
+                when(io.dmi_addr === DebugModuleMap.IonCacheCtl.U) {
+                    io.cache.dcacheReq := io.dmi_wdata(0)
+                    io.cache.icacheReq := io.dmi_wdata(1)
+                }
             }
         }.otherwise {
             when(!busySbaData && io.dmi_addr === DebugModuleMap.SBData0.U && sbReadOnData) {
@@ -428,6 +461,10 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
                 tlCommandData := writeData
             }
             writeReg(wordAddr, writeData)
+            when(wordAddr === DebugModuleMap.IonCacheCtl.U) {
+                io.cache.dcacheReq := writeData(0)
+                io.cache.icacheReq := writeData(1)
+            }
         }.elsewhen(isRead && wordAddr === DebugModuleMap.SBData0.U && sbReadOnData) {
             sbaStartRead := true.B
         }.elsewhen(isRead && autoexecFor(wordAddr)) {

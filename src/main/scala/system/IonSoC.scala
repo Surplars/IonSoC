@@ -90,6 +90,7 @@ class IonSoC(
     debugModule.io.csr_rdata := core.io.debug_csr_rdata
     debugModule.io.csr_valid := core.io.debug_csr_valid
     debugModule.io.csr_writable := core.io.debug_csr_writable
+    debugModule.io.cache <> core.io.debug_cache
 
     uart.foreach { device =>
         device.io.rx_valid := io.uart_rx_valid
