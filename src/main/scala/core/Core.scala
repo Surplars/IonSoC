@@ -39,6 +39,9 @@ class Core(
         val debug_retire = Output(Bool())
         val debug_stall = Output(Bool())
         val debug_ifetch_stall = Output(Bool())
+        val debug_frontend_starved = Output(Bool())
+        val debug_frontend_queue_full = Output(Bool())
+        val debug_frontend_queue_empty = Output(Bool())
         val debug_lsu_stall = Output(Bool())
         val debug_lsu_load_stall = Output(Bool())
         val debug_lsu_store_stall = Output(Bool())
@@ -292,6 +295,8 @@ class Core(
     val ifetchQueueReady  = Wire(Bool())
     val decodeInputValid  = Wire(Bool())
     val frontendQueueFlush = Wire(Bool())
+    val frontendQueueFull = Wire(Bool())
+    val frontendQueueEmpty = Wire(Bool())
     val frontendStarved   = !decodeInputValid && ifetch.io.fetch_stall
     global_stall := pipe_stall || decodeUsesPending || frontendStarved || fenceIHold || debugHalted || debugCacheHold
 
@@ -367,6 +372,9 @@ class Core(
     io.debug_retire := wb.io.valid_in && !wb.io.trap_info.valid
     io.debug_stall := global_stall
     io.debug_ifetch_stall := ifetch.io.fetch_stall
+    io.debug_frontend_starved := frontendStarved
+    io.debug_frontend_queue_full := frontendQueueFull
+    io.debug_frontend_queue_empty := frontendQueueEmpty
     io.debug_lsu_stall := lsu.io.stall_req
     io.debug_lsu_load_stall := lsu.io.stall_load
     io.debug_lsu_store_stall := lsu.io.stall_store
@@ -438,10 +446,14 @@ class Core(
         frontendQueue.io.deq.ready := !frontendQueueFlush && !(pipe_stall || decodeUsesPending || debugHalted)
         ifetchQueueReady := frontendQueue.io.enq.ready
         decodeInputValid := frontendQueue.io.deq.valid
+        frontendQueueFull := frontendQueue.io.full
+        frontendQueueEmpty := frontendQueue.io.empty
         decodeEntry := frontendQueue.io.deq.bits
     } else {
         ifetchQueueReady := !(pipe_stall || decodeUsesPending || debugDcachePending || (debugHalted && !debugIcachePending))
         decodeInputValid := ifetch.io.valid
+        frontendQueueFull := !ifetchQueueReady
+        frontendQueueEmpty := !ifetch.io.valid
         decodeEntry := fetchEntry
     }
 

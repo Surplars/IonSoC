@@ -140,6 +140,9 @@ class IonSoC(
     io.debug.retire := core.io.debug_retire
     io.debug.stall := core.io.debug_stall
     io.debug.ifetchStall := core.io.debug_ifetch_stall
+    io.debug.frontendStarved := core.io.debug_frontend_starved
+    io.debug.frontendQueueFull := core.io.debug_frontend_queue_full
+    io.debug.frontendQueueEmpty := core.io.debug_frontend_queue_empty
     io.debug.lsuStall := core.io.debug_lsu_stall
     io.debug.lsuLoadStall := core.io.debug_lsu_load_stall
     io.debug.lsuStoreStall := core.io.debug_lsu_store_stall

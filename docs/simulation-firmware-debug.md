@@ -165,11 +165,14 @@ TRACE=1 ION_TRACE_WAVE=1 make verilator-run-perf
 [perf-branch]: branches=4096 branch_rate=11.10 taken=4095 taken_pct=99.98 redirects=2 redirect_pct=0.05 pred_taken=4095 pred_taken_pct=99.98 pred_correct=4094 pred_correct_pct=99.95
 [perf-lsu]: load=12296 store=8253 mmio=5 atomic=0 fence=532
 [perf-overlap]: ifetch_only=16491 ifetch_lsu_overlap=4633
+[perf-frontend]: starved=82 queue_full=527 queue_empty=8302
 ```
 
 这些仿真侧事件也接入了 CSR PMU：软件可通过 `mhpmevent3..31` 选择事件号，再读 `mhpmcounter3..31`。例如 `mhpmevent3=7` 统计 branch redirect，`mhpmevent4=3` 统计 I-fetch stall，`mhpmevent5=10` 统计 LSU cache-load stall。
 
 这个 baseline 已包含 BPU target redirect 抑制、64-bit fetch beat buffer、I-cache idle 当拍发请求、顺序 next-beat ahead fetch、4-entry `FrontendQueue`，以及 L1 hit compare-cycle response。`perf.S` 还会读取多组 HPM counter，因此 retired/cycles 同纯循环版本不完全等价。结果说明分支预测已不是主瓶颈，前端队列已经把大量 LSU overlap stall 吸收掉；剩余 stall 主要来自纯 I-fetch 等待和 LSU cache-load 等待。当前短热循环远小于默认 2 KiB I-cache，扩容量不是优先项。后续优化顺序应优先看更宽 I-cache line、load-use/阻塞 load 延迟和总线 beat/burst，再考虑超标量。
+
+`[perf-frontend]` 用来判断前端队列是否仍是瓶颈：`starved` 表示 decode 端没有可用指令且 IF 正在等待，`queue_full` 表示 IF 被队列背压，`queue_empty` 表示队列为空。当前 `starved=82`、`queue_full=527`，说明继续加深队列收益有限；下一轮更应优化 I-cache line/refill 或 fetch 发射节奏。
 
 ## RustSBI Jump Flow
 

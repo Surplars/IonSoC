@@ -1126,6 +1126,9 @@ bool run_sim(const SimOptions &opts)
 	uint64_t perf_ifetch_stall_cycles = 0;
 	uint64_t perf_ifetch_only_stall_cycles = 0;
 	uint64_t perf_ifetch_lsu_overlap_cycles = 0;
+	uint64_t perf_frontend_starved_cycles = 0;
+	uint64_t perf_frontend_queue_full_cycles = 0;
+	uint64_t perf_frontend_queue_empty_cycles = 0;
 	uint64_t perf_lsu_stall_cycles = 0;
 	uint64_t perf_lsu_load_stall_cycles = 0;
 	uint64_t perf_lsu_store_stall_cycles = 0;
@@ -1167,6 +1170,9 @@ bool run_sim(const SimOptions &opts)
 			perf_lsu_stall_cycles += dut->io_debug_lsuStall ? 1 : 0;
 			perf_ifetch_only_stall_cycles += (dut->io_debug_ifetchStall && !dut->io_debug_lsuStall) ? 1 : 0;
 			perf_ifetch_lsu_overlap_cycles += (dut->io_debug_ifetchStall && dut->io_debug_lsuStall) ? 1 : 0;
+			perf_frontend_starved_cycles += dut->io_debug_frontendStarved ? 1 : 0;
+			perf_frontend_queue_full_cycles += dut->io_debug_frontendQueueFull ? 1 : 0;
+			perf_frontend_queue_empty_cycles += dut->io_debug_frontendQueueEmpty ? 1 : 0;
 			perf_lsu_load_stall_cycles += dut->io_debug_lsuLoadStall ? 1 : 0;
 			perf_lsu_store_stall_cycles += dut->io_debug_lsuStoreStall ? 1 : 0;
 			perf_lsu_mmio_stall_cycles += dut->io_debug_lsuMmioStall ? 1 : 0;
@@ -1405,6 +1411,10 @@ bool run_sim(const SimOptions &opts)
 		printf("[perf-overlap]: ifetch_only=%" PRIu64 " ifetch_lsu_overlap=%" PRIu64 "\n",
 		       perf_ifetch_only_stall_cycles,
 		       perf_ifetch_lsu_overlap_cycles);
+		printf("[perf-frontend]: starved=%" PRIu64 " queue_full=%" PRIu64 " queue_empty=%" PRIu64 "\n",
+		       perf_frontend_starved_cycles,
+		       perf_frontend_queue_full_cycles,
+		       perf_frontend_queue_empty_cycles);
 	}
 
 	if (opts.jtag_only)
