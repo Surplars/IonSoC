@@ -116,11 +116,44 @@ class ALU(XLEN: Int = 64) extends Module {
     private def sext32(value: UInt): UInt = Cat(Fill(XLEN - 32, value(31)), value)
     private def sext8(value: UInt): UInt = Cat(Fill(XLEN - 8, value(7)), value(7, 0))
     private def sext16(value: UInt): UInt = Cat(Fill(XLEN - 16, value(15)), value(15, 0))
+    private def zext32(value: UInt): UInt = Cat(0.U((XLEN - 32).W), value(31, 0))
     private def lowestSetBitIndex(value: UInt): UInt = {
         Mux(value === 0.U, XLEN.U, PriorityEncoder(value))
     }
+    private def lowestSetBitIndex32(value: UInt): UInt = {
+        Mux(value(31, 0) === 0.U, 32.U, PriorityEncoder(value(31, 0)))
+    }
     private def leadingZeroCount(value: UInt): UInt = {
         Mux(value === 0.U, XLEN.U, PriorityEncoder(Reverse(value)))
+    }
+    private def leadingZeroCount32(value: UInt): UInt = {
+        Mux(value(31, 0) === 0.U, 32.U, PriorityEncoder(Reverse(value(31, 0))))
+    }
+    private def rotateLeft(value: UInt, amount: UInt): UInt = {
+        ((value << amount) | (value >> ((XLEN.U - amount)(log2Ceil(XLEN) - 1, 0))))(XLEN - 1, 0)
+    }
+    private def rotateRight(value: UInt, amount: UInt): UInt = {
+        ((value >> amount) | (value << ((XLEN.U - amount)(log2Ceil(XLEN) - 1, 0))))(XLEN - 1, 0)
+    }
+    private def rotateLeft32(value: UInt, amount: UInt): UInt = {
+        val word = value(31, 0)
+        val amt = amount(4, 0)
+        val rotated = ((word << amt) | (word >> ((32.U - amt)(4, 0))))(31, 0)
+        sext32(rotated)
+    }
+    private def rotateRight32(value: UInt, amount: UInt): UInt = {
+        val word = value(31, 0)
+        val amt = amount(4, 0)
+        val rotated = ((word >> amt) | (word << ((32.U - amt)(4, 0))))(31, 0)
+        sext32(rotated)
+    }
+    private def orcByte(value: UInt): UInt = {
+        Cat((0 until (XLEN / 8)).reverse.map { i =>
+            Mux(value(8 * i + 7, 8 * i).orR, 0xff.U(8.W), 0.U(8.W))
+        })
+    }
+    private def reverseBytes(value: UInt): UInt = {
+        Cat((0 until (XLEN / 8)).map { i => value(8 * i + 7, 8 * i) })
     }
     val bitIndex = op2(log2Ceil(XLEN) - 1, 0)
     val bitMask = (1.U(XLEN.W) << bitIndex)(XLEN - 1, 0)
@@ -271,19 +304,34 @@ class ALU(XLEN: Int = 64) extends Module {
                         ALUOps.CLZ -> leadingZeroCount(op1),
                         ALUOps.CTZ -> lowestSetBitIndex(op1),
                         ALUOps.CPOP -> PopCount(op1),
+                        ALUOps.CLZW -> leadingZeroCount32(op1),
+                        ALUOps.CTZW -> lowestSetBitIndex32(op1),
+                        ALUOps.CPOPW -> PopCount(op1_32),
                         ALUOps.MIN -> Mux(op1.asSInt < op2.asSInt, op1, op2),
                         ALUOps.MAX -> Mux(op1.asSInt > op2.asSInt, op1, op2),
                         ALUOps.MINU -> Mux(op1 < op2, op1, op2),
                         ALUOps.MAXU -> Mux(op1 > op2, op1, op2),
                         ALUOps.SEXTB -> sext8(op1),
                         ALUOps.SEXTH -> sext16(op1),
+                        ALUOps.ROL -> rotateLeft(op1, shamt64),
+                        ALUOps.ROR -> rotateRight(op1, shamt64),
+                        ALUOps.RORI -> rotateRight(op1, shamt64),
+                        ALUOps.ROLW -> rotateLeft32(op1, op2),
+                        ALUOps.RORW -> rotateRight32(op1, op2),
+                        ALUOps.RORIW -> rotateRight32(op1, op2),
+                        ALUOps.ORCB -> orcByte(op1),
+                        ALUOps.REV8 -> reverseBytes(op1),
                         ALUOps.BSET -> (op1 | bitMask),
                         ALUOps.BCLR -> (op1 & ~bitMask),
                         ALUOps.BINV -> (op1 ^ bitMask),
                         ALUOps.BEXT -> ((op1 >> bitIndex)(0)),
                         ALUOps.SH1ADD -> ((op1 << 1) + op2),
                         ALUOps.SH2ADD -> ((op1 << 2) + op2),
-                        ALUOps.SH3ADD -> ((op1 << 3) + op2)
+                        ALUOps.SH3ADD -> ((op1 << 3) + op2),
+                        ALUOps.ADDUW -> (zext32(op1) + op2),
+                        ALUOps.SH1ADDUW -> ((zext32(op1) << 1) + op2),
+                        ALUOps.SH2ADDUW -> ((zext32(op1) << 2) + op2),
+                        ALUOps.SH3ADDUW -> ((zext32(op1) << 3) + op2)
                     )
                 ),
                 op1 // CSR指令直接写回old CSR值

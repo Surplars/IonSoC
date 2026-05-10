@@ -185,6 +185,15 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             stepAlu(dut, ALUOps.CPOP, BigInt("f0f0000000000001", 16), 0)
             dut.io.alu_out.result.expect(9.U)
 
+            stepAlu(dut, ALUOps.CLZW, BigInt("0000000000001000", 16), 0)
+            dut.io.alu_out.result.expect(19.U)
+
+            stepAlu(dut, ALUOps.CTZW, BigInt("0000000080000000", 16), 0)
+            dut.io.alu_out.result.expect(31.U)
+
+            stepAlu(dut, ALUOps.CPOPW, BigInt("00000000f0f00001", 16), 0)
+            dut.io.alu_out.result.expect(9.U)
+
             stepAlu(dut, ALUOps.MIN, BigInt("fffffffffffffffe", 16), 3)
             dut.io.alu_out.result.expect(BigInt("fffffffffffffffe", 16))
 
@@ -196,6 +205,36 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
 
             stepAlu(dut, ALUOps.SEXTH, BigInt("0000000000008001", 16), 0)
             dut.io.alu_out.result.expect(BigInt("ffffffffffff8001", 16))
+
+            stepAlu(dut, ALUOps.ORCB, BigInt("000000ff01008000", 16), 0)
+            dut.io.alu_out.result.expect(BigInt("000000ffff00ff00", 16))
+
+            stepAlu(dut, ALUOps.REV8, BigInt("0123456789abcdef", 16), 0)
+            dut.io.alu_out.result.expect(BigInt("efcdab8967452301", 16))
+        }
+    }
+
+    test("ALU executes Zbb rotate operations") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            stepAlu(dut, ALUOps.ROL, BigInt("0123456789abcdef", 16), 8)
+            dut.io.alu_out.result.expect(BigInt("23456789abcdef01", 16))
+
+            stepAlu(dut, ALUOps.ROR, BigInt("0123456789abcdef", 16), 8)
+            dut.io.alu_out.result.expect(BigInt("ef0123456789abcd", 16))
+
+            stepAlu(dut, ALUOps.RORI, BigInt("0123456789abcdef", 16), 4)
+            dut.io.alu_out.result.expect(BigInt("f0123456789abcde", 16))
+
+            stepAlu(dut, ALUOps.ROLW, BigInt("0000000081234567", 16), 8)
+            dut.io.alu_out.result.expect(BigInt("0000000023456781", 16))
+
+            stepAlu(dut, ALUOps.RORW, BigInt("0000000081234567", 16), 8)
+            dut.io.alu_out.result.expect(BigInt("0000000067812345", 16))
+
+            stepAlu(dut, ALUOps.RORIW, BigInt("0000000012345678", 16), 4)
+            dut.io.alu_out.result.expect(BigInt("ffffffff81234567", 16))
         }
     }
 
@@ -220,6 +259,12 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
 
             stepAlu(dut, ALUOps.SH3ADD, 3, 10)
             dut.io.alu_out.result.expect(34.U)
+
+            stepAlu(dut, ALUOps.ADDUW, BigInt("ffffffff00000005", 16), 10)
+            dut.io.alu_out.result.expect(15.U)
+
+            stepAlu(dut, ALUOps.SH2ADDUW, BigInt("ffffffff00000005", 16), 10)
+            dut.io.alu_out.result.expect(30.U)
         }
     }
 

@@ -97,6 +97,7 @@ make test-slow
 - `tlerror.S`: unmapped/denied response smoke。
 - `amo.S`: A 扩展 smoke。
 - `hazard.S`: pipeline hazard smoke。
+- `bitmanip.S`: Zba/Zbb/Zbs 常用指令 smoke。
 - `plic.S`: M-mode PLIC smoke。
 - `plic_s.S`: S-mode PLIC/delegation smoke。
 - `uart_irq.S`: harness 注入 UART RX byte，验证 UART RDI -> PLIC source 1 -> M-mode external interrupt -> claim/complete。

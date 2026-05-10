@@ -53,6 +53,7 @@ TLERROR_ELF = $(PAYLOAD_BUILD_DIR)/tlerror.elf
 AMO_ELF = $(PAYLOAD_BUILD_DIR)/amo.elf
 HAZARD_ELF = $(PAYLOAD_BUILD_DIR)/hazard.elf
 PERF_ELF = $(PAYLOAD_BUILD_DIR)/perf.elf
+BITMANIP_ELF = $(PAYLOAD_BUILD_DIR)/bitmanip.elf
 PLIC_ELF = $(PAYLOAD_BUILD_DIR)/plic.elf
 PLIC_S_ELF = $(PAYLOAD_BUILD_DIR)/plic_s.elf
 UART_IRQ_ELF = $(PAYLOAD_BUILD_DIR)/uart_irq.elf
@@ -192,6 +193,10 @@ $(PERF_ELF): $(PAYLOAD_SRC_DIR)/perf.S $(PAYLOAD_LDS)
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
 
+$(BITMANIP_ELF): $(PAYLOAD_SRC_DIR)/bitmanip.S $(PAYLOAD_LDS)
+	@mkdir -p $(PAYLOAD_BUILD_DIR)
+	$(CC) -march=rv$(WORD_LEN)imac_zba_zbb_zbs_zicsr -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
+
 $(PLIC_ELF): $(PAYLOAD_SRC_DIR)/plic.S $(PAYLOAD_LDS)
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
@@ -291,6 +296,9 @@ verilator-run-hazard: $(HAZARD_ELF) $(VSOC_BIN)
 verilator-run-perf: $(PERF_ELF) $(VSOC_BIN)
 	ION_PERF=1 ION_MAX_CYCLES=2000000 ./$(VSOC_BIN) --payload perf P $(PERF_ELF)
 
+verilator-run-bitmanip: $(BITMANIP_ELF) $(VSOC_BIN)
+	./$(VSOC_BIN) --payload bitmanip BP $(BITMANIP_ELF)
+
 verilator-run-plic: $(PLIC_ELF) $(VSOC_BIN)
 	./$(VSOC_BIN) --payload plic XP $(PLIC_ELF)
 
@@ -315,22 +323,24 @@ verilator-clint32: verilator-run-clint32
 
 verilator-tlerror: verilator-run-tlerror
 
-regress: $(VSOC_BIN) $(TIMER_ELF) $(CLINT32_ELF) $(TLERROR_ELF) $(AMO_ELF) $(HAZARD_ELF) $(PLIC_ELF) $(PLIC_S_ELF) $(UART_IRQ_ELF)
+regress: $(VSOC_BIN) $(TIMER_ELF) $(CLINT32_ELF) $(TLERROR_ELF) $(AMO_ELF) $(HAZARD_ELF) $(BITMANIP_ELF) $(PLIC_ELF) $(PLIC_S_ELF) $(UART_IRQ_ELF)
 	./$(VSOC_BIN) --payload timer S!!P $(TIMER_ELF)
 	./$(VSOC_BIN) --payload clint32 CP $(CLINT32_ELF)
 	./$(VSOC_BIN) --payload tlerror EP $(TLERROR_ELF)
 	./$(VSOC_BIN) --payload amo AP $(AMO_ELF)
 	./$(VSOC_BIN) --payload hazard HP $(HAZARD_ELF)
+	./$(VSOC_BIN) --payload bitmanip BP $(BITMANIP_ELF)
 	./$(VSOC_BIN) --payload plic XP $(PLIC_ELF)
 	./$(VSOC_BIN) --payload plic_s SIP $(PLIC_S_ELF)
 	ION_UART_RX_CYCLE=160 ION_UART_RX_BYTE=0x5a ./$(VSOC_BIN) --payload uart_irq UP $(UART_IRQ_ELF)
 
-regress-mcu: $(MCU_VSOC_BIN) $(TIMER_ELF) $(CLINT32_ELF) $(TLERROR_ELF) $(AMO_ELF) $(HAZARD_ELF) $(PLIC_ELF) $(PLIC_S_ELF) $(UART_IRQ_ELF)
+regress-mcu: $(MCU_VSOC_BIN) $(TIMER_ELF) $(CLINT32_ELF) $(TLERROR_ELF) $(AMO_ELF) $(HAZARD_ELF) $(BITMANIP_ELF) $(PLIC_ELF) $(PLIC_S_ELF) $(UART_IRQ_ELF)
 	./$(MCU_VSOC_BIN) --payload timer S!!P $(TIMER_ELF)
 	./$(MCU_VSOC_BIN) --payload clint32 CP $(CLINT32_ELF)
 	./$(MCU_VSOC_BIN) --payload tlerror EP $(TLERROR_ELF)
 	./$(MCU_VSOC_BIN) --payload amo AP $(AMO_ELF)
 	./$(MCU_VSOC_BIN) --payload hazard HP $(HAZARD_ELF)
+	./$(MCU_VSOC_BIN) --payload bitmanip BP $(BITMANIP_ELF)
 	./$(MCU_VSOC_BIN) --payload plic XP $(PLIC_ELF)
 	./$(MCU_VSOC_BIN) --payload plic_s SIP $(PLIC_S_ELF)
 	ION_UART_RX_CYCLE=160 ION_UART_RX_BYTE=0x5a ./$(MCU_VSOC_BIN) --payload uart_irq UP $(UART_IRQ_ELF)

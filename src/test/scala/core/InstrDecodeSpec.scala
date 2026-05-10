@@ -176,6 +176,31 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.trap_info.valid.expect(false.B)
             dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.SH1ADD)
+
+            init(dut)
+            dut.io.instr_in.poke("h602091b3".U) // rol x3, x1, x2
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.ROL)
+
+            init(dut)
+            dut.io.instr_in.poke("h6070d193".U) // rori x3, x1, 7
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.RORI)
+            dut.io.decoded_out.op2.expect(7.U)
+
+            init(dut)
+            dut.io.instr_in.poke("h6b80d193".U) // rev8 x3, x1
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.REV8)
+
+            init(dut)
+            dut.io.instr_in.poke("h082081bb".U) // add.uw x3, x1, x2
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.ADDUW)
         }
     }
 
