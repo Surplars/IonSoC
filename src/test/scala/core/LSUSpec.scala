@@ -92,6 +92,17 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         dut.io.alu_out.mem.signed.poke(false.B)
     }
 
+    private def driveFence(dut: LSU): Unit = {
+        dut.io.valid_in.poke(true.B)
+        dut.io.alu_out.mem.valid.poke(true.B)
+        dut.io.alu_out.mem.op.poke(MemOpType.Fence)
+        dut.io.alu_out.mem.vaddr.poke(0.U)
+        dut.io.alu_out.mem.paddr.poke(0.U)
+        dut.io.alu_out.mem.size.poke(0.U)
+        dut.io.alu_out.mem.mask.poke(0.U)
+        dut.io.alu_out.mem.wdata.poke(0.U)
+    }
+
     private def driveAtomic(dut: LSU, op: MemOpType.Type, atomic: AtomicOpType.Type, addr: BigInt, data: BigInt = 0, size: Int = 3): Unit = {
         val mask = if (size == 2) 0x0f else 0xff
         dut.io.valid_in.poke(true.B)
@@ -215,6 +226,43 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             dut.io.dcache.req.valid.expect(true.B)
             dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
             dut.io.dcache.req.bits.addr.expect(BigInt("10000020", 16))
+        }
+    }
+
+    test("LSU drains stores before issuing a D-cache fence") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            driveStore(dut, BigInt("10000030", 16), BigInt("1122334455667788", 16))
+            dut.clock.step()
+
+            driveFence(dut)
+            dut.io.stall_req.expect(true.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            var sawFenceReq = false
+            for (_ <- 0 until 4 if !sawFenceReq) {
+                dut.io.stall_req.expect(true.B)
+                if (dut.io.dcache.req.valid.peek().litToBoolean && dut.io.dcache.req.bits.fence.peek().litToBoolean) {
+                    sawFenceReq = true
+                } else {
+                    dut.clock.step()
+                }
+            }
+            assert(sawFenceReq, "LSU did not issue D-cache fence after draining stores")
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            dut.io.stall_req.expect(false.B)
         }
     }
 

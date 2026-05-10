@@ -77,7 +77,7 @@ RustSBI firmware profile 使用以下启动契约：
 
 这个内部 `TLSystemXbar` 汇聚成 core 的 `DBus`。SoC 顶层再把 `DBus` 接到系统 `TLXbar`，路由到 debug、ROM、SRAM 和外设。
 
-当前使用 TileLink A/D 通道子集，主要覆盖 `Get`、`PutFullData`、`PutPartialData` 和 denied response。B/C/E 一致性通道的数据结构已定义但未启用。
+当前使用 TileLink A/D 通道子集，主要覆盖 `Get`、`PutFullData`、`PutPartialData` 和 denied response。B/C/E 一致性通道的数据结构已定义但未启用，因此系统是 TL-UL-like non-coherent interconnect。PMA/地址属性负责让 SRAM 走 cacheable 路径、MMIO/ROM/debug 走 device/uncached 路径；普通 `fence` 会通过 LSU 触发 D-cache whole-cache clean+invalidate，`fence.i` 会触发 I-cache invalidate。
 
 ## 模块化边界
 

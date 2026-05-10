@@ -257,7 +257,7 @@ Debug Module 当前支持：
 限制：
 
 - program buffer 当前是 DM 内部安全解释子集，不是真实 hart 指令执行入口。`abstractcs.progbufsize=2` 仅承诺 `nop/fence/fence.i/ebreak` postexec 探测可用；load/store 等 helper 序列会返回 `cmderr`，避免误改 architectural state。
-- SBA 尚未实现 cache 一致性处理；调试器直接改内存后，hart 侧 I/D cache 仍需要显式 flush 或后续硬件一致性方案。
+- SBA 尚未实现硬件 cache 一致性；调试器直接改内存后，hart 侧需执行 `fence`/`fence.i`，或后续接入显式 debug cache maintenance hook。
 - OpenOCD 高级功能可能仍会触发 unsupported command。
 - 若 simulator 被 kill，OpenOCD 可能卡在 remote_bitbang socket 状态，需要单独终止 OpenOCD 进程。
 

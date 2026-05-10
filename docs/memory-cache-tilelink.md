@@ -108,7 +108,7 @@ Miss 行为：
 - CPU request 上的 `fence/fence.i` 也会进入同一套 whole-cache maintenance FSM。
 - dirty line 会先写回，再清 valid/dirty。
 - 完成后通过 `cpu.resp.valid` 回 ack。
-- 这个机制同时用于 I-cache `fence.i` 和未来 D-cache flush。
+- 这个机制同时用于 I-cache `fence.i` 和 D-cache `fence`。
 
 限制：
 
@@ -179,7 +179,7 @@ Miss 行为：
 - `pmpaddr[0..7]`
 - `mxr/sum/mprv`
 
-## Cache 与 fence.i
+## Cache 与 fence/fence.i
 
 `fence.i` 被 ALU 标记为 `MemOpType.FenceI`，Core 中转成 frontend barrier：
 
@@ -190,11 +190,15 @@ Miss 行为：
 
 之前曾出现 late cache response 阻塞 invalidation 的问题。当前 IF cache path 会在 flush 后继续让 response channel 可 drain，避免 I-cache 卡死。
 
+普通 `fence` 被 ALU 标记为 `MemOpType.Fence`，LSU 会先等待 store buffer、MMIO、atomic 和 cache load 路径清空，再向 D-cache 发 whole-cache clean+invalidate。D-cache 关闭时，`UncachedTileLinkBridge` 对 maintenance request 直接返回 no-op ack。
+
+当前 TileLink 仍是 TL-UL-like non-coherent 子集。SBA、后续 DMA/QSPI 等非 CPU master 写入 SRAM 后，软件或调试器需要让 hart 执行 `fence`/`fence.i`，或使用未来显式 cache maintenance/debug hook，来保证 D-cache/I-cache 可见性。
+
 ## 后续优化方向
 
 - 将 I-cache/D-cache line size 提升到多 beat，并支持 burst refill。
 - 引入 set-associative cache 或 victim buffer。
-- D-cache 增加 explicit flush 接口，并与 debug/DMA 语义对齐。
+- 增加 debug/DMA 可调用的显式 cache maintenance hook，减少对软件 trampoline 的依赖。
 - MMU 前先统一物理地址宽度和 TileLink address width。
 - 为 LR/SC/AMO 加入 coherence-aware reservation invalidation。
 - 对 firmware profile 增加 SRAM latency/cache miss 性能统计。

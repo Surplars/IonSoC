@@ -125,6 +125,7 @@ class LSU(XLEN: Int = 64) extends Module {
     val is_lr         = valid_inst && memAccess.op === MemOpType.LR
     val is_sc         = valid_inst && memAccess.op === MemOpType.SC
     val is_amo        = valid_inst && memAccess.op === MemOpType.AMO
+    val is_fence      = valid_inst && memAccess.op === MemOpType.Fence
     val is_atomic     = is_lr || is_sc || is_amo
     val is_device     = memAccess.attrs.device
     val addr          = memAccess.paddr
@@ -252,11 +253,17 @@ class LSU(XLEN: Int = 64) extends Module {
     val atomicRespData = RegInit(0.U(XLEN.W))
     val atomicRespErr = RegInit(false.B)
 
-    val raw_atomic_req = memAccess.valid && !mem_addr_exception && !atomic_device_fault && !access_fault && !is_device && is_atomic && !sameConsumedInput
+    val fencePending = RegInit(false.B)
+    val fenceSent = RegInit(false.B)
+    val fencePc = RegInit(0.U(XLEN.W))
 
-    val new_atomic_req = raw_atomic_req && !atomicPending && !sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !pending_mem_trap
-    val new_cache_load = raw_cache_load && !cacheLoadPending && !atomicPending && !storeDrainPending && !pending_mem_trap
-    val new_mmio_req   = raw_mmio_req && !mmioPending && !atomicPending && !pending_mem_trap
+    val raw_atomic_req = memAccess.valid && !mem_addr_exception && !atomic_device_fault && !access_fault && !is_device && is_atomic && !sameConsumedInput
+    val raw_fence_req = memAccess.valid && !mem_addr_exception && !access_fault && is_fence && !sameConsumedInput
+
+    val new_fence_req = raw_fence_req && !fencePending && !sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !atomicPending && !pending_mem_trap
+    val new_atomic_req = raw_atomic_req && !fencePending && !atomicPending && !sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !pending_mem_trap
+    val new_cache_load = raw_cache_load && !fencePending && !cacheLoadPending && !atomicPending && !storeDrainPending && !pending_mem_trap
+    val new_mmio_req   = raw_mmio_req && !fencePending && !mmioPending && !atomicPending && !pending_mem_trap
 
     when(!cacheLoadPending && new_cache_load) {
         cacheLoadPending := true.B
@@ -304,35 +311,48 @@ class LSU(XLEN: Int = 64) extends Module {
         consumedAtomic  := memAccess.atomic
         consumedRd      := io.alu_out.rd
     }
+    when(!fencePending && new_fence_req) {
+        fencePending := true.B
+        fenceSent := false.B
+        fencePc := io.pc_in
+        inputConsumed := true.B
+        consumedPc := io.pc_in
+        consumedOp := memAccess.op
+        consumedAddr := memAccess.paddr
+        consumedAtomic := memAccess.atomic
+        consumedRd := io.alu_out.rd
+    }
 
     val do_cache_load_req = cacheLoadPending && !cacheLoadSent
     val do_mmio_req       = mmioPending && !mmioSent
     val do_atomic_read_req = atomicPending && !atomicReadSent
     val do_atomic_write_req = atomicPending && atomicReadSent && atomicDoWrite && !atomicWriteSent
+    val do_fence_req = fencePending && !fenceSent
     val do_store_drain    =
-        sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !atomicPending && !new_cache_load && !new_mmio_req && !new_atomic_req && !pending_mem_trap
+        sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !atomicPending && !fencePending &&
+            !new_cache_load && !new_mmio_req && !new_atomic_req && !new_fence_req && !pending_mem_trap
 
     val cacheReqAddr = Mux(
         do_cache_load_req,
         cacheLoadAccess.paddr,
-        Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.paddr, storeBuffer.io.deq_addr)
+        Mux(do_fence_req, 0.U, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.paddr, storeBuffer.io.deq_addr))
     )
     val cacheReqVaddr = Mux(
         do_cache_load_req,
         cacheLoadAccess.vaddr,
-        Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.vaddr, storeBuffer.io.deq_addr)
+        Mux(do_fence_req, 0.U, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.vaddr, storeBuffer.io.deq_addr))
     )
     val cacheReqIsWrite = do_store_drain || do_atomic_write_req
 
-    io.dcache.req.valid          := do_cache_load_req || do_store_drain || do_atomic_read_req || do_atomic_write_req
+    io.dcache.req.valid          := do_cache_load_req || do_store_drain || do_atomic_read_req || do_atomic_write_req || do_fence_req
     io.dcache.req.bits.addr      := cacheReqAddr
     io.dcache.req.bits.vaddr     := cacheReqVaddr
     io.dcache.req.bits.cmd       := Mux(cacheReqIsWrite, CacheCmd.Write, CacheCmd.Read)
     io.dcache.req.bits.wdata     := Mux(do_atomic_write_req, atomicWriteData, storeBuffer.io.deq_data)
-    io.dcache.req.bits.mask      := Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.mask, storeBuffer.io.deq_mask)
-    io.dcache.req.bits.size      := Mux(do_cache_load_req, cacheLoadAccess.size, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.size, storeBuffer.io.deq_size))
+    io.dcache.req.bits.mask      := Mux(do_fence_req, 0.U, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.mask, storeBuffer.io.deq_mask))
+    io.dcache.req.bits.size      := Mux(do_fence_req, 0.U, Mux(do_cache_load_req, cacheLoadAccess.size, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.size, storeBuffer.io.deq_size)))
     io.dcache.req.bits.signed    := Mux(do_cache_load_req, cacheLoadAccess.signed, false.B)
-    io.dcache.req.bits.fence     := false.B
+    io.dcache.req.bits.fence     := do_fence_req
     io.dcache.req.bits.fencei    := false.B
     io.dcache.req.bits.atomic    := false.B
     io.dcache.req.bits.cacheable := true.B
@@ -349,6 +369,7 @@ class LSU(XLEN: Int = 64) extends Module {
     val store_drain_fire = do_store_drain && io.dcache.req.ready
     val atomic_read_fire = do_atomic_read_req && io.dcache.req.ready
     val atomic_write_fire = do_atomic_write_req && io.dcache.req.ready
+    val fence_fire       = do_fence_req && io.dcache.req.ready
     val mmio_req_fire    = do_mmio_req && io.mmio.req_ready
 
     // Cache ready 时，才能真实出队 Store 数据
@@ -370,6 +391,10 @@ class LSU(XLEN: Int = 64) extends Module {
     }
     when(atomic_write_fire) {
         atomicWriteSent := true.B
+        reservationValid := false.B
+    }
+    when(fence_fire) {
+        fenceSent := true.B
         reservationValid := false.B
     }
     when(mmio_req_fire) {
@@ -438,6 +463,16 @@ class LSU(XLEN: Int = 64) extends Module {
         mmioPending := false.B
         mmioSent    := false.B
     }
+    when(fencePending && fenceSent && io.dcache.resp.valid) {
+        fencePending := false.B
+        fenceSent := false.B
+        when(io.dcache.resp.bits.err) {
+            cache_err_valid := true.B
+            cache_err_pc := fencePc
+            cache_err_cause := MCause.StoreAccessFault
+            cache_err_value := 0.U
+        }
+    }
 
     val completing_cache_load  = cacheLoadPending && cacheLoadSent && io.dcache.resp.valid
     val completing_store_drain = storeDrainPending && io.dcache.resp.valid
@@ -449,8 +484,9 @@ class LSU(XLEN: Int = 64) extends Module {
     val stall_wait_cache_load  = new_cache_load || cacheLoadPending || stall_wait_store_drain
     val stall_wait_mmio        = new_mmio_req || mmioPending
     val stall_wait_atomic      = new_atomic_req || atomicPending
+    val stall_wait_fence       = raw_fence_req || fencePending
 
-    io.stall_req := stall_sb_full || stall_wait_cache_load || stall_wait_mmio || stall_wait_atomic || stall_wait_atomic_store_drain
+    io.stall_req := stall_sb_full || stall_wait_cache_load || stall_wait_mmio || stall_wait_atomic || stall_wait_atomic_store_drain || stall_wait_fence
     when(inputConsumed && !io.stall_req) {
         inputConsumed := false.B
     }
