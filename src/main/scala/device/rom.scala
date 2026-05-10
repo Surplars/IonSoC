@@ -73,6 +73,7 @@ class TLROM(params: TLParams) extends Module {
     val io = IO(new Bundle {
         val tl = Flipped(new TLBundle(params))
     })
+    TLBundle.tieoffSlaveCoherence(io.tl)
 
     private val beatBytes  = params.dataWidth / 8
     private val offsetBits = log2Ceil(beatBytes)

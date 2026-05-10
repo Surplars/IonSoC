@@ -7,6 +7,7 @@ class TLError(params: TLParams) extends Module {
     val io = IO(new Bundle {
         val tl = Flipped(new TLBundle(params))
     })
+    TLBundle.tieoffSlaveCoherence(io.tl)
 
     val respValid = RegInit(false.B)
     val respOpcode = RegInit(TLOpcode.AccessAck)

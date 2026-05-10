@@ -2,13 +2,21 @@
 
 ## TileLink 子集
 
-TileLink 定义在 `src/main/scala/bus/tilelink/TileLink.scala`。当前实际使用 A/D 通道：
+TileLink 定义在 `src/main/scala/bus/tilelink/TileLink.scala`。接口已经展开为 TL-C 五通道：
+
+- A channel: request
+- B channel: probe
+- C channel: release / probe ack
+- D channel: response / grant
+- E channel: grant ack
+
+当前行为仍是 TL-UL-like non-coherent 子集，实际数据传输只使用：
 
 - A channel: `Get`、`PutFullData`、`PutPartialData`
 - D channel: `AccessAck`、`AccessAckData`
 - `denied` 用于错误响应
 
-B/C/E 通道 Bundle 已定义但未接入一致性协议。
+B/C/E 已在 bundle、xbar、cache、RAM 和外设边界显式 tie off。TL-UL master 会丢弃 probe 且不发 C/E；TL-UL manager 不发 probe 且吞掉意外 C/E。这个结构是 TL-C 迁移第一步，还没有实现 permission state、Probe、Release、GrantAck 或 manager-side directory。
 
 `TLParams` 默认：
 
@@ -30,6 +38,7 @@ B/C/E 通道 Bundle 已定义但未接入一致性协议。
 - source ID 扩展 master tag，D 通道根据 source 高位回到原 master。
 - 每个 master 地址命中最多一个 slave；若重叠会 assert。
 - 未命中地址会在 xbar 内生成本地 denied response，避免 master 永久等待。
+- B/C/E 暂时在 xbar 边界 tie off，保持 TL-UL 语义。
 
 `TLSystemXbar` 是 n-master 到单 slave 的聚合器，用在 Core 内部 DBus 汇聚。
 
@@ -198,6 +207,7 @@ Miss 行为：
 
 ## 后续优化方向
 
+- 引入 TL-C manager/coherence hub，先支持单 hart I/D cache probe invalidate，再扩展 dirty release/writeback。
 - 将 I-cache/D-cache line size 提升到多 beat，并支持 burst refill。
 - 引入 set-associative cache 或 victim buffer。
 - 将 debug cache maintenance 扩展成可按地址范围维护的接口，减少 whole-cache flush 成本。

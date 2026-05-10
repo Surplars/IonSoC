@@ -35,6 +35,10 @@ class Core(
 
         val fetch_en = Output(Bool())
         val pc       = Output(UInt(XLEN.W))
+        val debug_retire = Output(Bool())
+        val debug_stall = Output(Bool())
+        val debug_ifetch_stall = Output(Bool())
+        val debug_lsu_stall = Output(Bool())
 
         val IBus = new TLBundle(tlParams)
         val DBus = new TLBundle(dbusParams)
@@ -339,6 +343,10 @@ class Core(
     register.io.debug_write := io.debug_gpr_write && debugHalted
     register.io.debug_wdata := io.debug_gpr_wdata
     io.debug_gpr_rdata := register.io.debug_rdata
+    io.debug_retire := wb.io.valid_in && !wb.io.trap_info.valid
+    io.debug_stall := global_stall
+    io.debug_ifetch_stall := ifetch.io.fetch_stall
+    io.debug_lsu_stall := lsu.io.stall_req
     // CSR
     csr.io.valid      := alu.io.csr_valid
     csr.io.cmd        := alu.io.csr_cmd

@@ -10,6 +10,7 @@ class CLINT(params: TLParams) extends Module {
         val msip = Output(Bool())
         val mtip = Output(Bool())
     })
+    TLBundle.tieoffSlaveCoherence(io.tl)
 
     private val beatBytes = params.dataWidth / 8
 

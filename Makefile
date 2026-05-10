@@ -51,6 +51,7 @@ CLINT32_ELF = $(PAYLOAD_BUILD_DIR)/clint32.elf
 TLERROR_ELF = $(PAYLOAD_BUILD_DIR)/tlerror.elf
 AMO_ELF = $(PAYLOAD_BUILD_DIR)/amo.elf
 HAZARD_ELF = $(PAYLOAD_BUILD_DIR)/hazard.elf
+PERF_ELF = $(PAYLOAD_BUILD_DIR)/perf.elf
 PLIC_ELF = $(PAYLOAD_BUILD_DIR)/plic.elf
 PLIC_S_ELF = $(PAYLOAD_BUILD_DIR)/plic_s.elf
 UART_IRQ_ELF = $(PAYLOAD_BUILD_DIR)/uart_irq.elf
@@ -186,6 +187,10 @@ $(HAZARD_ELF): $(PAYLOAD_SRC_DIR)/hazard.S $(PAYLOAD_LDS)
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
 
+$(PERF_ELF): $(PAYLOAD_SRC_DIR)/perf.S $(PAYLOAD_LDS)
+	@mkdir -p $(PAYLOAD_BUILD_DIR)
+	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
+
 $(PLIC_ELF): $(PAYLOAD_SRC_DIR)/plic.S $(PAYLOAD_LDS)
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
@@ -281,6 +286,9 @@ verilator-run-amo: $(AMO_ELF) $(VSOC_BIN)
 
 verilator-run-hazard: $(HAZARD_ELF) $(VSOC_BIN)
 	./$(VSOC_BIN) --payload hazard HP $(HAZARD_ELF)
+
+verilator-run-perf: $(PERF_ELF) $(VSOC_BIN)
+	ION_PERF=1 ION_MAX_CYCLES=2000000 ./$(VSOC_BIN) --payload perf P $(PERF_ELF)
 
 verilator-run-plic: $(PLIC_ELF) $(VSOC_BIN)
 	./$(VSOC_BIN) --payload plic XP $(PLIC_ELF)

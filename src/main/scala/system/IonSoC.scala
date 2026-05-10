@@ -131,6 +131,10 @@ class IonSoC(
     // Debug ports
     io.debug.pc    := core.io.pc
     io.debug.instr := core.io.debug_instr
+    io.debug.retire := core.io.debug_retire
+    io.debug.stall := core.io.debug_stall
+    io.debug.ifetchStall := core.io.debug_ifetch_stall
+    io.debug.lsuStall := core.io.debug_lsu_stall
 
     // UART TX outputs
     io.uart_tx   := uart.map(_.io.tx_valid).getOrElse(false.B)

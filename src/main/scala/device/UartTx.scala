@@ -14,6 +14,7 @@ class UartTx(params: TLParams) extends Module {
         val tx_byte  = Output(UInt(8.W))
         val irq      = Output(Bool())
     })
+    TLBundle.tieoffSlaveCoherence(io.tl)
 
     private val beatBytes = params.dataWidth / 8
     private val beatOffsetBits = log2Ceil(beatBytes)

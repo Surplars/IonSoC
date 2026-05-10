@@ -28,6 +28,7 @@ trait HasCacheCoreIO { this: Module =>
 
 class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with HasCacheCoreIO {
     val io = IO(new CacheCoreIO(params))
+    TLBundle.tieoffMasterCoherence(io.bus)
 
     val offsetBits = log2Ceil(params.dataWidth / 8) // 64位=8字节 -> 3位
     val indexBits  = log2Ceil(nSets)              // 512行 -> 9位

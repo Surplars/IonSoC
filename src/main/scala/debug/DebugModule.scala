@@ -32,6 +32,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         val csr_wdata = Output(UInt(64.W))
         val cache = new DebugCacheControl
     })
+    TLBundle.tieoffSlaveCoherence(io.tl)
+    TLBundle.tieoffMasterCoherence(io.sba)
 
     private val beatBytes = params.dataWidth / 8
     val dmcontrol = RegInit(0.U(32.W))

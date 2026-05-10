@@ -14,6 +14,7 @@ class TLTransTracker(params: TLParams, maxInFlight: Int = 1) extends Module {
         // TileLink 侧接口
         val tl = new TLBundle(params)
     })
+    TLBundle.tieoffMasterCoherence(io.tl)
 
     // source池，记录哪些source可分配（true=可分配）
     val sourcePool = RegInit(VecInit(Seq.fill(maxInFlight)(true.B)))

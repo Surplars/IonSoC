@@ -7,6 +7,7 @@ import soc.memory.{CacheReq, CacheResp}
 
 class UncachedTileLinkBridge(val params: TLParams) extends Module with HasCacheCoreIO {
     val io = IO(new CacheCoreIO(params))
+    TLBundle.tieoffMasterCoherence(io.bus)
 
     val reqValid = RegInit(false.B)
     val reqReg = Reg(new CacheReq(params.addrWidth, params.dataWidth))

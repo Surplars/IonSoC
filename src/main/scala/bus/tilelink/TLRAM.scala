@@ -7,6 +7,7 @@ class TLRAM(params: TLParams, sizeBytes: Int, base: BigInt = 0) extends Module {
     val io = IO(new Bundle {
         val tl = Flipped(new TLBundle(params))
     })
+    TLBundle.tieoffSlaveCoherence(io.tl)
 
     require(params.dataWidth % 8 == 0, "dataWidth must be byte-aligned")
 

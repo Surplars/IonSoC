@@ -137,6 +137,7 @@ Linker scripts：
 | `ION_TRACE_PC_START/END` | 限制 CPU trace PC 范围 |
 | `ION_TRACE_IRQ=1` | 打印中断状态 |
 | `ION_TRACE_DMI=1` | 打印 DMI/JTAG debug 状态 |
+| `ION_PERF=1` | 打印 cycles、retired、IPC 和 stall 分解 |
 | `ION_TRACE_WAVE=1` | 生成 `simulator/build/wave.vcd`；默认关闭，长仿真不要打开 |
 | `ION_EXPECT_UART` | UART 预期字符串 |
 | `ION_SRAM_BASE/SIZE` | 覆盖 SRAM 地址/大小 |
@@ -145,6 +146,16 @@ Linker scripts：
 | `ION_UART_STDIN=1` | 将 stdin 接入模拟 UART RX |
 | `ION_JTAG_RBB_PORT` | remote-bitbang 端口 |
 | `ION_JTAG_ONLY=1` | JTAG-only 运行模式 |
+
+## 性能 Smoke
+
+`make verilator-run-perf` 会构建 `simulator/payloads/perf.S`，运行一个固定的 load/store/ALU/branch 循环，并启用 `ION_PERF=1`。当前 baseline：
+
+```text
+[perf]: cycles=184985 retired=40981 ipc=0.2215 stall_cycles=148100 stall_pct=80.06 ifetch_stall=148100 ifetch_pct=80.06 lsu_stall=33303 lsu_pct=18.00
+```
+
+这个结果说明现阶段瓶颈主要在取指/cache stall，优化顺序应优先看 I-cache line/refill、阻塞式 cache miss、总线 beat/burst 和前端供给，再考虑超标量。
 
 ## RustSBI Jump Flow
 

@@ -21,6 +21,16 @@ object TLOpcode {
     val Grant         = 4.U(3.W) // (TL-C) 授权
     val GrantData     = 5.U(3.W) // (TL-C) 授权带数据
     val ReleaseAck    = 6.U(3.W) // (TL-C) 释放确认
+
+    // Channel B (Probe)
+    val ProbeBlock = 6.U(3.W)
+    val ProbePerm  = 7.U(3.W)
+
+    // Channel C (Release / ProbeAck)
+    val ProbeAck      = 4.U(3.W)
+    val ProbeAckData  = 5.U(3.W)
+    val Release       = 6.U(3.W)
+    val ReleaseData   = 7.U(3.W)
 }
 
 case class TLParams(
@@ -85,8 +95,29 @@ class TLBundleE(params: TLParams) extends Bundle {
 class TLBundle(params: TLParams) extends Bundle {
     val a = Decoupled(new TLBundleA(params))          // Request
     val d = Flipped(Decoupled(new TLBundleD(params))) // Response
-    // TL-C
-    // val b = Flipped(Decoupled(new TLBundleB(params))) // Probe
-    // val c = Decoupled(new TLBundleC(params))          // Release
-    // val e = Decoupled(new TLBundleE(params))          // GrantAck
+    val b = Flipped(Decoupled(new TLBundleB(params))) // Probe
+    val c = Decoupled(new TLBundleC(params))          // Release / ProbeAck
+    val e = Decoupled(new TLBundleE(params))          // GrantAck
+}
+
+object TLBundle {
+    // Tie off TL-C coherence channels for a TL-UL-like master. The master never
+    // emits C/E and is always ready to drop probes because current masters do
+    // not hold coherent permissions.
+    def tieoffMasterCoherence(tl: TLBundle): Unit = {
+        tl.b.ready := true.B
+        tl.c.valid := false.B
+        tl.c.bits := 0.U.asTypeOf(tl.c.bits)
+        tl.e.valid := false.B
+        tl.e.bits := 0.U.asTypeOf(tl.e.bits)
+    }
+
+    // Tie off TL-C coherence channels for a TL-UL-like manager. The manager
+    // never sends probes and always consumes unexpected C/E beats.
+    def tieoffSlaveCoherence(tl: TLBundle): Unit = {
+        tl.b.valid := false.B
+        tl.b.bits := 0.U.asTypeOf(tl.b.bits)
+        tl.c.ready := true.B
+        tl.e.ready := true.B
+    }
 }

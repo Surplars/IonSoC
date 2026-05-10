@@ -26,6 +26,7 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
         val meip    = Output(Bool())
         val seip    = Output(Bool())
     })
+    TLBundle.tieoffSlaveCoherence(io.tl)
 
     private val beatBytes = params.dataWidth / 8
     private val beatOffsetBits = log2Ceil(beatBytes)

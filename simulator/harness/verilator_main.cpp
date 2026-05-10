@@ -80,6 +80,7 @@ struct SimOptions
 	bool uart_stdin = false;
 	bool trace_irq = false;
 	bool trace_dmi = false;
+	bool perf_report = false;
 	bool jtag_only = false;
 	int jtag_rbb_port = 0;
 	bool inject_boot_args = false;
@@ -532,6 +533,7 @@ int main(int argc, char **argv, char **env)
 		opts.uart_stdin = env_enabled("ION_UART_STDIN");
 		opts.trace_irq = env_enabled("ION_TRACE_IRQ");
 		opts.trace_dmi = env_enabled("ION_TRACE_DMI");
+		opts.perf_report = env_enabled("ION_PERF");
 		opts.jtag_only = true;
 		opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
 		opts.max_cycles = env_u64("ION_MAX_CYCLES", 0);
@@ -572,6 +574,7 @@ int main(int argc, char **argv, char **env)
 		opts.uart_stdin = env_enabled("ION_UART_STDIN");
 		opts.trace_irq = env_enabled("ION_TRACE_IRQ");
 		opts.trace_dmi = env_enabled("ION_TRACE_DMI");
+		opts.perf_report = env_enabled("ION_PERF");
 		opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
 		opts.max_cycles = env_u64("ION_MAX_CYCLES", 8000000);
 		opts.sram_base = env_u64("ION_SRAM_BASE", FIRMWARE_SRAM_BASE);
@@ -988,6 +991,7 @@ bool run_one_test(const std::string &bin_path,
 	opts.uart_stdin = env_enabled("ION_UART_STDIN");
 	opts.trace_irq = env_enabled("ION_TRACE_IRQ");
 	opts.trace_dmi = env_enabled("ION_TRACE_DMI");
+	opts.perf_report = env_enabled("ION_PERF");
 	opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
 	opts.max_cycles = env_u64("ION_MAX_CYCLES", MAX_SIM_CYCLES);
 	if (test_name == "uart_irq")
@@ -1112,6 +1116,11 @@ bool run_sim(const SimOptions &opts)
 	uint64_t last_mtimecmp = UINT64_MAX;
 	uint8_t last_mtip = 0xff;
 	uint8_t last_dmi_valid = 0;
+	uint64_t perf_cycles = 0;
+	uint64_t perf_retired = 0;
+	uint64_t perf_stall_cycles = 0;
+	uint64_t perf_ifetch_stall_cycles = 0;
+	uint64_t perf_lsu_stall_cycles = 0;
 
 	while (opts.max_cycles == 0 || sim_time < opts.max_cycles)
 	{
@@ -1133,6 +1142,14 @@ bool run_sim(const SimOptions &opts)
 						   (dut->rootp->SimTop__DOT__clint__DOT__mtime >= dut->rootp->SimTop__DOT__clint__DOT__mtimecmp);
 		bool trace_state_change = cur_mtip != last_mtip || cur_mtimecmp != last_mtimecmp;
 		uint64_t pc_now = dut->io_debug_pc;
+		if (dut->clock)
+		{
+			perf_cycles++;
+			perf_retired += dut->io_debug_retire ? 1 : 0;
+			perf_stall_cycles += dut->io_debug_stall ? 1 : 0;
+			perf_ifetch_stall_cycles += dut->io_debug_ifetchStall ? 1 : 0;
+			perf_lsu_stall_cycles += dut->io_debug_lsuStall ? 1 : 0;
+		}
 
 		if (trace_boot && dut->clock)
 		{
@@ -1315,6 +1332,23 @@ bool run_sim(const SimOptions &opts)
 
 	bool uart_pass = opts.expected_uart.empty() || (uart.output().find(opts.expected_uart) != std::string::npos);
 	bool pass = opts.jtag_only ? true : (saw_exit && a7 == 93 && a0 == 0 && uart_pass);
+	if (opts.perf_report)
+	{
+		double ipc = perf_cycles == 0 ? 0.0 : (double)perf_retired / (double)perf_cycles;
+		double stall_pct = perf_cycles == 0 ? 0.0 : (100.0 * (double)perf_stall_cycles / (double)perf_cycles);
+		double ifetch_pct = perf_cycles == 0 ? 0.0 : (100.0 * (double)perf_ifetch_stall_cycles / (double)perf_cycles);
+		double lsu_pct = perf_cycles == 0 ? 0.0 : (100.0 * (double)perf_lsu_stall_cycles / (double)perf_cycles);
+		printf("[perf]: cycles=%" PRIu64 " retired=%" PRIu64 " ipc=%.4f stall_cycles=%" PRIu64 " stall_pct=%.2f ifetch_stall=%" PRIu64 " ifetch_pct=%.2f lsu_stall=%" PRIu64 " lsu_pct=%.2f\n",
+		       perf_cycles,
+		       perf_retired,
+		       ipc,
+		       perf_stall_cycles,
+		       stall_pct,
+		       perf_ifetch_stall_cycles,
+		       ifetch_pct,
+		       perf_lsu_stall_cycles,
+		       lsu_pct);
+	}
 
 	if (opts.jtag_only)
 		printf("[%s]: JTAG server active on port %d%s\n", opts.test_name.c_str(), opts.jtag_rbb_port, CEND);

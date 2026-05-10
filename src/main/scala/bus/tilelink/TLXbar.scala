@@ -112,6 +112,16 @@ class TLXbar(params: TLParams, nMasters: Int, nSlaves: Int, addrMap: Seq[UInt =>
             io.slaves(s).d.ready := MuxCase(false.B, readyCases)
         }
     }
+
+    // First TL-C migration step: keep this crossbar functionally TL-UL while
+    // exposing all five channels. Coherent managers/clients can replace these
+    // tie-offs with Probe/Release/GrantAck routing in a later step.
+    for (m <- 0 until nMasters) {
+        TLBundle.tieoffSlaveCoherence(io.masters(m))
+    }
+    for (s <- 0 until nSlaves) {
+        TLBundle.tieoffMasterCoherence(io.slaves(s))
+    }
 }
 
 class TLSystemXbar(params: TLParams, nMasters: Int = 2) extends Module {

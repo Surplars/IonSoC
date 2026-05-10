@@ -5,6 +5,10 @@ import chisel3._
 class DebugIO extends Bundle {
     val pc = Output(UInt(64.W))
     val instr = Output(UInt(32.W))
+    val retire = Output(Bool())
+    val stall = Output(Bool())
+    val ifetchStall = Output(Bool())
+    val lsuStall = Output(Bool())
 }
 
 class DebugCacheControl extends Bundle {
