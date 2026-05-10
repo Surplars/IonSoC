@@ -73,10 +73,11 @@ make test-core-fast
 make test-core-mem
 ```
 
-设备测试已经拆成独立 spec：`CLINTSpec`、`TLDeviceSpec`、`UartSpec`、`DebugModuleSpec` 和 `PLICSpec`。改单个外设时优先跑对应 Make target，或直接运行单个 spec：
+设备测试已经拆成独立 spec：`CLINTSpec`、`TLDeviceSpec`、`UartSpec` 和 `PLICSpec`。Debug 相关测试在 `src/test/scala/debug`。改单个外设时优先跑对应 Make target，或直接运行单个 spec：
 
 ```bash
 mill -i IonSoC.test.testOnly device.UartSpec
+mill -i IonSoC.test.testOnly debug.DebugModuleSpec
 ```
 
 顶层 SoC/JTAG/debug halt 属于慢测，放在：
@@ -228,7 +229,7 @@ openocd -f openocd/ionsoc-rbb.cfg
 make openocd-smoke
 ```
 
-该目标启动 Verilator remote-bitbang，验证 TAP IDCODE、OpenOCD examine、halt/resume，以及通过直接 DMI 操作 `sbcs/sbaddress/sbdata` 做一次 SBA SRAM 写读。直接 DMI smoke 避开了 OpenOCD 高层 memory helper 的 program-buffer/fence fallback，适合当前 DM 子集。
+该目标启动 Verilator remote-bitbang，验证 TAP IDCODE、OpenOCD examine、halt/resume，以及通过直接 DMI 操作 `sbcs/sbaddress/sbdata` 做一次 SBA SRAM 写读。smoke 同时确认 OpenOCD 能看到 `progbufsize=2`，并覆盖其 fence/postexec 探测路径。
 
 当前 JTAG TAP 是同步到 SoC clock 的第一阶段实现，通过 TCK edge detect 驱动 TAP FSM。生产级设计应替换为真实 TCK clock domain + CDC。
 
@@ -241,7 +242,8 @@ Debug Module 当前支持：
 - `abstractauto`
 - `command`
 - `data0/data1`
-- `progbuf0` 只读 0
+- `progbuf0/progbuf1` backing register
+- 安全 postexec 子集解释：`nop`、`fence`、`fence.i`、`ebreak`
 - `haltsum0`
 - `sbcs/sbaddress0/sbaddress1/sbdata0/sbdata1`
 - halt/resume request
@@ -254,7 +256,7 @@ Debug Module 当前支持：
 
 限制：
 
-- 不完整支持 program buffer。
+- program buffer 当前是 DM 内部安全解释子集，不是真实 hart 指令执行入口。`abstractcs.progbufsize=2` 仅承诺 `nop/fence/fence.i/ebreak` postexec 探测可用；load/store 等 helper 序列会返回 `cmderr`，避免误改 architectural state。
 - SBA 尚未实现 autoexec、跨 beat 访问和 cache 一致性处理。
 - OpenOCD 高级功能可能仍会触发 unsupported command。
 - 若 simulator 被 kill，OpenOCD 可能卡在 remote_bitbang socket 状态，需要单独终止 OpenOCD 进程。

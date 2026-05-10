@@ -1,7 +1,8 @@
-package device
+package debug
 
 import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
+import device.TileLinkDeviceTestUtils
 import org.scalatest.funsuite.AnyFunSuite
 import soc.bus.tilelink.{TLParams, TLRAM}
 import soc.debug.{DebugModule, DebugModuleMap}
@@ -122,6 +123,19 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
         dut.clock.step()
     }
 
+    private def clearCmderr(dut: DebugModule): Unit =
+        debugWrite(dut, DebugModuleMap.AbstractCS * 4, BigInt("00000700", 16))
+
+    private def accessRegCommand(regno: BigInt, write: Boolean = false, postexec: Boolean = false): BigInt =
+        BigInt("00300000", 16) |
+            (if (postexec) BigInt(1) << 18 else BigInt(0)) |
+            (BigInt(1) << 17) |
+            (if (write) BigInt(1) << 16 else BigInt(0)) |
+            regno
+
+    private def postexecOnlyCommand: BigInt =
+        BigInt("00300000", 16) | (BigInt(1) << 18)
+
     test("DebugModule supports halt control and abstract GPR/CSR access") {
         simulate(new DebugModule(deviceParams)) { dut =>
             init(dut)
@@ -142,7 +156,10 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
             dut.clock.step()
             assert(debugRead(dut, DebugModuleMap.HaltSum0 * 4) == BigInt(1))
             assert(debugRead(dut, DebugModuleMap.AbstractAuto * 4) == BigInt(0))
-            assert(debugRead(dut, DebugModuleMap.ProgBuf0 * 4) == BigInt(0))
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 24) & 0x1f) == BigInt(2))
+            debugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("00100073", 16)) // ebreak
+            assert(debugRead(dut, DebugModuleMap.ProgBuf0 * 4) == BigInt("00100073", 16))
+            assert(debugRead(dut, DebugModuleMap.ProgBuf1 * 4) == BigInt(0))
             assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt(0))
 
             debugWrite(dut, DebugModuleMap.Command * 4, BigInt("003207b1", 16))
@@ -180,8 +197,45 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
             dut.io.csr_valid.poke(false.B)
             debugWrite(dut, DebugModuleMap.Command * 4, BigInt("00320c22", 16))
             assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 2)
-            debugWrite(dut, DebugModuleMap.AbstractCS * 4, BigInt("00000700", 16))
+            clearCmderr(dut)
             assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 0)
+        }
+    }
+
+    test("DebugModule interprets a safe progbuf postexec subset") {
+        simulate(new DebugModule(deviceParams)) { dut =>
+            init(dut)
+            dut.io.hart_halted.poke(true.B)
+            dut.io.gpr_rdata.poke("h123456789abcdef0".U)
+
+            debugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("0000100f", 16)) // fence.i
+            debugWrite(dut, DebugModuleMap.ProgBuf1 * 4, BigInt("00100073", 16)) // ebreak
+            debugWrite(dut, DebugModuleMap.Command * 4, postexecOnlyCommand)
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 0)
+
+            debugWrite(dut, DebugModuleMap.Command * 4, accessRegCommand(BigInt("1005", 16), postexec = true))
+            assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt("9abcdef0", 16))
+            assert(debugRead(dut, DebugModuleMap.Data1 * 4) == BigInt("12345678", 16))
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 0)
+
+            debugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("0330000f", 16)) // fence rw,rw
+            debugWrite(dut, DebugModuleMap.ProgBuf1 * 4, BigInt("00100073", 16))
+            debugWrite(dut, DebugModuleMap.Command * 4, postexecOnlyCommand)
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 0)
+
+            debugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("00000013", 16)) // nop, no terminating ebreak
+            debugWrite(dut, DebugModuleMap.ProgBuf1 * 4, BigInt("00000013", 16))
+            debugWrite(dut, DebugModuleMap.Command * 4, accessRegCommand(BigInt("1005", 16), postexec = true))
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 2)
+            clearCmderr(dut)
+
+            debugWrite(dut, DebugModuleMap.Data0 * 4, BigInt("feedface", 16))
+            debugWrite(dut, DebugModuleMap.Data1 * 4, BigInt("01234567", 16))
+            debugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("00002003", 16)) // lw x0,0(x0), unsupported
+            debugWrite(dut, DebugModuleMap.ProgBuf1 * 4, BigInt("00100073", 16))
+            debugWrite(dut, DebugModuleMap.Command * 4, accessRegCommand(BigInt("1005", 16), write = true, postexec = true))
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 2)
+            dut.io.gpr_write.expect(false.B)
         }
     }
 

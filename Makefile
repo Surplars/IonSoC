@@ -79,8 +79,8 @@ SCALA_BUS_TESTS = bus.TLXbarSpec
 SCALA_CLINT_TESTS = device.CLINTSpec
 SCALA_UART_TESTS = device.UartSpec
 SCALA_PLIC_TESTS = device.PLICSpec
-SCALA_DEBUG_TESTS = device.DebugModuleSpec debug.JtagTapSpec
-SCALA_DEVICE_TESTS = $(SCALA_CLINT_TESTS) device.TLDeviceSpec $(SCALA_UART_TESTS) device.DebugModuleSpec $(SCALA_PLIC_TESTS)
+SCALA_DEBUG_TESTS = debug.DebugModuleSpec debug.JtagTapSpec
+SCALA_DEVICE_TESTS = $(SCALA_CLINT_TESTS) device.TLDeviceSpec $(SCALA_UART_TESTS) $(SCALA_PLIC_TESTS)
 SCALA_CACHE_TESTS = memory.L1CacheSpec
 SCALA_CORE_FAST_TESTS = core.CSRFileSpec core.InstrFetchSpec core.InstrDecodeSpec core.ALUSpec core.StoreBufferSpec
 SCALA_CORE_MEM_TESTS = core.LSUSpec
@@ -264,6 +264,7 @@ openocd-smoke: payload $(VSOC_BIN)
 	kill $$sim_pid >/dev/null 2>&1 || true; \
 	trap - EXIT; \
 	grep -q "ION_OPENOCD_SBA_OK" $$log; \
+	! grep -q "Unexpected error during fence" $$log; \
 	echo "OpenOCD smoke passed. Logs: $$log $$simlog"
 
 verilator-run-timer: $(TIMER_ELF) $(VSOC_BIN)

@@ -4,24 +4,6 @@ import chisel3._
 import chisel3.util._
 import soc.bus.tilelink._
 
-object DebugModuleMap {
-    val DMControl  = 0x10
-    val DMStatus   = 0x11
-    val HartInfo   = 0x12
-    val AbstractCS = 0x16
-    val Command    = 0x17
-    val AbstractAuto = 0x18
-    val Data0      = 0x04
-    val Data1      = 0x05
-    val ProgBuf0   = 0x20
-    val HaltSum0   = 0x40
-    val SBCS       = 0x38
-    val SBAddress0 = 0x39
-    val SBAddress1 = 0x3a
-    val SBData0    = 0x3c
-    val SBData1    = 0x3d
-}
-
 class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Module {
     val io = IO(new Bundle {
         val tl = Flipped(new TLBundle(params))
@@ -81,10 +63,18 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         dpc := io.hart_pc
     }
 
-    private val abstractcs = Cat(0.U(3.W), 0.U(5.W), 0.U(11.W), false.B, 0.U(1.W), cmderr, 0.U(4.W), 2.U(4.W))
+    private val progbuf = RegInit(VecInit(Seq.fill(DebugModuleConstants.BackingProgBufWords)(0.U(32.W))))
+    private val abstractcs = Cat(
+        DebugModuleConstants.AdvertisedProgBufWords.U(5.W),
+        0.U(11.W),
+        false.B,
+        0.U(1.W),
+        cmderr,
+        0.U(4.W),
+        2.U(4.W)
+    )
     private val hartinfo = Cat(0.U(8.W), 1.U(4.W), 0.U(4.W), 0.U(3.W), 0.U(1.W), 0.U(4.W), 0.U(4.W), 0.U(4.W))
     private val abstractauto = 0.U(32.W)
-    private val progbuf0 = 0.U(32.W)
     val (sbaIdle :: sbaReq :: sbaWait :: Nil) = Enum(3)
     val sbaState = RegInit(sbaIdle)
     val sbaIsWrite = RegInit(false.B)
@@ -164,7 +154,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
                 DebugModuleMap.Command.U    -> command,
                 DebugModuleMap.Data0.U      -> data0,
                 DebugModuleMap.Data1.U      -> data1,
-                DebugModuleMap.ProgBuf0.U   -> progbuf0,
+                DebugModuleMap.ProgBuf0.U   -> progbuf(0),
+                DebugModuleMap.ProgBuf1.U   -> progbuf(1),
                 DebugModuleMap.HaltSum0.U   -> Mux(io.hart_halted, 1.U(32.W), 0.U(32.W)),
                 DebugModuleMap.SBCS.U       -> sbcs,
                 DebugModuleMap.SBAddress0.U -> sbAddress(31, 0),
@@ -179,6 +170,7 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     def commandIsAccessReg(cmd: UInt): Bool = cmd(31, 24) === 0.U
     def commandTransfer(cmd: UInt): Bool = cmd(17)
     def commandWrite(cmd: UInt): Bool = cmd(16)
+    def commandPostexec(cmd: UInt): Bool = cmd(18)
     def commandAarSize(cmd: UInt): UInt = cmd(22, 20)
     def commandSize32(cmd: UInt): Bool = commandAarSize(cmd) === 2.U
     def commandSize64(cmd: UInt): Bool = commandAarSize(cmd) === 3.U
@@ -190,6 +182,20 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     def commandCoreCsr(cmd: UInt): Bool = commandCsr(cmd) && !commandDebugCsr(cmd)
     def commandGpr(cmd: UInt): Bool = commandRegNo(cmd) >= "h1000".U && commandRegNo(cmd) < "h1020".U
     def commandGprAddr(cmd: UInt): UInt = commandRegNo(cmd)(4, 0)
+    def progbufIsEbreak(instr: UInt): Bool = instr === "h00100073".U
+    def progbufIsNop(instr: UInt): Bool = instr === "h00000013".U
+    def progbufIsFence(instr: UInt): Bool = instr(6, 0) === "b0001111".U && instr(14, 12) === "b000".U
+    def progbufIsFenceI(instr: UInt): Bool = instr === "h0000100f".U
+    def progbufSafeNonTerminating(instr: UInt): Bool = progbufIsNop(instr) || progbufIsFence(instr) || progbufIsFenceI(instr)
+    val progbuf0Ends = progbufIsEbreak(progbuf(0))
+    val progbuf1Ends = !progbuf0Ends && progbufIsEbreak(progbuf(1))
+    // Interpreter subset for the advertised backing program buffer. This keeps
+    // OpenOCD fence/postexec flows working without pretending to execute
+    // arbitrary load/store helper snippets on the hart.
+    val progbufInterpretable =
+        (progbufIsEbreak(progbuf(0)) || progbufSafeNonTerminating(progbuf(0))) &&
+            Mux(progbuf0Ends, true.B, progbufIsEbreak(progbuf(1)) || progbufSafeNonTerminating(progbuf(1))) &&
+            (progbuf0Ends || progbuf1Ends)
 
     private val HartselMask = "h03ffffc0".U(32.W)
     private def legalizeDmcontrol(data: UInt): UInt = data & ~HartselMask
@@ -214,6 +220,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     private def executeCommand(cmd: UInt): Unit = {
         command := cmd
         val supportedReg = commandGpr(cmd) || commandCsr(cmd)
+        val postexecOnly = commandPostexec(cmd) && !commandTransfer(cmd)
+        val postexecOk = !commandPostexec(cmd) || progbufInterpretable
         val writeData = Mux(commandSize32(cmd), Cat(0.U(32.W), data0), Cat(data1, data0))
         val readData = Wire(UInt(64.W))
         readData := MuxLookup(commandRegNo(cmd), io.csr_rdata)(
@@ -225,7 +233,11 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         )
         when(cmderr =/= 0.U) {
             ()
-        }.elsewhen(!io.hart_halted || !commandIsAccessReg(cmd) || !commandTransfer(cmd) || !supportedReg || !commandSupportedSize(cmd)) {
+        }.elsewhen(!io.hart_halted || !commandIsAccessReg(cmd) || !commandSupportedSize(cmd) || !postexecOk) {
+            cmderr := 2.U
+        }.elsewhen(postexecOnly) {
+            cmderr := 0.U
+        }.elsewhen(!commandTransfer(cmd) || !supportedReg) {
             cmderr := 2.U
         }.elsewhen(commandCoreCsr(cmd) && (!io.csr_valid || (commandWrite(cmd) && !io.csr_writable))) {
             cmderr := 2.U
@@ -272,6 +284,10 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
             data1 := data
         }.elsewhen(addr === DebugModuleMap.AbstractCS.U) {
             cmderr := cmderr & ~data(10, 8)
+        }.elsewhen(addr === DebugModuleMap.ProgBuf0.U) {
+            progbuf(0) := data
+        }.elsewhen(addr === DebugModuleMap.ProgBuf1.U) {
+            progbuf(1) := data
         }.elsewhen(addr === DebugModuleMap.SBCS.U) {
             when(data(22)) { sbBusyError := false.B }
             when(data(14, 12).orR) { sbError := 0.U }
