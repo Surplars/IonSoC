@@ -486,7 +486,7 @@ class LSU(XLEN: Int = 64) extends Module {
     val stall_sb_full          = is_store && !mem_addr_exception && !access_fault && !storeBuffer.io.enq_ready
     val stall_wait_store_drain = raw_cache_load && storeDrainPending
     val stall_wait_atomic_store_drain = raw_atomic_req && (sb_has_data || storeDrainPending)
-    val stall_wait_cache_load  = new_cache_load || cacheLoadPending || stall_wait_store_drain
+    val stall_wait_cache_load  = new_cache_load || (cacheLoadPending && !completing_cache_load) || stall_wait_store_drain
     val stall_wait_mmio        = new_mmio_req || mmioPending
     val stall_wait_atomic      = new_atomic_req || atomicPending
     val stall_wait_fence       = raw_fence_req || fencePending
@@ -521,6 +521,24 @@ class LSU(XLEN: Int = 64) extends Module {
             Mux(is_mmio_load_resp, formatLoadData(io.mmio.resp_data, mmioAccess), Mux(is_atomic_resp, atomicRespData, 0.U))
         )
     )
+    val loadWbSlotValid = RegInit(false.B)
+    val loadWbSlotRd = RegInit(0.U(5.W))
+    val loadWbSlotRegWrite = RegInit(false.B)
+    val loadWbSlotData = RegInit(0.U(XLEN.W))
+    val loadWbSlotPc = RegInit(0.U(XLEN.W))
+
+    // Cache-load responses arrive while the load is still holding LSU input.
+    // Capture the completion so the stall can release immediately, while WB
+    // and retire observe a stable one-cycle response on the next cycle.
+    when(loadWbSlotValid) {
+        loadWbSlotValid := false.B
+    }.elsewhen(is_load_resp && !is_cache_resp_err) {
+        loadWbSlotValid := true.B
+        loadWbSlotRd := cacheLoadRd
+        loadWbSlotRegWrite := cacheLoadRegWrite
+        loadWbSlotData := formatLoadData(io.dcache.resp.bits.rdata, cacheLoadAccess)
+        loadWbSlotPc := cacheLoadPc
+    }
     val stall_valid      = RegInit(false.B)
     val stall_wb_data    = RegInit(0.U(XLEN.W))
     val stall_load_valid = RegInit(false.B)
@@ -597,7 +615,8 @@ class LSU(XLEN: Int = 64) extends Module {
         Mux(is_mmio_load_resp, mmioRegWrite, Mux(is_atomic_resp, atomicRegWrite, io.alu_out.reg_write))
     )
     val out_reg_rd    = RegNext(response_rd, 0.U)
-    val out_reg_write = RegNext(response_reg_write && writeback_en, false.B)
+    val normalLoadDataValid = load_data_valid && !is_load_resp
+    val out_reg_write = RegNext(response_reg_write && writeback_en && !is_load_resp, false.B)
     val out_result    = RegNext(wb_data, 0.U)
     // val out_result    = RegNext(Mux(load_data_valid, load_data, wb_data), 0.U)
     val final_trap_info = WireInit(trap_info)
@@ -627,15 +646,16 @@ class LSU(XLEN: Int = 64) extends Module {
     val out_trap      = RegEnable(final_trap_info, 0.U.asTypeOf(io.trap_info_in), update_en)
     val out_pc        = RegEnable(io.pc_in, 0.U, update_en)
 
-    io.valid_out         := RegNext((valid_inst && writeback_en || load_data_valid) && !final_trap_info.valid, false.B)
-    io.mem_out.rd        := Mux(load_data_valid, response_rd, out_reg_rd)
-    io.mem_out.reg_write := Mux(load_data_valid, response_reg_write, out_reg_write)
-    io.mem_out.result    := Mux(load_data_valid, load_data, out_result)
-    io.pc_out            := out_pc
+    val normalValidOut = RegNext((valid_inst && writeback_en && !is_load_resp || normalLoadDataValid) && !final_trap_info.valid, false.B)
+    io.valid_out         := loadWbSlotValid || normalValidOut
+    io.mem_out.rd        := Mux(loadWbSlotValid, loadWbSlotRd, Mux(normalLoadDataValid, response_rd, out_reg_rd))
+    io.mem_out.reg_write := Mux(loadWbSlotValid, loadWbSlotRegWrite, Mux(normalLoadDataValid, response_reg_write, out_reg_write))
+    io.mem_out.result    := Mux(loadWbSlotValid, loadWbSlotData, Mux(normalLoadDataValid, load_data, out_result))
+    io.pc_out            := Mux(loadWbSlotValid, loadWbSlotPc, out_pc)
     io.trap_info_out     := out_trap
 
-    io.load_data_valid := load_data_valid || (!io.stall_req && stall_valid && stall_load_valid)
-    io.load_data       := Mux(!io.stall_req && stall_valid && stall_load_valid, stall_wb_data, load_data)
+    io.load_data_valid := loadWbSlotValid || load_data_valid || (!io.stall_req && stall_valid && stall_load_valid)
+    io.load_data       := Mux(loadWbSlotValid, loadWbSlotData, Mux(!io.stall_req && stall_valid && stall_load_valid, stall_wb_data, load_data))
 
     dontTouch(io.mem_cfg)
 }

@@ -198,6 +198,42 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("LSU releases cache load stall on response and retires the load once") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.alu_out.rd.poke(5.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, BigInt("10000018", 16))
+            dut.clock.step()
+
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(BigInt("1122334455667788", 16).U)
+            dut.io.stall_req.expect(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.valid_out.expect(false.B)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(false.B)
+            // The upstream ALU register is still presenting the completed load
+            // until the just-released pipeline advances. LSU must retire the
+            // load from its completion slot, not by accepting it again.
+            driveLoad(dut, BigInt("10000018", 16))
+            dut.io.valid_out.expect(true.B)
+            dut.io.mem_out.rd.expect(5.U)
+            dut.io.mem_out.reg_write.expect(true.B)
+            dut.io.mem_out.result.expect(BigInt("1122334455667788", 16).U)
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.clock.step()
+
+            driveNoMem(dut)
+            dut.io.valid_out.expect(false.B)
+        }
+    }
+
     test("LSU holds cache loads behind an outstanding store drain") {
         simulate(new LSU(64)) { dut =>
             init(dut)

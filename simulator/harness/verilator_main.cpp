@@ -1260,7 +1260,7 @@ bool run_sim(const SimOptions &opts)
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_pc_out_r,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__op1,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__op2,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_valid_out_REG,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_valid_out,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_reg_rd,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_reg_write,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_result,
