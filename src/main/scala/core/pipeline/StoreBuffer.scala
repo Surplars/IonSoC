@@ -50,11 +50,13 @@ class StoreBuffer(val entries: Int, val AW: Int, val DW: Int) extends Module {
 
     def ptrNext(ptr: UInt): UInt = Mux(ptr === (entries - 1).U, 0.U, ptr + 1.U)
 
-    io.enq_ready := count < entries.U
     io.deq_valid := count > 0.U
 
-    val enq_fire = io.enq_valid && io.enq_ready
     val deq_fire = io.deq_valid && io.deq_ready
+    // When the FIFO is full but the oldest store drains this cycle, the freed
+    // slot can accept a new store without adding a pipeline bubble.
+    io.enq_ready := count < entries.U || deq_fire
+    val enq_fire = io.enq_valid && io.enq_ready
 
     when(enq_fire) {
         buffer(tail).valid := true.B
