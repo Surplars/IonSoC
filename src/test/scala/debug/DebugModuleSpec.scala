@@ -182,6 +182,7 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
             assert((debugRead(dut, DebugModuleMap.DMStatus * 4) & 0xf) == 2)
             assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 7) & 0x1) == 0x1)
             assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 10) & 0x3) == 0x3)
+            assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 18) & 0x3) == 0x3)
             assert(debugRead(dut, DebugModuleMap.HartInfo * 4) != BigInt(0))
             assert((debugRead(dut, DebugModuleMap.SBCS * 4) & BigInt("f", 16)) == BigInt("f", 16))
 
@@ -190,12 +191,19 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
             assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 8) & 0x3) == 0x3)
             dut.clock.step()
             assert(debugRead(dut, DebugModuleMap.HaltSum0 * 4) == BigInt(1))
+            debugWrite(dut, DebugModuleMap.DMControl * 4, BigInt("10000001", 16))
+            assert(debugRead(dut, DebugModuleMap.DMControl * 4) == BigInt("00000001", 16))
+            assert(((debugRead(dut, DebugModuleMap.DMStatus * 4) >> 18) & 0x3) == 0)
             assert(debugRead(dut, DebugModuleMap.AbstractAuto * 4) == BigInt(0))
             assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 24) & 0x1f) == BigInt(2))
             debugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("00100073", 16)) // ebreak
             assert(debugRead(dut, DebugModuleMap.ProgBuf0 * 4) == BigInt("00100073", 16))
             assert(debugRead(dut, DebugModuleMap.ProgBuf1 * 4) == BigInt(0))
             assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt(0))
+
+            debugWrite(dut, DebugModuleMap.Command * 4, BigInt("003207b0", 16))
+            assert(((debugRead(dut, DebugModuleMap.Data0 * 4) >> 6) & 0x7) == 3)
+            assert(debugRead(dut, DebugModuleMap.Data1 * 4) == BigInt(0))
 
             debugWrite(dut, DebugModuleMap.Command * 4, BigInt("003207b1", 16))
             assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt("80000044", 16))

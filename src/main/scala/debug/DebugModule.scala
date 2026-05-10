@@ -49,6 +49,7 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     val dpc = RegInit(0.U(64.W))
     val dscratch0 = RegInit(0.U(64.W))
     val resumeAck = RegInit(false.B)
+    val hartHaveReset = RegInit(true.B)
     val hartHaltedPrev = RegNext(io.hart_halted, false.B)
     val sbAddress = RegInit(0.U(64.W))
     val sbData = RegInit(0.U(64.W))
@@ -66,6 +67,7 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
 
     when(io.hart_halted && !hartHaltedPrev) {
         dpc := io.hart_pc
+        dcsr := (dcsr & ~("h000001c0".U(32.W))) | (3.U(32.W) << 6) // cause=haltreq
     }
     when(io.cache.dcacheAck) {
         dcacheDone := true.B
@@ -180,7 +182,9 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
             statusBit(14, !hartSelected) |
             statusBit(15, !hartSelected) |
             statusBit(16, hartSelected && resumeAck) |
-            statusBit(17, hartSelected && resumeAck)
+            statusBit(17, hartSelected && resumeAck) |
+            statusBit(18, hartSelected && hartHaveReset) |
+            statusBit(19, hartSelected && hartHaveReset)
 
     private def readReg(addr: UInt): UInt = {
         val ionCacheCtl =
@@ -246,7 +250,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     }
 
     private val HartselMask = "h03ffffc0".U(32.W)
-    private def legalizeDmcontrol(data: UInt): UInt = data & ~HartselMask
+    private val DmcontrolWriteOnePulseMask = ((BigInt(1) << 28) | (BigInt(1) << 30)).U(32.W)
+    private def legalizeDmcontrol(data: UInt): UInt = data & ~HartselMask & ~DmcontrolWriteOnePulseMask
 
     val tlCommandWrite = WireDefault(false.B)
     val tlCommandData = WireDefault(0.U(32.W))
@@ -271,14 +276,15 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         val postexecOnly = commandPostexec(cmd) && !commandTransfer(cmd)
         val postexecOk = !commandPostexec(cmd) || progbufInterpretable(prog0Value, prog1Value)
         val writeData = Mux(commandSize32(cmd), Cat(0.U(32.W), data0Value), Cat(data1Value, data0Value))
-        val readData = Wire(UInt(64.W))
-        readData := MuxLookup(commandRegNo(cmd), io.csr_rdata)(
+        val readData64 = Wire(UInt(64.W))
+        readData64 := MuxLookup(commandRegNo(cmd), io.csr_rdata)(
             Seq(
                 "h7b0".U -> Cat(0.U(32.W), dcsr),
                 "h7b1".U -> dpc,
                 "h7b2".U -> dscratch0
             )
         )
+        val readData = Mux(commandSize32(cmd), Cat(0.U(32.W), readData64(31, 0)), readData64)
         when(cmderr =/= 0.U) {
             ()
         }.elsewhen(!io.hart_halted || !commandIsAccessReg(cmd) || !commandSupportedSize(cmd) || !postexecOk) {
@@ -329,11 +335,14 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     private def writeReg(addr: UInt, data: UInt): Unit = {
         when(addr === DebugModuleMap.DMControl.U) {
             val legal = legalizeDmcontrol(data)
-            dmcontrol := Mux(legal(30), legal & ~(1.U(32.W) << 31), legal)
-            when(legal(31)) {
+            dmcontrol := Mux(data(30), legal & ~(1.U(32.W) << 31), legal)
+            when(data(31)) {
                 resumeAck := false.B
-            }.elsewhen(legal(30) && legal(0) && hartSelected) {
+            }.elsewhen(data(30) && data(0) && hartSelected) {
                 resumeAck := true.B
+            }
+            when(data(28) && data(0) && hartSelected) {
+                hartHaveReset := false.B
             }
         }.elsewhen(addr === DebugModuleMap.Data0.U) {
             data0 := data
