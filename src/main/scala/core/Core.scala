@@ -26,6 +26,7 @@ class Core(
     private val tlParams = TLParams()
     private val hasICache = features.iCache
     private val hasDCache = features.dCache
+    private val hasFrontendQueue = features.frontendQueueEntries > 0
     private val nMasters = 2 + (if (hasICache) 1 else 0) // dcache, tracker, optional icache
     private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + log2Ceil(nMasters))
 
@@ -75,10 +76,14 @@ class Core(
         val debug_cache = Flipped(new DebugCacheControl)
     })
 
-    val dcache: HasCacheCoreIO = if (hasDCache) Module(new L1Cache(tlParams, 256)) else Module(new UncachedTileLinkBridge(tlParams))
+    val dcache: HasCacheCoreIO = if (hasDCache) {
+        Module(new L1Cache(tlParams, features.dCacheSets))
+    } else {
+        Module(new UncachedTileLinkBridge(tlParams))
+    }
     val tracker = Module(new TLTransTracker(tlParams, maxInFlight = 1 << tlParams.sourceBits))
     val dbusXbar = Module(new TLSystemXbar(tlParams, nMasters))
-    val icache = if (hasICache) Some(Module(new L1Cache(tlParams, 256))) else None
+    val icache = if (hasICache) Some(Module(new L1Cache(tlParams, features.iCacheSets))) else None
 
     val pc       = Module(new PC(XLEN, soc.config.Config.resetVector))
     val register = Module(new RegisterFile(XLEN))
@@ -283,7 +288,12 @@ class Core(
     io.debug_halted := debugHalted
 
     val debugCacheHold = debugDcachePending || debugIcachePending
-    global_stall := pipe_stall || decodeUsesPending || ifetch.io.fetch_stall || fenceIHold || debugHalted || debugCacheHold
+    val frontend_flush    = Wire(Bool())
+    val ifetchQueueReady  = Wire(Bool())
+    val decodeInputValid  = Wire(Bool())
+    val frontendQueueFlush = Wire(Bool())
+    val frontendStarved   = !decodeInputValid && ifetch.io.fetch_stall
+    global_stall := pipe_stall || decodeUsesPending || frontendStarved || fenceIHold || debugHalted || debugCacheHold
 
     // Interrupt inputs. Supervisor-level lines are reserved for the future
     // S-mode trap path and can be tied off by the SoC until a controller exists.
@@ -321,13 +331,13 @@ class Core(
         }
 	    val combined_trap     = has_pipeline_trap || interrupt_fire
 	    val redirect_flush    = combined_trap || ret_redirect
-        val frontend_flush    = redirect_flush || fenceIActive || debugIcachePending
+        frontend_flush         := redirect_flush || fenceIActive || debugIcachePending
         val pipeline_flush    = frontend_flush
 
     // pc
     io.pc            := pc.io.pc_out
     io.fetch_en      := pc.io.fetch_en
-    pc.io.stall      := global_stall
+    pc.io.stall      := ifetch.io.fetch_stall || !ifetchQueueReady || fenceIHold || debugHalted || debugCacheHold
 	    pc.io.trap_valid := combined_trap
     pc.io.trap_pc    := Mux(has_pipeline_trap, csr.io.tvec_out, interruptTarget)
     pc.io.trap_ret   := ret_redirect
@@ -343,6 +353,7 @@ class Core(
         pcBrInfo.redirect := true.B
     }
     pc.io.br_info <> pcBrInfo
+    frontendQueueFlush := frontend_flush || pc.io.redirect
     // register
     register.io.rs1_addr   := idecode.io.reg_rd_rs1
     register.io.rs2_addr   := idecode.io.reg_rd_rs2
@@ -402,7 +413,7 @@ class Core(
     csr.io.perf.branchPredTaken := alu.io.br_info.valid && alu.io.pred_taken_in
     csr.io.perf.branchPredCorrect := alu.io.br_info.valid && alu.io.pred_taken_in && alu.io.br_info.taken && !alu.io.br_info.redirect
     // ifetch
-    ifetch.io.stall         := pipe_stall || decodeUsesPending || debugDcachePending || (debugHalted && !debugIcachePending)
+    ifetch.io.stall         := !ifetchQueueReady || debugDcachePending || (debugHalted && !debugIcachePending)
     ifetch.io.pc            := pc.io.pc_out
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken
@@ -410,17 +421,41 @@ class Core(
     ifetch.io.redirect      := pc.io.redirect
     ifetch.io.trap_valid    := frontend_flush
     io.debug_instr          := ifetch.io.instr_out
+
+    val fetchEntry = Wire(new FrontendQueueEntry(XLEN))
+    fetchEntry.pc := ifetch.io.pc_out
+    fetchEntry.instr := ifetch.io.instr_out
+    fetchEntry.instrLen := ifetch.io.instr_len
+    fetchEntry.predTaken := ifetch.io.pred_taken_out
+    fetchEntry.predTarget := ifetch.io.pred_target_out
+
+    val decodeEntry = Wire(new FrontendQueueEntry(XLEN))
+    if (hasFrontendQueue) {
+        val frontendQueue = Module(new FrontendQueue(XLEN, features.frontendQueueEntries))
+        frontendQueue.io.flush := frontendQueueFlush
+        frontendQueue.io.enq.valid := ifetch.io.valid && !frontendQueueFlush
+        frontendQueue.io.enq.bits := fetchEntry
+        frontendQueue.io.deq.ready := !frontendQueueFlush && !(pipe_stall || decodeUsesPending || debugHalted)
+        ifetchQueueReady := frontendQueue.io.enq.ready
+        decodeInputValid := frontendQueue.io.deq.valid
+        decodeEntry := frontendQueue.io.deq.bits
+    } else {
+        ifetchQueueReady := !(pipe_stall || decodeUsesPending || debugDcachePending || (debugHalted && !debugIcachePending))
+        decodeInputValid := ifetch.io.valid
+        decodeEntry := fetchEntry
+    }
+
     // idcode
-    idecode.io.valid_in      := ifetch.io.valid
+    idecode.io.valid_in      := decodeInputValid
     idecode.io.stall         := pipe_stall || decodeUsesPending || debugHalted
 	    idecode.io.trap_valid    := frontend_flush
     idecode.io.redirect      := ifetch.io.redirect
-    idecode.io.pc_in         := ifetch.io.pc_out
-    idecode.io.instr_in      := ifetch.io.instr_out
-    idecode.io.instr_len_in  := ifetch.io.instr_len
+    idecode.io.pc_in         := decodeEntry.pc
+    idecode.io.instr_in      := decodeEntry.instr
+    idecode.io.instr_len_in  := decodeEntry.instrLen
     idecode.io.priv          := csr.io.mem_cfg_out.priv
-    idecode.io.pred_taken_in := ifetch.io.pred_taken_out
-    idecode.io.pred_target_in := ifetch.io.pred_target_out
+    idecode.io.pred_taken_in := decodeEntry.predTaken
+    idecode.io.pred_target_in := decodeEntry.predTarget
     val aluBypassValid = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
         !isLoadLikeOp(aluMemOp)
     def bypassSource(valid: Bool, rd: UInt, data: UInt): FwdSource = {

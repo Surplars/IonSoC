@@ -161,14 +161,15 @@ TRACE=1 ION_TRACE_WAVE=1 make verilator-run-perf
 `make verilator-run-perf` 会构建 `simulator/payloads/perf.S`，运行一个固定的 load/store/ALU/branch 循环，并启用 `ION_PERF=1`。当前 baseline：
 
 ```text
-[perf]: cycles=82624 retired=41010 ipc=0.4963 stall_cycles=49805 stall_pct=60.28 ifetch_stall=49805 ifetch_pct=60.28 lsu_stall=29215 lsu_pct=35.36
-[perf-branch]: branches=4096 branch_rate=9.99 taken=4095 taken_pct=99.98 redirects=2 redirect_pct=0.05 pred_taken=4095 pred_taken_pct=99.98 pred_correct=4094 pred_correct_pct=99.95
-[perf-lsu]: load=28679 store=8253 mmio=4 atomic=0 fence=532
+[perf]: cycles=58044 retired=36914 ipc=0.6360 stall_cycles=21107 stall_pct=36.36 ifetch_stall=25226 ifetch_pct=43.46 lsu_stall=12829 lsu_pct=22.10
+[perf-branch]: branches=4096 branch_rate=11.10 taken=4095 taken_pct=99.98 redirects=2 redirect_pct=0.05 pred_taken=4095 pred_taken_pct=99.98 pred_correct=4094 pred_correct_pct=99.95
+[perf-lsu]: load=12293 store=8253 mmio=4 atomic=0 fence=532
+[perf-overlap]: ifetch_only=20592 ifetch_lsu_overlap=4634
 ```
 
 这些仿真侧事件也接入了 CSR PMU：软件可通过 `mhpmevent3..31` 选择事件号，再读 `mhpmcounter3..31`。例如 `mhpmevent3=7` 统计 branch redirect，`mhpmevent4=3` 统计 I-fetch stall，`mhpmevent5=10` 统计 LSU cache-load stall。
 
-这个 baseline 已包含 BPU target redirect 抑制、64-bit fetch beat buffer、I-cache idle 当拍发请求、顺序 next-beat ahead fetch，以及 L1 hit compare-cycle response。`perf.S` 还会读取多组 HPM counter，因此 retired/cycles 同纯循环版本不完全等价。结果说明分支预测已不是主瓶颈，剩余 stall 主要来自取指/cache 供给和 LSU cache-load 等待；其中 LSU stall 与 I-fetch/global stall 有重叠，不能简单相加。后续优化顺序应优先看更宽 I-cache line、instruction queue、load-use/阻塞 load 延迟和总线 beat/burst，再考虑超标量。
+这个 baseline 已包含 BPU target redirect 抑制、64-bit fetch beat buffer、I-cache idle 当拍发请求、顺序 next-beat ahead fetch、2-entry `FrontendQueue`，以及 L1 hit compare-cycle response。`perf.S` 还会读取多组 HPM counter，因此 retired/cycles 同纯循环版本不完全等价。结果说明分支预测已不是主瓶颈，前端队列已经把大量 LSU overlap stall 吸收掉；剩余 stall 主要来自纯 I-fetch 等待和 LSU cache-load 等待。当前短热循环远小于默认 2 KiB I-cache，扩容量不是优先项。后续优化顺序应优先看更宽 I-cache line、load-use/阻塞 load 延迟和总线 beat/burst，再考虑超标量。
 
 ## RustSBI Jump Flow
 
