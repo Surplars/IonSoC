@@ -19,6 +19,17 @@ trait TileLinkDeviceTestUtils { this: ChiselSim =>
         tl.a.bits.data.poke(0.U)
         tl.a.bits.corrupt.poke(false.B)
         tl.d.ready.poke(false.B)
+        tl.b.ready.poke(true.B)
+        tl.c.valid.poke(false.B)
+        tl.c.bits.opcode.poke(0.U)
+        tl.c.bits.param.poke(0.U)
+        tl.c.bits.size.poke(size.U)
+        tl.c.bits.source.poke(0.U)
+        tl.c.bits.address.poke(0.U)
+        tl.c.bits.data.poke(0.U)
+        tl.c.bits.corrupt.poke(false.B)
+        tl.e.valid.poke(false.B)
+        tl.e.bits.sink.poke(0.U)
     }
 
     protected def writeTl(
@@ -76,6 +87,37 @@ trait TileLinkDeviceTestUtils { this: ChiselSim =>
         tl.a.valid.poke(false.B)
         tl.d.valid.expect(true.B)
         tl.d.bits.opcode.expect(TLOpcode.AccessAckData)
+        tl.d.bits.source.expect(source.U)
+        tl.d.bits.denied.expect(denied.B)
+        val data = tl.d.bits.data.peek().litValue
+        clock.step()
+        data
+    }
+
+    protected def acquireBlockTl(
+        tl: TLBundle,
+        clock: Clock,
+        address: BigInt,
+        source: Int,
+        param: UInt = TLPermissions.nToT,
+        denied: Boolean = false
+    ): BigInt = {
+        tl.d.ready.poke(true.B)
+        tl.a.bits.opcode.poke(TLOpcode.AcquireBlock)
+        tl.a.bits.param.poke(param)
+        tl.a.bits.size.poke(3.U)
+        tl.a.bits.source.poke(source.U)
+        tl.a.bits.address.poke(address.U)
+        tl.a.bits.mask.poke("hff".U)
+        tl.a.bits.data.poke(0.U)
+        tl.a.bits.corrupt.poke(false.B)
+        tl.a.valid.poke(true.B)
+        tl.a.ready.expect(true.B)
+        clock.step()
+        tl.a.valid.poke(false.B)
+        tl.d.valid.expect(true.B)
+        tl.d.bits.opcode.expect(TLOpcode.GrantData)
+        tl.d.bits.param.expect(param)
         tl.d.bits.source.expect(source.U)
         tl.d.bits.denied.expect(denied.B)
         val data = tl.d.bits.data.peek().litValue

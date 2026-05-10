@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.util._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
-import soc.bus.tilelink.{TLParams, TLRAM}
+import soc.bus.tilelink.{TLParams, TLPermissions, TLRAM, TLOpcode}
 import soc.device.TLError
 import soc.memory.cache.{CacheCmd, L1Cache, UncachedTileLinkBridge}
 
@@ -14,7 +14,7 @@ class CacheDeniedHarness(params: TLParams) extends Module {
         val resp = Decoupled(new soc.memory.CacheResp(params.dataWidth))
     })
 
-    val cache = Module(new L1Cache(params, nSets = 4))
+    val cache = Module(new L1Cache(params, nSets = 4, useTLCoherence = false))
     val error = Module(new TLError(params))
 
     cache.io.cpu.req <> io.req
@@ -45,15 +45,45 @@ class CacheRamHarness(params: TLParams) extends Module {
         val req  = Flipped(Decoupled(new soc.memory.CacheReq(params.addrWidth, params.dataWidth)))
         val resp = Decoupled(new soc.memory.CacheResp(params.dataWidth))
         val invalidate = Flipped(Decoupled(Bool()))
+        val probe = Flipped(Decoupled(new soc.bus.tilelink.TLBundleB(params)))
+        val probeAck = Decoupled(new soc.bus.tilelink.TLBundleC(params))
+        val seenAcquire = Output(Bool())
+        val seenRelease = Output(Bool())
     })
 
     val cache = Module(new L1Cache(params, nSets = 4))
     val ram = Module(new TLRAM(params, sizeBytes = 4096))
 
+    val seenAcquire = RegInit(false.B)
+    val seenRelease = RegInit(false.B)
+    when(cache.io.bus.a.fire && cache.io.bus.a.bits.opcode === soc.bus.tilelink.TLOpcode.AcquireBlock) {
+        seenAcquire := true.B
+    }
+    when(cache.io.bus.c.fire && cache.io.bus.c.bits.opcode === soc.bus.tilelink.TLOpcode.ReleaseData) {
+        seenRelease := true.B
+    }
+
     cache.io.cpu.req <> io.req
     io.resp <> cache.io.cpu.resp
     cache.io.invalidate <> io.invalidate
-    ram.io.tl <> cache.io.bus
+    cache.io.bus.b.valid := io.probe.valid
+    cache.io.bus.b.bits := io.probe.bits
+    io.probe.ready := cache.io.bus.b.ready
+    ram.io.tl.a <> cache.io.bus.a
+    cache.io.bus.d <> ram.io.tl.d
+    val cacheCIsProbeAck = cache.io.bus.c.bits.opcode === TLOpcode.ProbeAck ||
+        cache.io.bus.c.bits.opcode === TLOpcode.ProbeAckData
+    io.probeAck.valid := cache.io.bus.c.valid && cacheCIsProbeAck
+    io.probeAck.bits := cache.io.bus.c.bits
+    ram.io.tl.c.valid := cache.io.bus.c.valid && !cacheCIsProbeAck
+    ram.io.tl.c.bits := cache.io.bus.c.bits
+    cache.io.bus.c.ready := Mux(cacheCIsProbeAck, io.probeAck.ready, ram.io.tl.c.ready)
+    cache.io.bus.e.ready := true.B
+    ram.io.tl.b.ready := true.B
+    ram.io.tl.e.valid := false.B
+    ram.io.tl.e.bits := 0.U.asTypeOf(ram.io.tl.e.bits)
+    io.seenAcquire := seenAcquire
+    io.seenRelease := seenRelease
 }
 
 class L1CacheSpec extends AnyFunSuite with ChiselSim {
@@ -63,6 +93,16 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
         dut.io.req.valid.poke(false.B)
         dut.io.invalidate.valid.poke(false.B)
         dut.io.invalidate.bits.poke(false.B)
+        dut.io.probe.valid.poke(false.B)
+        dut.io.probe.bits.opcode.poke(TLOpcode.ProbeBlock)
+        dut.io.probe.bits.param.poke(TLPermissions.toN)
+        dut.io.probe.bits.size.poke(3.U)
+        dut.io.probe.bits.source.poke(0.U)
+        dut.io.probe.bits.address.poke(0.U)
+        dut.io.probe.bits.mask.poke("hff".U)
+        dut.io.probe.bits.data.poke(0.U)
+        dut.io.probe.bits.corrupt.poke(false.B)
+        dut.io.probeAck.ready.poke(true.B)
         dut.io.resp.ready.poke(true.B)
     }
 
@@ -129,6 +169,36 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
         assert(sawResp, "cache invalidate did not complete")
     }
 
+    private def issueProbe(dut: CacheRamHarness, addr: BigInt, expectData: Boolean, source: Int = 9): BigInt = {
+        dut.io.probe.bits.opcode.poke(TLOpcode.ProbeBlock)
+        dut.io.probe.bits.param.poke(TLPermissions.toN)
+        dut.io.probe.bits.size.poke(3.U)
+        dut.io.probe.bits.source.poke(source.U)
+        dut.io.probe.bits.address.poke(addr.U)
+        dut.io.probe.bits.mask.poke("hff".U)
+        dut.io.probe.bits.data.poke(0.U)
+        dut.io.probe.bits.corrupt.poke(false.B)
+        dut.io.probe.valid.poke(true.B)
+        dut.io.probe.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.probe.valid.poke(false.B)
+
+        var sawAck = false
+        var data = BigInt(0)
+        for (_ <- 0 until 12 if !sawAck) {
+            if (dut.io.probeAck.valid.peek().litToBoolean) {
+                dut.io.probeAck.bits.opcode.expect(if (expectData) TLOpcode.ProbeAckData else TLOpcode.ProbeAck)
+                dut.io.probeAck.bits.param.expect(TLPermissions.toN)
+                dut.io.probeAck.bits.source.expect(source.U)
+                data = dut.io.probeAck.bits.data.peek().litValue
+                sawAck = true
+            }
+            dut.clock.step()
+        }
+        assert(sawAck, "cache probe did not produce ProbeAck")
+        data
+    }
+
     test("Cache hit response remains stable under CPU backpressure") {
         simulate(new CacheRamHarness(params)) { dut =>
             dut.io.req.valid.poke(false.B)
@@ -149,6 +219,7 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
                 dut.clock.step()
             }
             assert(writeDone, "cache write miss did not complete")
+            dut.io.seenAcquire.expect(true.B)
 
             pokeReq(dut, addr = 0x80, cmd = CacheCmd.Read)
             dut.io.resp.ready.poke(false.B)
@@ -194,6 +265,7 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
             waitResp(dut)
 
             issueInvalidate(dut)
+            dut.io.seenRelease.expect(true.B)
 
             pokeReq(dut, addr = 0x100, cmd = CacheCmd.Read)
             issueReq(dut)
@@ -210,6 +282,7 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
             waitResp(dut, maxCycles = 40)
 
             issueInvalidate(dut)
+            dut.io.seenRelease.expect(true.B)
 
             pokeReq(dut, addr = 0x80, cmd = CacheCmd.Read)
             issueReq(dut)
@@ -230,6 +303,7 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
             pokeReq(dut, addr = 0x0, cmd = CacheCmd.Read, fence = true)
             issueReq(dut)
             waitResp(dut, maxCycles = 80)
+            dut.io.seenRelease.expect(true.B)
 
             pokeReq(dut, addr = 0x1c0, cmd = CacheCmd.Read)
             issueReq(dut)
@@ -252,6 +326,35 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
             pokeReq(dut, addr = 0x180, cmd = CacheCmd.Read)
             issueReq(dut)
             assert(waitResp(dut, maxCycles = 20) == BigInt("1122334455aa7788", 16))
+        }
+    }
+
+    test("Cache responds to TL-C probes and invalidates matching lines") {
+        simulate(new CacheRamHarness(params)) { dut =>
+            init(dut)
+
+            pokeReq(dut, addr = 0x200, cmd = CacheCmd.Write, data = BigInt("123456789abcdef0", 16))
+            issueReq(dut)
+            waitResp(dut, maxCycles = 40)
+
+            val dirtyProbeData = issueProbe(dut, addr = 0x200, expectData = true)
+            assert(dirtyProbeData == BigInt("123456789abcdef0", 16))
+
+            pokeReq(dut, addr = 0x300, cmd = CacheCmd.Write, data = BigInt("0fedcba987654321", 16))
+            issueReq(dut)
+            waitResp(dut, maxCycles = 40)
+            issueInvalidate(dut)
+
+            pokeReq(dut, addr = 0x300, cmd = CacheCmd.Read)
+            issueReq(dut)
+            assert(waitResp(dut, maxCycles = 40) == BigInt("0fedcba987654321", 16))
+            dut.io.seenAcquire.expect(true.B)
+
+            val cleanProbeData = issueProbe(dut, addr = 0x300, expectData = false, source = 10)
+            assert(cleanProbeData == 0)
+
+            val missProbeData = issueProbe(dut, addr = 0x280, expectData = false, source = 11)
+            assert(missProbeData == 0)
         }
     }
 

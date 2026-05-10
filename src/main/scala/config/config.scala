@@ -152,6 +152,8 @@ object Config {
     def mmioMapFor(features: SoCFeatures): Seq[(BigInt, BigInt)]  =
         mmioRegionsFor(features).map(region => (region.base, region.size))
     def addrMapFor(features: SoCFeatures): Seq[UInt => Bool] = mkAddrMap(mmioRegionsFor(features), XLEN)
+    def releaseSupportFor(features: SoCFeatures): Seq[Boolean] =
+        mmioRegionsFor(features).map(_.name == "sram")
 
     val optionalRegions: Seq[AddressRegion] = optionalRegionsFor(features)
     val MMIORegions: Seq[AddressRegion]     = alwaysOnRegions ++ optionalRegions

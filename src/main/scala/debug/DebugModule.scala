@@ -444,6 +444,7 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
 
     val respValid = RegInit(false.B)
     val respOpcode = RegInit(TLOpcode.AccessAck)
+    val respParam = RegInit(0.U(3.W))
     val respSize = RegInit(0.U(params.sizeBits.W))
     val respSource = RegInit(0.U(params.sourceBits.W))
     val respData = RegInit(0.U(params.dataWidth.W))
@@ -460,7 +461,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         val readData32 = readReg(wordAddr)
 
         respValid := true.B
-        respOpcode := Mux(isRead, TLOpcode.AccessAckData, TLOpcode.AccessAck)
+        respOpcode := TLOpcode.responseOpcodeForA(io.tl.a.bits.opcode)
+        respParam := TLOpcode.responseParamForA(io.tl.a.bits.opcode, io.tl.a.bits.param)
         respSize := io.tl.a.bits.size
         respSource := io.tl.a.bits.source
         respDenied := !(isRead || isWrite)
@@ -532,7 +534,7 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
 
     io.tl.d.valid := respValid
     io.tl.d.bits.opcode := respOpcode
-    io.tl.d.bits.param := 0.U
+    io.tl.d.bits.param := respParam
     io.tl.d.bits.size := respSize
     io.tl.d.bits.source := respSource
     io.tl.d.bits.sink := 0.U

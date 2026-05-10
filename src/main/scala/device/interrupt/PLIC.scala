@@ -103,6 +103,7 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
     val respValid  = RegInit(false.B)
     val respData   = RegInit(0.U(params.dataWidth.W))
     val respOpcode = RegInit(TLOpcode.AccessAck)
+    val respParam  = RegInit(0.U(3.W))
     val respSize   = RegInit(0.U(params.sizeBits.W))
     val respSource = RegInit(0.U(params.sourceBits.W))
     val respDenied = RegInit(false.B)
@@ -185,7 +186,8 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
         }
 
         respValid  := true.B
-        respOpcode := Mux(isRead, TLOpcode.AccessAckData, TLOpcode.AccessAck)
+        respOpcode := TLOpcode.responseOpcodeForA(io.tl.a.bits.opcode)
+        respParam  := TLOpcode.responseParamForA(io.tl.a.bits.opcode, io.tl.a.bits.param)
         respSize   := io.tl.a.bits.size
         respSource := io.tl.a.bits.source
         respData   := readData
@@ -194,7 +196,7 @@ class PLIC(params: TLParams, nSources: Int = 31, priorityWidth: Int = 3) extends
 
     io.tl.d.valid        := respValid
     io.tl.d.bits.opcode  := respOpcode
-    io.tl.d.bits.param   := 0.U
+    io.tl.d.bits.param   := respParam
     io.tl.d.bits.size    := respSize
     io.tl.d.bits.source  := respSource
     io.tl.d.bits.sink    := 0.U

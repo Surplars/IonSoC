@@ -89,6 +89,7 @@ class TLROM(params: TLParams) extends Module {
 
     val respValid  = RegInit(false.B)
     val respOpcode = RegInit(TLOpcode.AccessAck)
+    val respParam  = RegInit(0.U(3.W))
     val respSize   = RegInit(0.U(params.sizeBits.W))
     val respSource = RegInit(0.U(params.sourceBits.W))
     val respDenied = RegInit(false.B)
@@ -97,11 +98,12 @@ class TLROM(params: TLParams) extends Module {
     io.tl.a.ready := !respValid
 
     when(io.tl.a.fire) {
-        val isRead = io.tl.a.bits.opcode === TLOpcode.Get
+        val isRead = io.tl.a.bits.opcode === TLOpcode.Get || io.tl.a.bits.opcode === TLOpcode.AcquireBlock
         val rawBeat = Cat(hiRom.io.instr_out, loRom.io.instr_out)
 
         respValid  := true.B
-        respOpcode := Mux(isRead, TLOpcode.AccessAckData, TLOpcode.AccessAck)
+        respOpcode := TLOpcode.responseOpcodeForA(io.tl.a.bits.opcode)
+        respParam  := TLOpcode.responseParamForA(io.tl.a.bits.opcode, io.tl.a.bits.param)
         respSize   := io.tl.a.bits.size
         respSource := io.tl.a.bits.source
         respDenied := !isRead
@@ -112,7 +114,7 @@ class TLROM(params: TLParams) extends Module {
 
     io.tl.d.valid        := respValid
     io.tl.d.bits.opcode  := respOpcode
-    io.tl.d.bits.param   := 0.U
+    io.tl.d.bits.param   := respParam
     io.tl.d.bits.size    := respSize
     io.tl.d.bits.source  := respSource
     io.tl.d.bits.sink    := 0.U

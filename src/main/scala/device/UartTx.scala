@@ -66,9 +66,11 @@ class UartTx(params: TLParams) extends Module {
     // TL response pipeline
     val respValid  = RegInit(false.B)
     val respOpcode = RegInit(TLOpcode.AccessAck)
+    val respParam  = RegInit(0.U(3.W))
     val respSize   = RegInit(0.U(params.sizeBits.W))
     val respSource = RegInit(0.U(params.sourceBits.W))
     val respData   = RegInit(0.U(params.dataWidth.W))
+    val respDenied = RegInit(false.B)
 
     // TX output (one-cycle pulse on write)
     val txValid = RegInit(false.B)
@@ -92,6 +94,7 @@ class UartTx(params: TLParams) extends Module {
         val isRead = io.tl.a.bits.opcode === TLOpcode.Get
         val isWrite = io.tl.a.bits.opcode === TLOpcode.PutFullData ||
             io.tl.a.bits.opcode === TLOpcode.PutPartialData
+        val isLegal = isRead || isWrite
         val regOffset = io.tl.a.bits.address(2, 0)
         val readByte = Wire(UInt(8.W))
         readByte := 0.U
@@ -145,7 +148,7 @@ class UartTx(params: TLParams) extends Module {
                 is(UartReg.Mcr.U)    { mcr := writeByte }
                 is(UartReg.Scr.U)    { scr := writeByte }
             }
-        }.otherwise {
+        }.elsewhen(isRead) {
             when(regOffset === UartReg.RbrThrDll.U && !dlab) {
                 rxReady := false.B
             }.elsewhen(regOffset === UartReg.IirFcr.U && txIrq) {
@@ -156,10 +159,12 @@ class UartTx(params: TLParams) extends Module {
         }
 
         respValid := true.B
-        respOpcode := Mux(isRead, TLOpcode.AccessAckData, TLOpcode.AccessAck)
+        respOpcode := TLOpcode.responseOpcodeForA(io.tl.a.bits.opcode)
+        respParam  := TLOpcode.responseParamForA(io.tl.a.bits.opcode, io.tl.a.bits.param)
         respSize   := io.tl.a.bits.size
         respSource := io.tl.a.bits.source
-        respData   := placeByte(readByte)
+        respData   := Mux(isRead, placeByte(readByte), 0.U)
+        respDenied := !isLegal
     }
 
     // Release TX pulse after one cycle
@@ -169,11 +174,11 @@ class UartTx(params: TLParams) extends Module {
 
     io.tl.d.valid        := respValid
     io.tl.d.bits.opcode  := respOpcode
-    io.tl.d.bits.param   := 0.U
+    io.tl.d.bits.param   := respParam
     io.tl.d.bits.size    := respSize
     io.tl.d.bits.source  := respSource
     io.tl.d.bits.sink    := 0.U
-    io.tl.d.bits.denied  := false.B
+    io.tl.d.bits.denied  := respDenied
     io.tl.d.bits.data    := respData
     io.tl.d.bits.corrupt := false.B
 

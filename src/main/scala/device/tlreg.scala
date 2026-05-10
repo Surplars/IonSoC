@@ -17,9 +17,11 @@ class TLRegister(params: TLParams) extends Module {
     val regBytes = RegInit(VecInit(Seq.fill(beatBytes)(0.U(8.W))))
     val respValid = RegInit(false.B)
     val respOpcode = RegInit(TLOpcode.AccessAck)
+    val respParam = RegInit(0.U(3.W))
     val respSize = RegInit(0.U(params.sizeBits.W))
     val respSource = RegInit(0.U(params.sourceBits.W))
     val respData = RegInit(0.U(params.dataWidth.W))
+    val respDenied = RegInit(false.B)
 
     io.tl.a.ready := reqReady
     reqReady := !respValid
@@ -27,6 +29,7 @@ class TLRegister(params: TLParams) extends Module {
     when(io.tl.a.fire) {
         val isWrite = io.tl.a.bits.opcode === TLOpcode.PutFullData || io.tl.a.bits.opcode === TLOpcode.PutPartialData
         val isRead = io.tl.a.bits.opcode === TLOpcode.Get
+        val isLegal = isRead || isWrite
         val writeBytes = VecInit(Seq.tabulate(beatBytes)(i => io.tl.a.bits.data(8 * i + 7, 8 * i)))
 
         when(isWrite) {
@@ -38,19 +41,21 @@ class TLRegister(params: TLParams) extends Module {
         }
 
         respValid := true.B
-        respOpcode := Mux(isRead, TLOpcode.AccessAckData, TLOpcode.AccessAck)
+        respOpcode := TLOpcode.responseOpcodeForA(io.tl.a.bits.opcode)
+        respParam := TLOpcode.responseParamForA(io.tl.a.bits.opcode, io.tl.a.bits.param)
         respSize := io.tl.a.bits.size
         respSource := io.tl.a.bits.source
-        respData := regBytes.asUInt
+        respData := Mux(isRead, regBytes.asUInt, 0.U)
+        respDenied := !isLegal
     }
 
     io.tl.d.valid := respValid
     io.tl.d.bits.opcode := respOpcode
-    io.tl.d.bits.param := 0.U
+    io.tl.d.bits.param := respParam
     io.tl.d.bits.size := respSize
     io.tl.d.bits.source := respSource
     io.tl.d.bits.sink := 0.U
-    io.tl.d.bits.denied := false.B
+    io.tl.d.bits.denied := respDenied
     io.tl.d.bits.data := respData
     io.tl.d.bits.corrupt := false.B
 

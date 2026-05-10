@@ -32,6 +32,7 @@ class CLINT(params: TLParams) extends Module {
     val resp_valid = RegInit(false.B)
     val resp_data  = RegInit(0.U(64.W))
     val resp_opcode = RegInit(TLOpcode.AccessAck)
+    val resp_param  = RegInit(0.U(3.W))
     val resp_size   = RegInit(0.U(params.sizeBits.W))
     val resp_source = RegInit(0.U(params.sourceBits.W))
     val resp_denied = RegInit(false.B)
@@ -53,6 +54,7 @@ class CLINT(params: TLParams) extends Module {
         resp_valid  := true.B
         resp_source := io.tl.a.bits.source
         resp_size   := io.tl.a.bits.size
+        resp_param  := TLOpcode.responseParamForA(io.tl.a.bits.opcode, io.tl.a.bits.param)
         // Keep CLINT aligned with other TL slaves: unsupported opcodes get a
         // real D-channel response with denied set instead of silently acking.
         resp_denied := !is_legal
@@ -83,14 +85,14 @@ class CLINT(params: TLParams) extends Module {
                 mtimecmp := (mtimecmp & ~maskBits) | (io.tl.a.bits.data & maskBits)
             }
         }.otherwise {
-            resp_opcode := TLOpcode.AccessAck
+            resp_opcode := TLOpcode.responseOpcodeForA(io.tl.a.bits.opcode)
             resp_data   := 0.U
         }
     }
 
     io.tl.d.valid        := resp_valid
     io.tl.d.bits.opcode  := resp_opcode
-    io.tl.d.bits.param   := 0.U
+    io.tl.d.bits.param   := resp_param
     io.tl.d.bits.size    := resp_size
     io.tl.d.bits.source  := resp_source
     io.tl.d.bits.sink    := 0.U

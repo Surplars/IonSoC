@@ -31,6 +31,43 @@ object TLOpcode {
     val ProbeAckData  = 5.U(3.W)
     val Release       = 6.U(3.W)
     val ReleaseData   = 7.U(3.W)
+
+    def hasDataResponse(opcode: UInt): Bool =
+        opcode === Get || opcode === AcquireBlock
+
+    def isAcquire(opcode: UInt): Bool =
+        opcode === AcquireBlock || opcode === AcquirePerm
+
+    def isRelease(opcode: UInt): Bool =
+        opcode === Release || opcode === ReleaseData
+
+    def responseOpcodeForA(opcode: UInt): UInt = MuxLookup(opcode, AccessAck)(
+        Seq(
+            Get -> AccessAckData,
+            AcquireBlock -> GrantData,
+            AcquirePerm -> Grant
+        )
+    )
+
+    def responseParamForA(opcode: UInt, param: UInt): UInt =
+        Mux(isAcquire(opcode), param, 0.U)
+
+    def responseOpcodeForC(opcode: UInt): UInt =
+        ReleaseAck
+}
+
+object TLPermissions {
+    val toT = 0.U(3.W)
+    val toB = 1.U(3.W)
+    val toN = 2.U(3.W)
+
+    val nToB = 0.U(3.W)
+    val nToT = 1.U(3.W)
+    val bToT = 2.U(3.W)
+
+    val tToB = 0.U(3.W)
+    val tToN = 1.U(3.W)
+    val bToN = 2.U(3.W)
 }
 
 case class TLParams(

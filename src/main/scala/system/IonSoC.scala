@@ -55,7 +55,13 @@ class IonSoC(
     val plic  = if (features.interruptController == InterruptControllerKind.PLIC) Some(Module(new PLIC(deviceParams, Config.plicSources))) else None
     val jtag  = Module(new JtagTap(drLen = Config.XLEN))
 
-    val TLCrossbar = Module(new TLXbar(dbusParams, debugBusMasters, slaveCount, Config.addrMapFor(features)))
+    val TLCrossbar = Module(new TLXbar(
+        dbusParams,
+        debugBusMasters,
+        slaveCount,
+        Config.addrMapFor(features),
+        Config.releaseSupportFor(features)
+    ))
 
     brom.io.fetch_en := core.io.fetch_en
     brom.io.addr     := core.io.pc

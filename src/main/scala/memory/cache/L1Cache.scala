@@ -26,9 +26,10 @@ trait HasCacheCoreIO { this: Module =>
     val io: CacheCoreIO
 }
 
-class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with HasCacheCoreIO {
+class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Boolean = true) extends Module with HasCacheCoreIO {
     val io = IO(new CacheCoreIO(params))
-    TLBundle.tieoffMasterCoherence(io.bus)
+    io.bus.e.valid := false.B
+    io.bus.e.bits := 0.U.asTypeOf(io.bus.e.bits)
 
     val offsetBits = log2Ceil(params.dataWidth / 8) // 64位=8字节 -> 3位
     val indexBits  = log2Ceil(nSets)              // 512行 -> 9位
@@ -47,8 +48,9 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
     // 状态机
     val (
         sIdle :: sCompare :: sWriteBackReq :: sWriteBackWait :: sRefillReq :: sRefillWait :: sResp ::
-        sFlushRead :: sFlushWriteBackReq :: sFlushWriteBackWait :: sFlushInvalidate :: Nil
-    ) = Enum(11)
+        sFlushRead :: sFlushWriteBackReq :: sFlushWriteBackWait :: sFlushInvalidate ::
+        sProbeLookup :: sProbeResp :: Nil
+    ) = Enum(13)
     val state = RegInit(sIdle)
 
     // 锁存 CPU 请求
@@ -60,23 +62,41 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
     val flushIdx = RegInit(0.U(indexBits.W))
     val flushTagReg = Reg(UInt(tagBits.W))
     val flushDataReg = Reg(UInt(params.dataWidth.W))
+    val probeIdxReg = Reg(UInt(indexBits.W))
+    val probeTagReg = Reg(UInt(tagBits.W))
+    val probeSizeReg = Reg(UInt(params.sizeBits.W))
+    val probeSourceReg = Reg(UInt(params.sourceBits.W))
+    val probeAddrReg = Reg(UInt(params.addrWidth.W))
+    val probeHitReg = RegInit(false.B)
+    val probeDirtyReg = RegInit(false.B)
+    val probeDataReg = RegInit(0.U(params.dataWidth.W))
     
     // 从 SRAM 读出的数据
     val readTag  = tagArray.read(getIdx(io.cpu.req.bits.addr), io.cpu.req.valid && state === sIdle)
     val readData = dataArray.read(getIdx(io.cpu.req.bits.addr), io.cpu.req.valid && state === sIdle)
     val flushReadTag = tagArray.read(flushIdx, state === sFlushRead)
     val flushReadData = dataArray.read(flushIdx, state === sFlushRead)
+    val probeReadTag = tagArray.read(getIdx(io.bus.b.bits.address), io.bus.b.fire && useTLCoherence.B)
+    val probeReadData = dataArray.read(getIdx(io.bus.b.bits.address), io.bus.b.fire && useTLCoherence.B)
 
     // Response data is registered so SyncReadMem outputs are never exposed
     // across CPU backpressure cycles.
     val refillReg = RegInit(0.U(params.dataWidth.W))
     val respErrReg = RegInit(false.B)
+    private val lineBytes = params.dataWidth / 8
+    private val fullMask = ((1 << lineBytes) - 1).U
+    private val refillOpcode = if (useTLCoherence) TLOpcode.AcquireBlock else TLOpcode.Get
+    private val refillParam = if (useTLCoherence) TLPermissions.nToT else 0.U
+    private val writebackOpcode = if (useTLCoherence) TLOpcode.ReleaseData else TLOpcode.PutFullData
+    private val writebackParam = if (useTLCoherence) TLPermissions.tToN else 0.U
 
     val hit = validArray(reqIdx) && (readTag === reqTag)
     val dirty = dirtyArray(reqIdx)
 
     // 接口默认值
-    io.cpu.req.ready  := state === sIdle && !io.invalidate.valid
+    val canAcceptProbe = useTLCoherence.B && state === sIdle && !io.invalidate.valid && !io.cpu.req.valid
+
+    io.cpu.req.ready  := state === sIdle && !io.invalidate.valid && !io.bus.b.valid
     io.cpu.resp.valid := false.B
     io.cpu.resp.bits.rdata := Mux(state === sResp, refillReg, readData)
     io.cpu.resp.bits.err   := respErrReg
@@ -86,11 +106,21 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
 
     io.bus.a.valid := false.B
     io.bus.a.bits  := DontCare
+    io.bus.b.ready := Mux(useTLCoherence.B, canAcceptProbe, true.B)
+    io.bus.c.valid := false.B
+    io.bus.c.bits  := DontCare
     io.bus.d.ready := false.B
 
     switch(state) {
         is(sIdle) {
-            when(io.invalidate.fire) {
+            when(io.bus.b.fire && useTLCoherence.B) {
+                probeIdxReg := getIdx(io.bus.b.bits.address)
+                probeTagReg := getTag(io.bus.b.bits.address)
+                probeSizeReg := io.bus.b.bits.size
+                probeSourceReg := io.bus.b.bits.source
+                probeAddrReg := Cat(io.bus.b.bits.address(params.addrWidth - 1, offsetBits), 0.U(offsetBits.W))
+                state := sProbeLookup
+            }.elsewhen(io.invalidate.fire) {
                 respErrReg := false.B
                 flushIdx := 0.U
                 state := sFlushRead
@@ -128,18 +158,33 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
             }
         }
         is(sWriteBackReq) { // 阶段1: 向总线挤出写回请求
-            io.bus.a.valid         := true.B
-            io.bus.a.bits.opcode   := TLOpcode.PutFullData
-            io.bus.a.bits.param    := 0.U
-            io.bus.a.bits.size     := offsetBits.U
-            io.bus.a.bits.source   := 0.U
-            io.bus.a.bits.address  := Cat(victimTagReg, reqIdx, 0.U(offsetBits.W))
-            io.bus.a.bits.data     := victimDataReg
-            io.bus.a.bits.mask     := ((1 << (params.dataWidth/8)) - 1).U
-            io.bus.a.bits.corrupt  := false.B
+            when(useTLCoherence.B) {
+                io.bus.c.valid         := true.B
+                io.bus.c.bits.opcode   := writebackOpcode
+                io.bus.c.bits.param    := writebackParam
+                io.bus.c.bits.size     := offsetBits.U
+                io.bus.c.bits.source   := 0.U
+                io.bus.c.bits.address  := Cat(victimTagReg, reqIdx, 0.U(offsetBits.W))
+                io.bus.c.bits.data     := victimDataReg
+                io.bus.c.bits.corrupt  := false.B
 
-            when(io.bus.a.fire) {
-                state := sWriteBackWait
+                when(io.bus.c.fire) {
+                    state := sWriteBackWait
+                }
+            }.otherwise {
+                io.bus.a.valid         := true.B
+                io.bus.a.bits.opcode   := writebackOpcode
+                io.bus.a.bits.param    := writebackParam
+                io.bus.a.bits.size     := offsetBits.U
+                io.bus.a.bits.source   := 0.U
+                io.bus.a.bits.address  := Cat(victimTagReg, reqIdx, 0.U(offsetBits.W))
+                io.bus.a.bits.data     := victimDataReg
+                io.bus.a.bits.mask     := fullMask
+                io.bus.a.bits.corrupt  := false.B
+
+                when(io.bus.a.fire) {
+                    state := sWriteBackWait
+                }
             }
         }
         is(sWriteBackWait) { // 阶段2: 纯等待内存接收完毕吐出 D 响应
@@ -157,12 +202,12 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
         }
         is(sRefillReq) {   // 阶段3: 向总线扔出读新数片请求
             io.bus.a.valid         := true.B
-            io.bus.a.bits.opcode   := TLOpcode.Get
-            io.bus.a.bits.param    := 0.U
+            io.bus.a.bits.opcode   := refillOpcode
+            io.bus.a.bits.param    := refillParam
             io.bus.a.bits.size     := offsetBits.U
             io.bus.a.bits.source   := 0.U
             io.bus.a.bits.address  := Cat(reqTag, reqIdx, 0.U(offsetBits.W))
-            io.bus.a.bits.mask     := ((1 << (params.dataWidth/8)) - 1).U // TileLink 读请求掩码需为全1
+            io.bus.a.bits.mask     := fullMask // TileLink 读请求掩码需为全1
             io.bus.a.bits.data     := 0.U
             io.bus.a.bits.corrupt  := false.B
 
@@ -202,6 +247,31 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
                 state := sIdle
             }
         }
+        is(sProbeLookup) {
+            val probeHit = validArray(probeIdxReg) && probeReadTag === probeTagReg
+            probeHitReg := probeHit
+            probeDirtyReg := probeHit && dirtyArray(probeIdxReg)
+            probeDataReg := probeReadData
+            state := sProbeResp
+        }
+        is(sProbeResp) {
+            io.bus.c.valid         := true.B
+            io.bus.c.bits.opcode   := Mux(probeDirtyReg, TLOpcode.ProbeAckData, TLOpcode.ProbeAck)
+            io.bus.c.bits.param    := TLPermissions.toN
+            io.bus.c.bits.size     := probeSizeReg
+            io.bus.c.bits.source   := probeSourceReg
+            io.bus.c.bits.address  := probeAddrReg
+            io.bus.c.bits.data     := Mux(probeDirtyReg, probeDataReg, 0.U)
+            io.bus.c.bits.corrupt  := false.B
+
+            when(io.bus.c.fire) {
+                when(probeHitReg) {
+                    validArray(probeIdxReg) := false.B
+                    dirtyArray(probeIdxReg) := false.B
+                }
+                state := sIdle
+            }
+        }
         is(sFlushRead) {
             state := sFlushInvalidate
         }
@@ -222,18 +292,33 @@ class L1Cache(val params: TLParams, val nSets: Int = 512) extends Module with Ha
             }
         }
         is(sFlushWriteBackReq) {
-            io.bus.a.valid         := true.B
-            io.bus.a.bits.opcode   := TLOpcode.PutFullData
-            io.bus.a.bits.param    := 0.U
-            io.bus.a.bits.size     := offsetBits.U
-            io.bus.a.bits.source   := 0.U
-            io.bus.a.bits.address  := Cat(flushTagReg, flushIdx, 0.U(offsetBits.W))
-            io.bus.a.bits.data     := flushDataReg
-            io.bus.a.bits.mask     := ((1 << (params.dataWidth/8)) - 1).U
-            io.bus.a.bits.corrupt  := false.B
+            when(useTLCoherence.B) {
+                io.bus.c.valid         := true.B
+                io.bus.c.bits.opcode   := writebackOpcode
+                io.bus.c.bits.param    := writebackParam
+                io.bus.c.bits.size     := offsetBits.U
+                io.bus.c.bits.source   := 0.U
+                io.bus.c.bits.address  := Cat(flushTagReg, flushIdx, 0.U(offsetBits.W))
+                io.bus.c.bits.data     := flushDataReg
+                io.bus.c.bits.corrupt  := false.B
 
-            when(io.bus.a.fire) {
-                state := sFlushWriteBackWait
+                when(io.bus.c.fire) {
+                    state := sFlushWriteBackWait
+                }
+            }.otherwise {
+                io.bus.a.valid         := true.B
+                io.bus.a.bits.opcode   := writebackOpcode
+                io.bus.a.bits.param    := writebackParam
+                io.bus.a.bits.size     := offsetBits.U
+                io.bus.a.bits.source   := 0.U
+                io.bus.a.bits.address  := Cat(flushTagReg, flushIdx, 0.U(offsetBits.W))
+                io.bus.a.bits.data     := flushDataReg
+                io.bus.a.bits.mask     := fullMask
+                io.bus.a.bits.corrupt  := false.B
+
+                when(io.bus.a.fire) {
+                    state := sFlushWriteBackWait
+                }
             }
         }
         is(sFlushWriteBackWait) {

@@ -7,7 +7,9 @@ class TLRAM(params: TLParams, sizeBytes: Int, base: BigInt = 0) extends Module {
     val io = IO(new Bundle {
         val tl = Flipped(new TLBundle(params))
     })
-    TLBundle.tieoffSlaveCoherence(io.tl)
+    io.tl.b.valid := false.B
+    io.tl.b.bits := 0.U.asTypeOf(io.tl.b.bits)
+    io.tl.e.ready := true.B
 
     require(params.dataWidth % 8 == 0, "dataWidth must be byte-aligned")
 
@@ -20,52 +22,89 @@ class TLRAM(params: TLParams, sizeBytes: Int, base: BigInt = 0) extends Module {
     val mem   = SyncReadMem(depth, Vec(beatBytes, UInt(8.W)))
 
     val req_queue = Queue(io.tl.a, 2)
+    val rel_queue = Queue(io.tl.c, 2)
 
     private val localAddr = req_queue.bits.address - base.U(params.addrWidth.W)
     val addr_idx   = localAddr >> offsetBits.U
     val wdata_vec  = VecInit(Seq.tabulate(beatBytes)(i => req_queue.bits.data(8 * i + 7, 8 * i)))
     val mask_vec   = VecInit(Seq.tabulate(beatBytes)(i => req_queue.bits.mask(i)))
     val is_write   = req_queue.bits.opcode === TLOpcode.PutFullData || req_queue.bits.opcode === TLOpcode.PutPartialData
-    val is_read    = req_queue.bits.opcode === TLOpcode.Get
-    val is_legal   = is_read || is_write
+    val is_read    = req_queue.bits.opcode === TLOpcode.Get || req_queue.bits.opcode === TLOpcode.AcquireBlock
+    val is_acquire = req_queue.bits.opcode === TLOpcode.AcquireBlock || req_queue.bits.opcode === TLOpcode.AcquirePerm
+    val is_legal   = is_read || is_write || is_acquire
+
+    private val relLocalAddr = rel_queue.bits.address - base.U(params.addrWidth.W)
+    val rel_addr_idx = relLocalAddr >> offsetBits.U
+    val rel_data_vec = VecInit(Seq.tabulate(beatBytes)(i => rel_queue.bits.data(8 * i + 7, 8 * i)))
+    val rel_mask_vec = VecInit(Seq.fill(beatBytes)(true.B))
+    val rel_has_data = rel_queue.bits.opcode === TLOpcode.ReleaseData
+    val rel_is_legal = TLOpcode.isRelease(rel_queue.bits.opcode)
 
     val req_valid      = RegInit(false.B)
     val req_is_read    = RegInit(false.B)
+    val req_is_release = RegInit(false.B)
+    val req_opcode     = RegInit(0.U(3.W))
+    val req_param      = RegInit(0.U(3.W))
     val req_size       = RegInit(0.U(params.sizeBits.W))
     val req_source     = RegInit(0.U(params.sourceBits.W))
     val req_denied     = RegInit(false.B)
 
     val resp_valid   = RegInit(false.B)
     val resp_opcode  = RegInit(TLOpcode.AccessAck)
+    val resp_param   = RegInit(0.U(3.W))
     val resp_size    = RegInit(0.U(params.sizeBits.W))
     val resp_source  = RegInit(0.U(params.sourceBits.W))
     val resp_denied  = RegInit(false.B)
     val resp_data    = RegInit(0.U(params.dataWidth.W))
 
     val can_accept = !req_valid && !resp_valid
-    req_queue.ready := can_accept
+    val prefer_release = RegInit(false.B)
+    val take_release = can_accept && rel_queue.valid && (!req_queue.valid || prefer_release)
+    val take_request = can_accept && req_queue.valid && !take_release
 
-    val req_fire = req_queue.valid && can_accept
+    req_queue.ready := take_request
+    rel_queue.ready := take_release
+
+    val req_fire = take_request
+    val rel_fire = take_release
     val mem_rdata = mem.read(addr_idx, req_fire && is_read)
 
     when(req_fire && is_write) {
         mem.write(addr_idx, wdata_vec, mask_vec)
     }
+    when(rel_fire && rel_has_data) {
+        mem.write(rel_addr_idx, rel_data_vec, rel_mask_vec)
+    }
 
     when(req_fire) {
         req_valid      := true.B
         req_is_read    := is_read
+        req_is_release := false.B
+        req_opcode     := req_queue.bits.opcode
+        req_param      := req_queue.bits.param
         req_size       := req_queue.bits.size
         req_source     := req_queue.bits.source
         req_denied     := !is_legal
+        prefer_release := true.B
+    }.elsewhen(rel_fire) {
+        req_valid      := true.B
+        req_is_read    := false.B
+        req_is_release := true.B
+        req_opcode     := rel_queue.bits.opcode
+        req_param      := rel_queue.bits.param
+        req_size       := rel_queue.bits.size
+        req_source     := rel_queue.bits.source
+        req_denied     := !rel_is_legal
+        prefer_release := false.B
     }
 
     when(req_valid && !resp_valid) {
         resp_valid  := true.B
-        resp_opcode := Mux(req_is_read, TLOpcode.AccessAckData, TLOpcode.AccessAck)
+        resp_opcode := Mux(req_is_release, TLOpcode.responseOpcodeForC(req_opcode), TLOpcode.responseOpcodeForA(req_opcode))
         resp_size   := req_size
         resp_source := req_source
         resp_denied := req_denied
+        resp_param  := Mux(req_is_release, 0.U, TLOpcode.responseParamForA(req_opcode, req_param))
         // D-channel data keeps the requested byte lanes in their natural beat
         // positions. LSU/cache clients perform size and address-based extraction.
         resp_data   := Mux(req_is_read && !req_denied, mem_rdata.asUInt, 0.U)
@@ -74,7 +113,7 @@ class TLRAM(params: TLParams, sizeBytes: Int, base: BigInt = 0) extends Module {
 
     io.tl.d.valid        := resp_valid
     io.tl.d.bits.opcode  := resp_opcode
-    io.tl.d.bits.param   := 0.U
+    io.tl.d.bits.param   := resp_param
     io.tl.d.bits.size    := resp_size
     io.tl.d.bits.source  := resp_source
     io.tl.d.bits.sink    := 0.U
