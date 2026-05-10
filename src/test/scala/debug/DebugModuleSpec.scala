@@ -81,6 +81,26 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
         sbcs
     }
 
+    private def writeSbcs(
+        dut: DebugModuleSbaHarness,
+        sbaccess: Int,
+        readOnAddr: Boolean = false,
+        readOnData: Boolean = false,
+        autoIncrement: Boolean = false
+    ): Unit = {
+        val value =
+            (if (readOnAddr) BigInt(1) << 20 else BigInt(0)) |
+                (BigInt(sbaccess) << 17) |
+                (if (autoIncrement) BigInt(1) << 16 else BigInt(0)) |
+                (if (readOnData) BigInt(1) << 15 else BigInt(0))
+        debugWrite(dut, DebugModuleMap.SBCS * 4, value)
+    }
+
+    private def writeSbAddress(dut: DebugModuleSbaHarness, address: BigInt): Unit = {
+        debugWrite(dut, DebugModuleMap.SBAddress1 * 4, address >> 32)
+        debugWrite(dut, DebugModuleMap.SBAddress0 * 4, address & BigInt("ffffffff", 16))
+    }
+
     private def startCommandWrite(dut: DebugModule, command: BigInt): Unit = {
         startDebugWrite(dut, DebugModuleMap.Command * 4, command)
     }
@@ -311,6 +331,35 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
             debugWrite(dut, DebugModuleMap.SBAddress0 * 4, 0x1008)
             waitSbaIdle(dut)
             assert(debugRead(dut, DebugModuleMap.SBData0 * 4) == BigInt("12345678", 16))
+        }
+    }
+
+    test("DebugModule SBA splits cross-beat accesses") {
+        simulate(new DebugModuleSbaHarness(deviceParams)) { dut =>
+            initTlSlave(dut.io.tl, size = 2)
+
+            writeSbcs(dut, sbaccess = 2) // 32-bit access
+            writeSbAddress(dut, 0x1006)
+            debugWrite(dut, DebugModuleMap.SBData0 * 4, BigInt("aabbccdd", 16))
+            assert(((waitSbaIdle(dut) >> 12) & 0x7) == 0)
+
+            writeSbcs(dut, sbaccess = 2, readOnAddr = true)
+            writeSbAddress(dut, 0x1006)
+            waitSbaIdle(dut)
+            assert(debugRead(dut, DebugModuleMap.SBData0 * 4) == BigInt("aabbccdd", 16))
+
+            writeSbcs(dut, sbaccess = 3, autoIncrement = true) // 64-bit access
+            writeSbAddress(dut, 0x1004)
+            debugWrite(dut, DebugModuleMap.SBData0 * 4, BigInt("01234567", 16))
+            debugWrite(dut, DebugModuleMap.SBData1 * 4, BigInt("89abcdef", 16))
+            assert(((waitSbaIdle(dut) >> 12) & 0x7) == 0)
+            assert(debugRead(dut, DebugModuleMap.SBAddress0 * 4) == BigInt("100c", 16))
+
+            writeSbcs(dut, sbaccess = 3, readOnAddr = true)
+            writeSbAddress(dut, 0x1004)
+            waitSbaIdle(dut)
+            assert(debugRead(dut, DebugModuleMap.SBData0 * 4) == BigInt("01234567", 16))
+            assert(debugRead(dut, DebugModuleMap.SBData1 * 4) == BigInt("89abcdef", 16))
         }
     }
 }

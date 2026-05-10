@@ -84,6 +84,13 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     private val sbaBeatBytes = sbaParams.dataWidth / 8
     val sbaMask = RegInit(0.U(sbaBeatBytes.W))
     val sbaLaneShift = RegInit(0.U(log2Ceil(sbaParams.dataWidth).W))
+    val sbaHasNext = RegInit(false.B)
+    val sbaNextAddr = RegInit(0.U(sbaParams.addrWidth.W))
+    val sbaNextWriteData = RegInit(0.U(sbaParams.dataWidth.W))
+    val sbaNextMask = RegInit(0.U(sbaBeatBytes.W))
+    val sbaNextLaneShift = RegInit(0.U(log2Ceil(sbaParams.dataWidth).W))
+    val sbaReadPartial = RegInit(0.U(64.W))
+    val sbaReadMergeShift = RegInit(0.U(6.W))
     val sbaBytes = Wire(UInt(4.W))
     sbaBytes := 1.U << sbAccess
     val sbaBusy = sbaState =/= sbaIdle
@@ -105,8 +112,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     private def accessBytes: UInt = 1.U << sbAccess
     private def accessLane(address: UInt): UInt = address(log2Ceil(sbaBeatBytes) - 1, 0)
     private def accessCrossesBeat(address: UInt): Bool = (accessLane(address) +& accessBytes) > sbaBeatBytes.U
-    private def accessMask(address: UInt): UInt =
-        ((1.U((sbaBeatBytes + 1).W) << accessBytes) - 1.U)(sbaBeatBytes - 1, 0) << accessLane(address)
+    private def bytesMask(bytes: UInt): UInt =
+        ((1.U((sbaBeatBytes + 1).W) << bytes) - 1.U)(sbaBeatBytes - 1, 0)
     private def accessShift(address: UInt): UInt = Cat(accessLane(address), 0.U(3.W))
 
     val sbaStartRead = WireDefault(false.B)
@@ -115,17 +122,36 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     val sbaStartAddress = WireDefault(sbAddress)
 
     private def requestSba(isWrite: Bool, address: UInt, data: UInt): Unit = {
+        val lane = accessLane(address)
+        val crossesBeat = accessCrossesBeat(address)
+        val firstBytes = Mux(crossesBeat, sbaBeatBytes.U - lane, accessBytes)
+        val secondBytes = accessBytes - firstBytes
+        val firstMask = bytesMask(firstBytes) << lane
+        val secondMask = bytesMask(secondBytes)
+        val firstShift = Cat(lane, 0.U(3.W))
+        val secondDataShift = Cat(firstBytes, 0.U(3.W))
+        val firstWriteData = Wire(UInt(sbaParams.dataWidth.W))
+        val secondWriteData = Wire(UInt(sbaParams.dataWidth.W))
+        firstWriteData := data << firstShift
+        secondWriteData := data >> secondDataShift
         when(sbaBusy) {
             sbBusyError := true.B
-        }.elsewhen(!accessSupported || accessCrossesBeat(address)) {
+        }.elsewhen(!accessSupported) {
             sbError := 3.U
         }.otherwise {
             sbaIsWrite := isWrite
             sbaAddr := address(sbaParams.addrWidth - 1, 0)
             sbaSize := sbAccess(sbaParams.sizeBits - 1, 0)
-            sbaWriteData := (data << accessShift(address))(sbaParams.dataWidth - 1, 0)
-            sbaMask := accessMask(address)
-            sbaLaneShift := accessShift(address)
+            sbaWriteData := firstWriteData
+            sbaMask := firstMask
+            sbaLaneShift := firstShift
+            sbaHasNext := crossesBeat
+            sbaNextAddr := (address + firstBytes)(sbaParams.addrWidth - 1, 0)
+            sbaNextWriteData := secondWriteData
+            sbaNextMask := secondMask
+            sbaNextLaneShift := 0.U
+            sbaReadPartial := 0.U
+            sbaReadMergeShift := Mux(crossesBeat, secondDataShift, 0.U)
             sbaState := sbaReq
         }
     }
@@ -329,10 +355,6 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         }.elsewhen(addr === DebugModuleMap.SBAddress1.U) {
             val nextAddress = Cat(data, sbAddress(31, 0))
             sbAddress := nextAddress
-            when(sbReadOnAddr) {
-                sbaStartRead := true.B
-                sbaStartAddress := nextAddress
-            }
         }.elsewhen(addr === DebugModuleMap.SBData0.U) {
             val nextData = Cat(sbData(63, 32), data)
             sbData := nextData
@@ -434,17 +456,30 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         sbaState := sbaWait
     }
     when(sbaState === sbaWait && io.sba.d.fire) {
+        val segmentReadData = (io.sba.d.bits.data >> sbaLaneShift)(63, 0)
         when(io.sba.d.bits.denied || io.sba.d.bits.corrupt) {
             sbError := 2.U
+            sbaHasNext := false.B
+            sbaState := sbaIdle
+        }.elsewhen(sbaHasNext) {
+            when(!sbaIsWrite) {
+                sbaReadPartial := segmentReadData
+            }
+            sbaAddr := sbaNextAddr
+            sbaWriteData := sbaNextWriteData
+            sbaMask := sbaNextMask
+            sbaLaneShift := sbaNextLaneShift
+            sbaHasNext := false.B
+            sbaState := sbaReq
         }.otherwise {
             when(!sbaIsWrite) {
-                sbData := io.sba.d.bits.data >> sbaLaneShift
+                sbData := sbaReadPartial | (segmentReadData << sbaReadMergeShift)
             }
             when(sbAutoIncrement) {
                 sbAddress := sbAddress + accessBytes
             }
+            sbaState := sbaIdle
         }
-        sbaState := sbaIdle
     }
 
     io.tl.d.valid := respValid

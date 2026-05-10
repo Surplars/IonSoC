@@ -251,13 +251,13 @@ Debug Module 当前支持：
 - CSR abstract read/write
 - debug CSR `dcsr/dpc/dscratch0` 子集
 - hart halted 时捕获 `dpc`
-- SBA 通过 TileLink 作为低优先级 master 访问系统总线，当前支持单 outstanding、8/16/32/64-bit beat 内访问、基础 error/busy 状态
+- SBA 通过 TileLink 作为低优先级 master 访问系统总线，当前支持单 outstanding、8/16/32/64-bit 访问、跨 beat split、`sbreadonaddr/sbreadondata`、`sbautoincrement` 和基础 error/busy 状态
 - DMI 在 SBA 忙时可返回 busy op，便于 OpenOCD 重试
 
 限制：
 
 - program buffer 当前是 DM 内部安全解释子集，不是真实 hart 指令执行入口。`abstractcs.progbufsize=2` 仅承诺 `nop/fence/fence.i/ebreak` postexec 探测可用；load/store 等 helper 序列会返回 `cmderr`，避免误改 architectural state。
-- SBA 尚未实现跨 beat 访问和 cache 一致性处理。
+- SBA 尚未实现 cache 一致性处理；调试器直接改内存后，hart 侧 I/D cache 仍需要显式 flush 或后续硬件一致性方案。
 - OpenOCD 高级功能可能仍会触发 unsupported command。
 - 若 simulator 被 kill，OpenOCD 可能卡在 remote_bitbang socket 状态，需要单独终止 OpenOCD 进程。
 
