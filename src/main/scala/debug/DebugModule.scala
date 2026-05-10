@@ -74,7 +74,7 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         2.U(4.W)
     )
     private val hartinfo = Cat(0.U(8.W), 1.U(4.W), 0.U(4.W), 0.U(3.W), 0.U(1.W), 0.U(4.W), 0.U(4.W), 0.U(4.W))
-    private val abstractauto = 0.U(32.W)
+    val abstractauto = RegInit(0.U(32.W))
     val (sbaIdle :: sbaReq :: sbaWait :: Nil) = Enum(3)
     val sbaState = RegInit(sbaIdle)
     val sbaIsWrite = RegInit(false.B)
@@ -187,15 +187,16 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     def progbufIsFence(instr: UInt): Bool = instr(6, 0) === "b0001111".U && instr(14, 12) === "b000".U
     def progbufIsFenceI(instr: UInt): Bool = instr === "h0000100f".U
     def progbufSafeNonTerminating(instr: UInt): Bool = progbufIsNop(instr) || progbufIsFence(instr) || progbufIsFenceI(instr)
-    val progbuf0Ends = progbufIsEbreak(progbuf(0))
-    val progbuf1Ends = !progbuf0Ends && progbufIsEbreak(progbuf(1))
-    // Interpreter subset for the advertised backing program buffer. This keeps
-    // OpenOCD fence/postexec flows working without pretending to execute
-    // arbitrary load/store helper snippets on the hart.
-    val progbufInterpretable =
-        (progbufIsEbreak(progbuf(0)) || progbufSafeNonTerminating(progbuf(0))) &&
-            Mux(progbuf0Ends, true.B, progbufIsEbreak(progbuf(1)) || progbufSafeNonTerminating(progbuf(1))) &&
-            (progbuf0Ends || progbuf1Ends)
+    private def progbufInterpretable(prog0: UInt, prog1: UInt): Bool = {
+        val prog0Ends = progbufIsEbreak(prog0)
+        val prog1Ends = !prog0Ends && progbufIsEbreak(prog1)
+        // Interpreter subset for the advertised backing program buffer. This
+        // keeps OpenOCD fence/postexec flows working without pretending to
+        // execute arbitrary load/store helper snippets on the hart.
+        (progbufIsEbreak(prog0) || progbufSafeNonTerminating(prog0)) &&
+            Mux(prog0Ends, true.B, progbufIsEbreak(prog1) || progbufSafeNonTerminating(prog1)) &&
+            (prog0Ends || prog1Ends)
+    }
 
     private val HartselMask = "h03ffffc0".U(32.W)
     private def legalizeDmcontrol(data: UInt): UInt = data & ~HartselMask
@@ -217,12 +218,12 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     io.csr_wdata := csrWdataReg
     csrWriteReg := false.B
 
-    private def executeCommand(cmd: UInt): Unit = {
+    private def executeCommand(cmd: UInt, data0Value: UInt, data1Value: UInt, prog0Value: UInt, prog1Value: UInt): Unit = {
         command := cmd
         val supportedReg = commandGpr(cmd) || commandCsr(cmd)
         val postexecOnly = commandPostexec(cmd) && !commandTransfer(cmd)
-        val postexecOk = !commandPostexec(cmd) || progbufInterpretable
-        val writeData = Mux(commandSize32(cmd), Cat(0.U(32.W), data0), Cat(data1, data0))
+        val postexecOk = !commandPostexec(cmd) || progbufInterpretable(prog0Value, prog1Value)
+        val writeData = Mux(commandSize32(cmd), Cat(0.U(32.W), data0Value), Cat(data1Value, data0Value))
         val readData = Wire(UInt(64.W))
         readData := MuxLookup(commandRegNo(cmd), io.csr_rdata)(
             Seq(
@@ -269,6 +270,15 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         }
     }
 
+    private def autoexecFor(addr: UInt): Bool =
+        (addr === DebugModuleMap.Data0.U && abstractauto(0)) ||
+            (addr === DebugModuleMap.Data1.U && abstractauto(1)) ||
+            (addr === DebugModuleMap.ProgBuf0.U && abstractauto(16)) ||
+            (addr === DebugModuleMap.ProgBuf1.U && abstractauto(17))
+
+    private val AbstractAutoWritableMask =
+        ((BigInt(1) << 0) | (BigInt(1) << 1) | (BigInt(1) << 16) | (BigInt(1) << 17)).U(32.W)
+
     private def writeReg(addr: UInt, data: UInt): Unit = {
         when(addr === DebugModuleMap.DMControl.U) {
             val legal = legalizeDmcontrol(data)
@@ -280,14 +290,28 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
             }
         }.elsewhen(addr === DebugModuleMap.Data0.U) {
             data0 := data
+            when(autoexecFor(addr)) {
+                executeCommand(command, data, data1, progbuf(0), progbuf(1))
+            }
         }.elsewhen(addr === DebugModuleMap.Data1.U) {
             data1 := data
+            when(autoexecFor(addr)) {
+                executeCommand(command, data0, data, progbuf(0), progbuf(1))
+            }
         }.elsewhen(addr === DebugModuleMap.AbstractCS.U) {
             cmderr := cmderr & ~data(10, 8)
+        }.elsewhen(addr === DebugModuleMap.AbstractAuto.U) {
+            abstractauto := data & AbstractAutoWritableMask
         }.elsewhen(addr === DebugModuleMap.ProgBuf0.U) {
             progbuf(0) := data
+            when(autoexecFor(addr)) {
+                executeCommand(command, data0, data1, data, progbuf(1))
+            }
         }.elsewhen(addr === DebugModuleMap.ProgBuf1.U) {
             progbuf(1) := data
+            when(autoexecFor(addr)) {
+                executeCommand(command, data0, data1, progbuf(0), data)
+            }
         }.elsewhen(addr === DebugModuleMap.SBCS.U) {
             when(data(22)) { sbBusyError := false.B }
             when(data(14, 12).orR) { sbError := 0.U }
@@ -324,7 +348,7 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
                 sbaStartWriteData := nextData
             }
         }.elsewhen(addr === DebugModuleMap.Command.U) {
-            executeCommand(data)
+            executeCommand(data, data0, data1, progbuf(0), progbuf(1))
         }
     }
 
@@ -343,6 +367,9 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         }.otherwise {
             when(!busySbaData && io.dmi_addr === DebugModuleMap.SBData0.U && sbReadOnData) {
                 sbaStartRead := true.B
+            }
+            when(!busySbaData && autoexecFor(io.dmi_addr)) {
+                executeCommand(command, data0, data1, progbuf(0), progbuf(1))
             }
         }
     }
@@ -381,6 +408,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
             writeReg(wordAddr, writeData)
         }.elsewhen(isRead && wordAddr === DebugModuleMap.SBData0.U && sbReadOnData) {
             sbaStartRead := true.B
+        }.elsewhen(isRead && autoexecFor(wordAddr)) {
+            executeCommand(command, data0, data1, progbuf(0), progbuf(1))
         }
     }
 

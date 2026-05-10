@@ -239,7 +239,7 @@ Debug Module 当前支持：
 - `dmstatus`
 - `hartinfo`
 - `abstractcs`
-- `abstractauto`
+- `abstractauto`，支持 `autoexecdata0/1` 与 `autoexecprogbuf0/1`
 - `command`
 - `data0/data1`
 - `progbuf0/progbuf1` backing register
@@ -257,7 +257,7 @@ Debug Module 当前支持：
 限制：
 
 - program buffer 当前是 DM 内部安全解释子集，不是真实 hart 指令执行入口。`abstractcs.progbufsize=2` 仅承诺 `nop/fence/fence.i/ebreak` postexec 探测可用；load/store 等 helper 序列会返回 `cmderr`，避免误改 architectural state。
-- SBA 尚未实现 autoexec、跨 beat 访问和 cache 一致性处理。
+- SBA 尚未实现跨 beat 访问和 cache 一致性处理。
 - OpenOCD 高级功能可能仍会触发 unsupported command。
 - 若 simulator 被 kill，OpenOCD 可能卡在 remote_bitbang socket 状态，需要单独终止 OpenOCD 进程。
 

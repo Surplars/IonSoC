@@ -82,7 +82,10 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
     }
 
     private def startCommandWrite(dut: DebugModule, command: BigInt): Unit = {
-        val address = DebugModuleMap.Command * 4
+        startDebugWrite(dut, DebugModuleMap.Command * 4, command)
+    }
+
+    private def startDebugWrite(dut: DebugModule, address: BigInt, data: BigInt): Unit = {
         val lane = (address & 0x7).toInt
         dut.io.tl.d.ready.poke(true.B)
         dut.io.tl.a.bits.opcode.poke(soc.bus.tilelink.TLOpcode.PutPartialData)
@@ -91,7 +94,7 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
         dut.io.tl.a.bits.source.poke(3.U)
         dut.io.tl.a.bits.address.poke(address.U)
         dut.io.tl.a.bits.mask.poke((0xf << lane).U)
-        dut.io.tl.a.bits.data.poke((command << (lane * 8)).U)
+        dut.io.tl.a.bits.data.poke((data << (lane * 8)).U)
         dut.io.tl.a.bits.corrupt.poke(false.B)
         dut.io.tl.a.valid.poke(true.B)
         dut.io.tl.a.ready.expect(true.B)
@@ -236,6 +239,53 @@ class DebugModuleSpec extends AnyFunSuite with ChiselSim with TileLinkDeviceTest
             debugWrite(dut, DebugModuleMap.Command * 4, accessRegCommand(BigInt("1005", 16), write = true, postexec = true))
             assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 2)
             dut.io.gpr_write.expect(false.B)
+        }
+    }
+
+    test("DebugModule supports abstractauto for data and progbuf registers") {
+        simulate(new DebugModule(deviceParams)) { dut =>
+            init(dut)
+            dut.io.hart_halted.poke(true.B)
+
+            debugWrite(dut, DebugModuleMap.AbstractAuto * 4, BigInt("ffff0003", 16))
+            assert(debugRead(dut, DebugModuleMap.AbstractAuto * 4) == BigInt("00030003", 16))
+
+            debugWrite(dut, DebugModuleMap.Command * 4, accessRegCommand(BigInt("1005", 16), write = true))
+            startDebugWrite(dut, DebugModuleMap.Data0 * 4, BigInt("55667788", 16))
+            dut.io.gpr_write.expect(true.B)
+            dut.io.gpr_addr.expect(5.U)
+            dut.io.gpr_wdata.expect(BigInt("0000000055667788", 16).U)
+            dut.clock.step()
+
+            debugWrite(dut, DebugModuleMap.AbstractAuto * 4, BigInt("00000001", 16)) // autoexecdata0 only
+            startDebugWrite(dut, DebugModuleMap.Data1 * 4, BigInt("11223344", 16))
+            dut.io.gpr_write.expect(false.B)
+            dut.clock.step()
+            startDebugWrite(dut, DebugModuleMap.Data0 * 4, BigInt("99aabbcc", 16))
+            dut.io.gpr_write.expect(true.B)
+            dut.io.gpr_wdata.expect(BigInt("1122334499aabbcc", 16).U)
+            dut.clock.step()
+
+            dut.io.gpr_rdata.poke("hdeadbeefcafebabe".U)
+            debugWrite(dut, DebugModuleMap.Command * 4, accessRegCommand(BigInt("1006", 16)))
+            debugWrite(dut, DebugModuleMap.AbstractAuto * 4, BigInt("00000002", 16)) // autoexecdata1
+            debugRead(dut, DebugModuleMap.Data1 * 4) // The read returns old data and triggers the command.
+            assert(debugRead(dut, DebugModuleMap.Data1 * 4) == BigInt("deadbeef", 16))
+            assert(debugRead(dut, DebugModuleMap.Data0 * 4) == BigInt("cafebabe", 16))
+
+            debugWrite(dut, DebugModuleMap.AbstractAuto * 4, BigInt(0))
+            debugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("0330000f", 16)) // fence rw,rw
+            debugWrite(dut, DebugModuleMap.ProgBuf1 * 4, BigInt("00100073", 16)) // ebreak
+            debugWrite(dut, DebugModuleMap.Command * 4, postexecOnlyCommand)
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 0)
+            debugWrite(dut, DebugModuleMap.AbstractAuto * 4, BigInt("00010000", 16)) // autoexecprogbuf0
+            startDebugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("0330000f", 16)) // fence rw,rw, autoexec succeeds
+            dut.clock.step()
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 0)
+
+            startDebugWrite(dut, DebugModuleMap.ProgBuf0 * 4, BigInt("00002003", 16)) // unsupported lw, autoexec fails
+            dut.clock.step()
+            assert(((debugRead(dut, DebugModuleMap.AbstractCS * 4) >> 8) & 0x7) == 2)
         }
     }
 

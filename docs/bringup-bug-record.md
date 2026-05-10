@@ -351,6 +351,7 @@ SBA 侧另有两个兼容性问题：
 - DTMCS/DMI instruction
 - Debug Module 基础 DMI register
 - `hartinfo/abstractauto/haltsum0/sbcs` 基础寄存器面
+- `abstractauto` 已支持 `data0/data1/progbuf0/progbuf1` 访问触发当前 abstract command
 - halt/resume/GPR/CSR abstract command 子集
 - halted PC 捕获到 `dpc`
 - `progbuf0/progbuf1` backing register 已预留，并支持 `nop/fence/fence.i/ebreak` 的安全 postexec 子集
@@ -368,7 +369,7 @@ openocd -f openocd/ionsoc-rbb.cfg
 make openocd-smoke
 ```
 
-`make openocd-smoke` 已覆盖 TAP identify、CPU examine、halt/resume、OpenOCD fence/postexec 探测和直接 DMI-SBA SRAM 写读。日志应包含 `progbufsize=2` 与 `ION_OPENOCD_SBA_OK`，且不应再出现 fence execution error。完整调试功能仍需要继续补真实 hart program buffer 执行入口、autoexec、跨 beat SBA、cache 一致性和更完整 debug spec 细节。
+`make openocd-smoke` 已覆盖 TAP identify、CPU examine、halt/resume、OpenOCD fence/postexec 探测和直接 DMI-SBA SRAM 写读。日志应包含 `progbufsize=2` 与 `ION_OPENOCD_SBA_OK`，且不应再出现 fence execution error。完整调试功能仍需要继续补真实 hart program buffer 执行入口、跨 beat SBA、cache 一致性和更完整 debug spec 细节。
 
 ## 11. Verilator ELF loader 与真实启动流
 
