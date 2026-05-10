@@ -176,8 +176,6 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.pc_in.poke("h80000080".U)
             driveLoad(dut, BigInt("10000010", 16))
-            dut.clock.step()
-
             dut.io.dcache.req.valid.expect(true.B)
             dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
             dut.io.dcache.req.bits.addr.expect(BigInt("10000010", 16))
@@ -205,8 +203,6 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             dut.io.alu_out.rd.poke(5.U)
             dut.io.alu_out.reg_write.poke(true.B)
             driveLoad(dut, BigInt("10000018", 16))
-            dut.clock.step()
-
             dut.io.dcache.req.valid.expect(true.B)
             dut.clock.step()
 
@@ -256,12 +252,10 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             dut.io.dcache.resp.valid.poke(false.B)
 
             dut.io.stall_req.expect(true.B)
-            dut.io.dcache.req.valid.expect(false.B)
-            dut.clock.step()
-
             dut.io.dcache.req.valid.expect(true.B)
             dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
             dut.io.dcache.req.bits.addr.expect(BigInt("10000020", 16))
+            dut.clock.step()
         }
     }
 

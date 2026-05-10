@@ -261,7 +261,7 @@ class Core(
         loadLikePending && (lsu.io.load_data_valid ||
             (wb.io.reg_wb.reg_write && wb.io.reg_wb.rd === loadLikePendingRd))
     val decodeUsesPending =
-        loadLikePending && idecode.io.valid_out &&
+        loadLikePending && !loadLikeComplete && idecode.io.valid_out &&
             usesRd(idecode.io.decoded_out.rs1, idecode.io.decoded_out.rs2, loadLikePendingRd)
     when(loadLikeComplete) {
         loadLikePending := false.B

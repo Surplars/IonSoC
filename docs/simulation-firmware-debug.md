@@ -161,18 +161,18 @@ TRACE=1 ION_TRACE_WAVE=1 make verilator-run-perf
 `make verilator-run-perf` 会构建 `simulator/payloads/perf.S`，运行一个固定的 load/store/ALU/branch 循环，并启用 `ION_PERF=1`。当前 baseline：
 
 ```text
-[perf]: cycles=45727 retired=32818 ipc=0.7177 stall_cycles=12881 stall_pct=28.17 ifetch_stall=12901 ifetch_pct=28.21 lsu_stall=8734 lsu_pct=19.10
+[perf]: cycles=37536 retired=32818 ipc=0.8743 stall_cycles=4691 stall_pct=12.50 ifetch_stall=4714 ifetch_pct=12.56 lsu_stall=4638 lsu_pct=12.36
 [perf-branch]: branches=4097 branch_rate=12.48 taken=4096 taken_pct=99.98 redirects=3 redirect_pct=0.07 pred_taken=4095 pred_taken_pct=99.95 pred_correct=4094 pred_correct_pct=99.93
-[perf-lsu]: load=8197 store=8250 mmio=4 atomic=0 fence=533
-[perf-overlap]: ifetch_only=8271 ifetch_lsu_overlap=4630
-[perf-frontend]: starved=53 queue_full=21009 queue_empty=79
+[perf-lsu]: load=4101 store=8250 mmio=4 atomic=0 fence=533
+[perf-overlap]: ifetch_only=4179 ifetch_lsu_overlap=535
+[perf-frontend]: starved=55 queue_full=532 queue_empty=81
 ```
 
 这些仿真侧事件也接入了 CSR PMU：软件可通过 `mhpmevent3..31` 选择事件号，再读 `mhpmcounter3..31`。例如 `mhpmevent3=7` 统计 branch redirect，`mhpmevent4=3` 统计 I-fetch stall，`mhpmevent5=10` 统计 LSU cache-load stall。
 
-这个 baseline 已包含 BPU target redirect 抑制、64-bit fetch beat buffer、I-cache idle 当拍发请求、顺序 next-beat ahead fetch、4-entry `FrontendQueue`、L1 hit compare-cycle response、IFetch response-cycle enqueue，以及 LSU cache-load completion slot。completion slot 让 cache load 响应当拍释放 stall，并在下一拍只提交一次；旧 baseline 中约 4096 条额外 retired 来自 stall 保持期间的重复 retire 计数，不应继续作为真实 IPC 参考。IFetch 现在在已注册的 cache response 当拍向前端队列送指令，不再额外等待 release 拍。`perf.S` 还会读取多组 HPM counter，因此 retired/cycles 同纯循环版本不完全等价。结果说明分支预测已不是主瓶颈，前端 starve 已基本消除，剩余 stall 主要来自 LSU load/store/fence 与 I-cache beat/refill。当前短热循环远小于默认 2 KiB I-cache，扩容量不是优先项。后续优化顺序应优先看更宽 I-cache line、store buffer drain 合并和总线 beat/burst，再考虑超标量。
+这个 baseline 已包含 BPU target redirect 抑制、64-bit fetch beat buffer、I-cache idle 当拍发请求、顺序 next-beat ahead fetch、4-entry `FrontendQueue`、L1 hit compare-cycle response、IFetch response-cycle enqueue、load-use 当拍解除、LSU cache-load 当拍发 D-cache 请求，以及 LSU cache-load completion slot。completion slot 让 cache load 响应当拍释放 stall，并在下一拍只提交一次；旧 baseline 中约 4096 条额外 retired 来自 stall 保持期间的重复 retire 计数，不应继续作为真实 IPC 参考。IFetch 现在在已注册的 cache response 当拍向前端队列送指令，不再额外等待 release 拍。`perf.S` 还会读取多组 HPM counter，因此 retired/cycles 同纯循环版本不完全等价。结果说明分支预测已不是主瓶颈，前端 starve 已基本消除，剩余 stall 主要来自 LSU store/fence 和 I-cache/LSU overlap。当前短热循环远小于默认 2 KiB I-cache，扩容量不是优先项。后续优化顺序应优先看 store buffer drain 合并、fence 精简和总线 beat/burst，再考虑超标量。
 
-`[perf-frontend]` 用来判断前端队列是否仍是瓶颈：`starved` 表示 decode 端没有可用指令且 IF 正在等待，`queue_full` 表示 IF 被队列背压，`queue_empty` 表示队列为空。当前 `starved=53`、`queue_empty=79`，说明前端供给已显著改善；`queue_full=21009` 主要表示后端 stall 期间队列成功填满，下一轮不应继续优先加深队列。
+`[perf-frontend]` 用来判断前端队列是否仍是瓶颈：`starved` 表示 decode 端没有可用指令且 IF 正在等待，`queue_full` 表示 IF 被队列背压，`queue_empty` 表示队列为空。当前 `starved=55`、`queue_empty=81`，说明前端供给已显著改善；`queue_full=532` 也说明继续加深队列不是当前优先项。
 
 ## RustSBI Jump Flow
 

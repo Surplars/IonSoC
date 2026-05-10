@@ -328,7 +328,8 @@ class LSU(XLEN: Int = 64) extends Module {
         consumedRd := io.alu_out.rd
     }
 
-    val do_cache_load_req = cacheLoadPending && !cacheLoadSent
+    val issue_new_cache_load = new_cache_load && !cacheLoadPending
+    val do_cache_load_req = issue_new_cache_load || (cacheLoadPending && !cacheLoadSent)
     val do_mmio_req       = mmioPending && !mmioSent
     val do_atomic_read_req = atomicPending && !atomicReadSent
     val do_atomic_write_req = atomicPending && atomicReadSent && atomicDoWrite && !atomicWriteSent
@@ -339,12 +340,12 @@ class LSU(XLEN: Int = 64) extends Module {
 
     val cacheReqAddr = Mux(
         do_cache_load_req,
-        cacheLoadAccess.paddr,
+        Mux(issue_new_cache_load, memAccess.paddr, cacheLoadAccess.paddr),
         Mux(do_fence_req, 0.U, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.paddr, storeBuffer.io.deq_addr))
     )
     val cacheReqVaddr = Mux(
         do_cache_load_req,
-        cacheLoadAccess.vaddr,
+        Mux(issue_new_cache_load, memAccess.vaddr, cacheLoadAccess.vaddr),
         Mux(do_fence_req, 0.U, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.vaddr, storeBuffer.io.deq_addr))
     )
     val cacheReqIsWrite = do_store_drain || do_atomic_write_req
@@ -355,8 +356,8 @@ class LSU(XLEN: Int = 64) extends Module {
     io.dcache.req.bits.cmd       := Mux(cacheReqIsWrite, CacheCmd.Write, CacheCmd.Read)
     io.dcache.req.bits.wdata     := Mux(do_atomic_write_req, atomicWriteData, storeBuffer.io.deq_data)
     io.dcache.req.bits.mask      := Mux(do_fence_req, 0.U, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.mask, storeBuffer.io.deq_mask))
-    io.dcache.req.bits.size      := Mux(do_fence_req, 0.U, Mux(do_cache_load_req, cacheLoadAccess.size, Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.size, storeBuffer.io.deq_size)))
-    io.dcache.req.bits.signed    := Mux(do_cache_load_req, cacheLoadAccess.signed, false.B)
+    io.dcache.req.bits.size      := Mux(do_fence_req, 0.U, Mux(do_cache_load_req, Mux(issue_new_cache_load, memAccess.size, cacheLoadAccess.size), Mux(do_atomic_read_req || do_atomic_write_req, atomicAccess.size, storeBuffer.io.deq_size)))
+    io.dcache.req.bits.signed    := Mux(do_cache_load_req, Mux(issue_new_cache_load, memAccess.signed, cacheLoadAccess.signed), false.B)
     io.dcache.req.bits.fence     := do_fence_req
     io.dcache.req.bits.fencei    := false.B
     io.dcache.req.bits.atomic    := false.B
@@ -497,7 +498,7 @@ class LSU(XLEN: Int = 64) extends Module {
     io.stall_mmio := stall_wait_mmio
     io.stall_atomic := stall_wait_atomic || stall_wait_atomic_store_drain
     io.stall_fence := stall_wait_fence
-    when(inputConsumed && !io.stall_req) {
+    when(inputConsumed && !sameConsumedInput) {
         inputConsumed := false.B
     }
 
@@ -646,7 +647,8 @@ class LSU(XLEN: Int = 64) extends Module {
     val out_trap      = RegEnable(final_trap_info, 0.U.asTypeOf(io.trap_info_in), update_en)
     val out_pc        = RegEnable(io.pc_in, 0.U, update_en)
 
-    val normalValidOut = RegNext((valid_inst && writeback_en && !is_load_resp || normalLoadDataValid) && !final_trap_info.valid, false.B)
+    val normalStageValid = valid_inst && !sameConsumedInput
+    val normalValidOut = RegNext((normalStageValid && writeback_en && !is_load_resp || normalLoadDataValid) && !final_trap_info.valid, false.B)
     io.valid_out         := loadWbSlotValid || normalValidOut
     io.mem_out.rd        := Mux(loadWbSlotValid, loadWbSlotRd, Mux(normalLoadDataValid, response_rd, out_reg_rd))
     io.mem_out.reg_write := Mux(loadWbSlotValid, loadWbSlotRegWrite, Mux(normalLoadDataValid, response_reg_write, out_reg_write))
