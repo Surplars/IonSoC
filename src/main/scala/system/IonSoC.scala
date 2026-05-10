@@ -141,6 +141,11 @@ class IonSoC(
     io.debug.stall := core.io.debug_stall
     io.debug.ifetchStall := core.io.debug_ifetch_stall
     io.debug.lsuStall := core.io.debug_lsu_stall
+    io.debug.lsuLoadStall := core.io.debug_lsu_load_stall
+    io.debug.lsuStoreStall := core.io.debug_lsu_store_stall
+    io.debug.lsuMmioStall := core.io.debug_lsu_mmio_stall
+    io.debug.lsuAtomicStall := core.io.debug_lsu_atomic_stall
+    io.debug.lsuFenceStall := core.io.debug_lsu_fence_stall
     io.debug.branchValid := core.io.debug_branch_valid
     io.debug.branchTaken := core.io.debug_branch_taken
     io.debug.branchRedirect := core.io.debug_branch_redirect

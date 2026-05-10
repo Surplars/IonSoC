@@ -1125,6 +1125,11 @@ bool run_sim(const SimOptions &opts)
 	uint64_t perf_stall_cycles = 0;
 	uint64_t perf_ifetch_stall_cycles = 0;
 	uint64_t perf_lsu_stall_cycles = 0;
+	uint64_t perf_lsu_load_stall_cycles = 0;
+	uint64_t perf_lsu_store_stall_cycles = 0;
+	uint64_t perf_lsu_mmio_stall_cycles = 0;
+	uint64_t perf_lsu_atomic_stall_cycles = 0;
+	uint64_t perf_lsu_fence_stall_cycles = 0;
 	uint64_t perf_branch_count = 0;
 	uint64_t perf_branch_taken = 0;
 	uint64_t perf_branch_redirect = 0;
@@ -1158,6 +1163,11 @@ bool run_sim(const SimOptions &opts)
 			perf_stall_cycles += dut->io_debug_stall ? 1 : 0;
 			perf_ifetch_stall_cycles += dut->io_debug_ifetchStall ? 1 : 0;
 			perf_lsu_stall_cycles += dut->io_debug_lsuStall ? 1 : 0;
+			perf_lsu_load_stall_cycles += dut->io_debug_lsuLoadStall ? 1 : 0;
+			perf_lsu_store_stall_cycles += dut->io_debug_lsuStoreStall ? 1 : 0;
+			perf_lsu_mmio_stall_cycles += dut->io_debug_lsuMmioStall ? 1 : 0;
+			perf_lsu_atomic_stall_cycles += dut->io_debug_lsuAtomicStall ? 1 : 0;
+			perf_lsu_fence_stall_cycles += dut->io_debug_lsuFenceStall ? 1 : 0;
 			perf_branch_count += dut->io_debug_branchValid ? 1 : 0;
 			perf_branch_taken += dut->io_debug_branchTaken ? 1 : 0;
 			perf_branch_redirect += dut->io_debug_branchRedirect ? 1 : 0;
@@ -1382,6 +1392,12 @@ bool run_sim(const SimOptions &opts)
 		       branch_pred_taken_pct,
 		       perf_branch_pred_correct,
 		       branch_pred_correct_pct);
+		printf("[perf-lsu]: load=%" PRIu64 " store=%" PRIu64 " mmio=%" PRIu64 " atomic=%" PRIu64 " fence=%" PRIu64 "\n",
+		       perf_lsu_load_stall_cycles,
+		       perf_lsu_store_stall_cycles,
+		       perf_lsu_mmio_stall_cycles,
+		       perf_lsu_atomic_stall_cycles,
+		       perf_lsu_fence_stall_cycles);
 	}
 
 	if (opts.jtag_only)

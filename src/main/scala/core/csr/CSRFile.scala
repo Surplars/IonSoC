@@ -61,6 +61,11 @@ object HpmEventId {
     val BranchRedirect = 7
     val BranchPredTaken = 8
     val BranchPredCorrect = 9
+    val LSULoadStall = 10
+    val LSUStoreStall = 11
+    val LSUFenceStall = 12
+    val LSUAtomicStall = 13
+    val LSUMmioStall = 14
 }
 
 class CsrPerfEvents extends Bundle {
@@ -73,6 +78,11 @@ class CsrPerfEvents extends Bundle {
     val branchRedirect = Bool()
     val branchPredTaken = Bool()
     val branchPredCorrect = Bool()
+    val lsuLoadStall = Bool()
+    val lsuStoreStall = Bool()
+    val lsuFenceStall = Bool()
+    val lsuAtomicStall = Bool()
+    val lsuMmioStall = Bool()
 }
 
 class CSRFile(
@@ -179,7 +189,12 @@ class CSRFile(
             HpmEventId.BranchTaken.U -> io.perf.branchTaken,
             HpmEventId.BranchRedirect.U -> io.perf.branchRedirect,
             HpmEventId.BranchPredTaken.U -> io.perf.branchPredTaken,
-            HpmEventId.BranchPredCorrect.U -> io.perf.branchPredCorrect
+            HpmEventId.BranchPredCorrect.U -> io.perf.branchPredCorrect,
+            HpmEventId.LSULoadStall.U -> io.perf.lsuLoadStall,
+            HpmEventId.LSUStoreStall.U -> io.perf.lsuStoreStall,
+            HpmEventId.LSUFenceStall.U -> io.perf.lsuFenceStall,
+            HpmEventId.LSUAtomicStall.U -> io.perf.lsuAtomicStall,
+            HpmEventId.LSUMmioStall.U -> io.perf.lsuMmioStall
         )
     )
 

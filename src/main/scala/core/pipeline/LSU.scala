@@ -34,6 +34,11 @@ class LSU(XLEN: Int = 64) extends Module {
         val trap_info_out = Output(new TrapInfo(XLEN))
 
         val stall_req       = Output(Bool())
+        val stall_load      = Output(Bool())
+        val stall_store     = Output(Bool())
+        val stall_mmio      = Output(Bool())
+        val stall_atomic    = Output(Bool())
+        val stall_fence     = Output(Bool())
         val load_data_valid = Output(Bool())
         val load_data       = Output(UInt(XLEN.W))
     })
@@ -487,6 +492,11 @@ class LSU(XLEN: Int = 64) extends Module {
     val stall_wait_fence       = raw_fence_req || fencePending
 
     io.stall_req := stall_sb_full || stall_wait_cache_load || stall_wait_mmio || stall_wait_atomic || stall_wait_atomic_store_drain || stall_wait_fence
+    io.stall_load := stall_wait_cache_load
+    io.stall_store := stall_sb_full || storeDrainPending || (sb_has_data && !storeDrainPending)
+    io.stall_mmio := stall_wait_mmio
+    io.stall_atomic := stall_wait_atomic || stall_wait_atomic_store_drain
+    io.stall_fence := stall_wait_fence
     when(inputConsumed && !io.stall_req) {
         inputConsumed := false.B
     }

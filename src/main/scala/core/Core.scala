@@ -39,6 +39,11 @@ class Core(
         val debug_stall = Output(Bool())
         val debug_ifetch_stall = Output(Bool())
         val debug_lsu_stall = Output(Bool())
+        val debug_lsu_load_stall = Output(Bool())
+        val debug_lsu_store_stall = Output(Bool())
+        val debug_lsu_mmio_stall = Output(Bool())
+        val debug_lsu_atomic_stall = Output(Bool())
+        val debug_lsu_fence_stall = Output(Bool())
         val debug_branch_valid = Output(Bool())
         val debug_branch_taken = Output(Bool())
         val debug_branch_redirect = Output(Bool())
@@ -352,6 +357,11 @@ class Core(
     io.debug_stall := global_stall
     io.debug_ifetch_stall := ifetch.io.fetch_stall
     io.debug_lsu_stall := lsu.io.stall_req
+    io.debug_lsu_load_stall := lsu.io.stall_load
+    io.debug_lsu_store_stall := lsu.io.stall_store
+    io.debug_lsu_mmio_stall := lsu.io.stall_mmio
+    io.debug_lsu_atomic_stall := lsu.io.stall_atomic
+    io.debug_lsu_fence_stall := lsu.io.stall_fence
     io.debug_branch_valid := alu.io.br_info.valid
     io.debug_branch_taken := alu.io.br_info.taken
     io.debug_branch_redirect := alu.io.br_info.redirect
@@ -381,6 +391,11 @@ class Core(
     csr.io.perf.globalStall := global_stall
     csr.io.perf.ifetchStall := ifetch.io.fetch_stall
     csr.io.perf.lsuStall := lsu.io.stall_req
+    csr.io.perf.lsuLoadStall := lsu.io.stall_load
+    csr.io.perf.lsuStoreStall := lsu.io.stall_store
+    csr.io.perf.lsuMmioStall := lsu.io.stall_mmio
+    csr.io.perf.lsuAtomicStall := lsu.io.stall_atomic
+    csr.io.perf.lsuFenceStall := lsu.io.stall_fence
     csr.io.perf.branch := alu.io.br_info.valid
     csr.io.perf.branchTaken := alu.io.br_info.valid && alu.io.br_info.taken
     csr.io.perf.branchRedirect := alu.io.br_info.valid && alu.io.br_info.redirect

@@ -11,8 +11,17 @@ _start:
     csrw mhpmevent3, t0
     li   t0, 3
     csrw mhpmevent4, t0
+    li   t0, 10
+    csrw mhpmevent5, t0
+    li   t0, 11
+    csrw mhpmevent6, t0
+    li   t0, 12
+    csrw mhpmevent7, t0
     csrw mhpmcounter3, zero
     csrw mhpmcounter4, zero
+    csrw mhpmcounter5, zero
+    csrw mhpmcounter6, zero
+    csrw mhpmcounter7, zero
 
     li   t0, 0x0123456789abcdef
     sd   t0, 0(s0)
@@ -38,6 +47,12 @@ loop:
     sd   t0, 24(s0)
     csrr t0, mhpmcounter4
     sd   t0, 32(s0)
+    csrr t0, mhpmcounter5
+    sd   t0, 40(s0)
+    csrr t0, mhpmcounter6
+    sd   t0, 48(s0)
+    csrr t0, mhpmcounter7
+    sd   t0, 56(s0)
 
     li   t5, 'P'
     sb   t5, 0(s1)
@@ -57,6 +72,9 @@ fail_spin:
 .section .data
 .align 3
 perf_data:
+    .dword 0
+    .dword 0
+    .dword 0
     .dword 0
     .dword 0
     .dword 0

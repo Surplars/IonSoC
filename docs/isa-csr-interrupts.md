@@ -147,6 +147,11 @@ ALU 中直接组合实现。后续若补全更多 B 扩展，应注意 RV64 imme
 | 7 | branch redirect / mispredict recovery |
 | 8 | BPU predicted taken |
 | 9 | BPU predicted taken with correct target |
+| 10 | LSU cache-load stall |
+| 11 | LSU store-buffer/drain stall |
+| 12 | LSU fence stall |
+| 13 | LSU atomic stall |
+| 14 | LSU MMIO stall |
 
 RustSBI 当前会看到较宽的 MHPM mask。bring-up 阶段这是可接受的；后续若做精确 PMU，应让 mask 和 event 能力匹配真实实现。
 

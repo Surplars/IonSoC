@@ -159,6 +159,14 @@ ALU 支持多级 forward：
 - atomic pending FSM。
 - LR/SC reservation。
 
+LSU stall 已拆成可观测子类，便于后续优化定位：
+
+- `lsuLoadStall`: cacheable load 等待 D-cache 响应，或 load 等待已有 store drain。
+- `lsuStoreStall`: store buffer 满，或 store buffer/drain 正在占用 D-cache。
+- `lsuMmioStall`: device load/store 等待 TileLink MMIO 响应。
+- `lsuAtomicStall`: LR/SC/AMO 序列化读写等待。
+- `lsuFenceStall`: fence 等待 store buffer 和 D-cache 维护响应。
+
 访问分类：
 
 - SRAM/cacheable: 经 D-cache 或 uncached bridge。
