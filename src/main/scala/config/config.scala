@@ -46,7 +46,7 @@ case class SoCFeatures(
     dCache: Boolean = true,
     iCacheSets: Int = 256,
     dCacheSets: Int = 256,
-    frontendQueueEntries: Int = 2,
+    frontendQueueEntries: Int = 4,
     sramBase: BigInt = MemoryBases.DefaultSramBase,
     sramSizeBytes: Int = MemorySizes.DefaultSramSize,
     uart: Boolean = true,
