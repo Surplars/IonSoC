@@ -316,7 +316,11 @@ RustSBI flow：
 
 ```bash
 make verilator-run-rustsbi
+# 等价短名
+make rustsbi-smoke
 ```
+
+该目标不仅检查 `IonSoC SBI smoke` UART 输出和 `a7=93/a0=0` 退出哨兵，还要求 PC 实际进入过 firmware SRAM 区间和 S-mode payload 区间。若失败，harness 会打印最终 `pc/instr/mtvec/mepc/mcause/mtval` 以及 boot-flow 判定结果。
 
 带 boot trace：
 

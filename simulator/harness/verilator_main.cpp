@@ -82,6 +82,8 @@ struct SimOptions
 	bool trace_dmi = false;
 	bool perf_report = false;
 	bool jtag_only = false;
+	bool require_sram_entry = false;
+	bool require_payload_entry = false;
 	int jtag_rbb_port = 0;
 	bool inject_boot_args = false;
 	uint64_t boot_a0 = 0;
@@ -580,6 +582,8 @@ int main(int argc, char **argv, char **env)
 		opts.sram_base = env_u64("ION_SRAM_BASE", FIRMWARE_SRAM_BASE);
 		opts.sram_size = (size_t)env_u64("ION_SRAM_SIZE", DEFAULT_FIRMWARE_SRAM_SIZE);
 		opts.dtb_addr = env_u64("ION_DTB_ADDR", opts.sram_base + 0x00f00000);
+		opts.require_sram_entry = true;
+		opts.require_payload_entry = true;
 		opts.inject_boot_args = true;
 		opts.boot_a0 = env_u64("ION_BOOT_A0", 0);
 		opts.boot_a1 = env_u64("ION_BOOT_A1", opts.dtb_addr);
@@ -1151,24 +1155,27 @@ bool run_sim(const SimOptions &opts)
 			perf_lsu_stall_cycles += dut->io_debug_lsuStall ? 1 : 0;
 		}
 
-		if (trace_boot && dut->clock)
+		if (dut->clock)
 		{
 			if (!saw_rom_pc && pc_now >= BROM_BASE && pc_now < BROM_BASE + ROM_SIZE)
 			{
 				saw_rom_pc = true;
-				printf("[boot-trace %6" PRIu64 "] entered ROM pc=0x%016" PRIx64 "\n", sim_time, pc_now);
+				if (trace_boot)
+					printf("[boot-trace %6" PRIu64 "] entered ROM pc=0x%016" PRIx64 "\n", sim_time, pc_now);
 			}
 			if (!saw_sram_pc && pc_now >= opts.sram_base && pc_now < opts.sram_base + opts.sram_size)
 			{
 				saw_sram_pc = true;
-				printf("[boot-trace %6" PRIu64 "] entered SRAM pc=0x%016" PRIx64 "\n", sim_time, pc_now);
+				if (trace_boot)
+					printf("[boot-trace %6" PRIu64 "] entered SRAM pc=0x%016" PRIx64 "\n", sim_time, pc_now);
 			}
 			if (!saw_payload_pc && pc_now >= opts.boot_a2 && pc_now < opts.boot_a2 + 0x10000)
 			{
 				saw_payload_pc = true;
-				printf("[boot-trace %6" PRIu64 "] entered payload pc=0x%016" PRIx64 "\n", sim_time, pc_now);
+				if (trace_boot)
+					printf("[boot-trace %6" PRIu64 "] entered payload pc=0x%016" PRIx64 "\n", sim_time, pc_now);
 			}
-			if (dut->rootp->SimTop__DOT__core__DOT__combined_trap)
+			if (trace_boot && dut->rootp->SimTop__DOT__core__DOT__combined_trap)
 			{
 				printf("[boot-trace %6" PRIu64 "] trap pc=0x%016" PRIx64 " mtvec=0x%016" PRIx64
 				       " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64 "\n",
@@ -1331,7 +1338,9 @@ bool run_sim(const SimOptions &opts)
 	}
 
 	bool uart_pass = opts.expected_uart.empty() || (uart.output().find(opts.expected_uart) != std::string::npos);
-	bool pass = opts.jtag_only ? true : (saw_exit && a7 == 93 && a0 == 0 && uart_pass);
+	bool boot_flow_pass = (!opts.require_sram_entry || saw_sram_pc) &&
+	                      (!opts.require_payload_entry || saw_payload_pc);
+	bool pass = opts.jtag_only ? true : (saw_exit && a7 == 93 && a0 == 0 && uart_pass && boot_flow_pass);
 	if (opts.perf_report)
 	{
 		double ipc = perf_cycles == 0 ? 0.0 : (double)perf_retired / (double)perf_cycles;
@@ -1358,6 +1367,26 @@ bool run_sim(const SimOptions &opts)
 		printf("[%s]: gp=%d, a7=%d, a0=%d, uart=\"%s\", test %sfailed%s\n", opts.test_name.c_str(), gp, a7, a0, uart.output().c_str(), RED, CEND);
 	else
 		printf("[%s]: gp=%d, a7=%d, a0=%d, test %sunknown%s\n", opts.test_name.c_str(), gp, a7, a0, YELLOW, CEND);
+
+	if (!opts.jtag_only && !pass)
+	{
+		printf("[sim-fail]: saw_exit=%u uart_pass=%u boot_flow_pass=%u entered_sram=%u entered_payload=%u expected_uart=\"%s\"\n",
+		       saw_exit ? 1 : 0,
+		       uart_pass ? 1 : 0,
+		       boot_flow_pass ? 1 : 0,
+		       saw_sram_pc ? 1 : 0,
+		       saw_payload_pc ? 1 : 0,
+		       opts.expected_uart.c_str());
+		printf("[sim-fail]: cycles=%" PRIu64 " pc=0x%016" PRIx64 " instr=0x%08x mtvec=0x%016" PRIx64
+		       " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64 " mtval=0x%016" PRIx64 "\n",
+		       sim_time,
+		       (uint64_t)dut->io_debug_pc,
+		       (uint32_t)dut->io_debug_instr,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtvec,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtval);
+	}
 
 	if (opts.trace_wave)
 #if VM_TRACE
