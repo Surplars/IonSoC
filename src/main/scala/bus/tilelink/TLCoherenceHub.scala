@@ -85,10 +85,13 @@ class TLCoherenceHub(params: TLParams, nClients: Int, nEntries: Int = 16) extend
     io.manager.e.valid := false.B
     io.manager.e.bits := 0.U.asTypeOf(io.manager.e.bits)
 
-    private def driveClientD(client: UInt, bits: TLBundleD): Unit = {
+    // Forward downstream D beats only when the manager has produced one. A
+    // speculative client-side valid would let an L1 consume a response while
+    // the hub still waits for the real beat, deadlocking the next request.
+    private def driveClientD(client: UInt, valid: Bool, bits: TLBundleD): Unit = {
         for (i <- 0 until nClients) {
             when(client === i.U) {
-                io.clients(i).d.valid := true.B
+                io.clients(i).d.valid := valid
                 io.clients(i).d.bits := bits
             }
         }
@@ -232,7 +235,7 @@ class TLCoherenceHub(params: TLParams, nClients: Int, nEntries: Int = 16) extend
             clientD.data := io.manager.d.bits.data
             clientD.corrupt := io.manager.d.bits.corrupt
 
-            driveClientD(pendingClient, clientD)
+            driveClientD(pendingClient, io.manager.d.valid, clientD)
             io.manager.d.ready := io.clients(pendingClient).d.ready
             when(io.manager.d.fire) {
                 when(pendingIsAcquire && !io.manager.d.bits.denied) {
@@ -245,7 +248,7 @@ class TLCoherenceHub(params: TLParams, nClients: Int, nEntries: Int = 16) extend
         }
 
         is(sLocalGrant) {
-            driveClientD(pendingClient, localD)
+            driveClientD(pendingClient, true.B, localD)
             when(io.clients(pendingClient).d.fire) {
                 dirValid(pendingIdx) := true.B
                 dirOwner(pendingIdx) := pendingClient
@@ -279,7 +282,7 @@ class TLCoherenceHub(params: TLParams, nClients: Int, nEntries: Int = 16) extend
             clientD.data := io.manager.d.bits.data
             clientD.corrupt := io.manager.d.bits.corrupt
 
-            driveClientD(pendingClient, clientD)
+            driveClientD(pendingClient, io.manager.d.valid, clientD)
             io.manager.d.ready := io.clients(pendingClient).d.ready
             when(io.manager.d.fire) {
                 when(!io.manager.d.bits.denied && dirValid(pendingIdx) && dirOwner(pendingIdx) === pendingClient && dirTag(pendingIdx) === pendingTag) {

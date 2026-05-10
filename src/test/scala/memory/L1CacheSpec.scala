@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.util._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
-import soc.bus.tilelink.{TLParams, TLPermissions, TLRAM, TLOpcode}
+import soc.bus.tilelink.{TLCoherenceHub, TLParams, TLPermissions, TLRAM, TLOpcode}
 import soc.device.TLError
 import soc.memory.cache.{CacheCmd, L1Cache, UncachedTileLinkBridge}
 
@@ -86,6 +86,90 @@ class CacheRamHarness(params: TLParams) extends Module {
     io.seenRelease := seenRelease
 }
 
+class DualCacheCoherenceHarness(params: TLParams) extends Module {
+    val io = IO(new Bundle {
+        val req0 = Flipped(Decoupled(new soc.memory.CacheReq(params.addrWidth, params.dataWidth)))
+        val resp0 = Decoupled(new soc.memory.CacheResp(params.dataWidth))
+        val req1 = Flipped(Decoupled(new soc.memory.CacheReq(params.addrWidth, params.dataWidth)))
+        val resp1 = Decoupled(new soc.memory.CacheResp(params.dataWidth))
+        val seenProbe0 = Output(Bool())
+        val seenProbe1 = Output(Bool())
+        val seenProbeAck0 = Output(Bool())
+        val seenProbeAck1 = Output(Bool())
+        val seenReleaseToMemory = Output(Bool())
+        val seenReleaseAckFromMemory = Output(Bool())
+        val seenAcquire0 = Output(Bool())
+        val seenAcquire1 = Output(Bool())
+        val seenGrant1 = Output(Bool())
+    })
+
+    private val hubParams = params.copy(sourceBits = params.sourceBits + 1)
+    val cache0 = Module(new L1Cache(params, nSets = 4))
+    val cache1 = Module(new L1Cache(params, nSets = 4))
+    val hub = Module(new TLCoherenceHub(params, nClients = 2, nEntries = 4))
+    val ram = Module(new TLRAM(hubParams, sizeBytes = 4096))
+
+    val seenProbe0 = RegInit(false.B)
+    val seenProbe1 = RegInit(false.B)
+    val seenProbeAck0 = RegInit(false.B)
+    val seenProbeAck1 = RegInit(false.B)
+    val seenReleaseToMemory = RegInit(false.B)
+    val seenReleaseAckFromMemory = RegInit(false.B)
+    val seenAcquire0 = RegInit(false.B)
+    val seenAcquire1 = RegInit(false.B)
+    val seenGrant1 = RegInit(false.B)
+    when(cache0.io.bus.a.fire && cache0.io.bus.a.bits.opcode === TLOpcode.AcquireBlock) {
+        seenAcquire0 := true.B
+    }
+    when(cache1.io.bus.a.fire && cache1.io.bus.a.bits.opcode === TLOpcode.AcquireBlock) {
+        seenAcquire1 := true.B
+    }
+    when(cache0.io.bus.b.fire) {
+        seenProbe0 := true.B
+    }
+    when(cache1.io.bus.b.fire) {
+        seenProbe1 := true.B
+    }
+    when(cache0.io.bus.c.fire && cache0.io.bus.c.bits.opcode === TLOpcode.ProbeAckData) {
+        seenProbeAck0 := true.B
+    }
+    when(cache1.io.bus.c.fire && cache1.io.bus.c.bits.opcode === TLOpcode.ProbeAck) {
+        seenProbeAck1 := true.B
+    }
+    when(hub.io.manager.c.fire && hub.io.manager.c.bits.opcode === TLOpcode.ReleaseData) {
+        seenReleaseToMemory := true.B
+    }
+    when(hub.io.manager.d.fire && hub.io.manager.d.bits.opcode === TLOpcode.ReleaseAck) {
+        seenReleaseAckFromMemory := true.B
+    }
+    when(cache1.io.bus.d.fire && cache1.io.bus.d.bits.opcode === TLOpcode.GrantData) {
+        seenGrant1 := true.B
+    }
+
+    cache0.io.cpu.req <> io.req0
+    io.resp0 <> cache0.io.cpu.resp
+    cache1.io.cpu.req <> io.req1
+    io.resp1 <> cache1.io.cpu.resp
+    cache0.io.invalidate.valid := false.B
+    cache0.io.invalidate.bits := false.B
+    cache1.io.invalidate.valid := false.B
+    cache1.io.invalidate.bits := false.B
+
+    hub.io.clients(0) <> cache0.io.bus
+    hub.io.clients(1) <> cache1.io.bus
+    ram.io.tl <> hub.io.manager
+
+    io.seenProbe0 := seenProbe0
+    io.seenProbe1 := seenProbe1
+    io.seenProbeAck0 := seenProbeAck0
+    io.seenProbeAck1 := seenProbeAck1
+    io.seenReleaseToMemory := seenReleaseToMemory
+    io.seenReleaseAckFromMemory := seenReleaseAckFromMemory
+    io.seenAcquire0 := seenAcquire0
+    io.seenAcquire1 := seenAcquire1
+    io.seenGrant1 := seenGrant1
+}
+
 class L1CacheSpec extends AnyFunSuite with ChiselSim {
     private val params = TLParams(addrWidth = 32, dataWidth = 64, sourceBits = 4, sinkBits = 1, sizeBits = 3)
 
@@ -127,6 +211,65 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
         dut.io.req.bits.atomic.poke(false.B)
         dut.io.req.bits.cacheable.poke(true.B)
         dut.io.req.bits.device.poke(false.B)
+    }
+
+    private def pokeCacheReq(
+        req: DecoupledIO[soc.memory.CacheReq],
+        addr: BigInt,
+        cmd: CacheCmd.Type,
+        data: BigInt = 0,
+        mask: BigInt = 0xff
+    ): Unit = {
+        req.bits.addr.poke(addr.U)
+        req.bits.vaddr.poke(addr.U)
+        req.bits.cmd.poke(cmd)
+        req.bits.wdata.poke(data.U)
+        req.bits.mask.poke(mask.U)
+        req.bits.size.poke(3.U)
+        req.bits.signed.poke(false.B)
+        req.bits.fence.poke(false.B)
+        req.bits.fencei.poke(false.B)
+        req.bits.atomic.poke(false.B)
+        req.bits.cacheable.poke(true.B)
+        req.bits.device.poke(false.B)
+    }
+
+    private def issueCacheReq(req: DecoupledIO[soc.memory.CacheReq], clock: Clock): Unit = {
+        req.valid.poke(true.B)
+        req.ready.expect(true.B)
+        clock.step()
+        req.valid.poke(false.B)
+    }
+
+    private def waitCacheResp(
+        resp: DecoupledIO[soc.memory.CacheResp],
+        clock: Clock,
+        maxCycles: Int = 60,
+        label: String = "cache"
+    ): BigInt = {
+        var sawResp = false
+        var data = BigInt(0)
+        for (_ <- 0 until maxCycles if !sawResp) {
+            if (resp.valid.peek().litToBoolean) {
+                resp.bits.err.expect(false.B)
+                data = resp.bits.rdata.peek().litValue
+                sawResp = true
+            }
+            clock.step()
+        }
+        assert(sawResp, s"$label response was not observed")
+        data
+    }
+
+    private def waitUntil(clock: Clock, maxCycles: Int, label: String)(cond: => Boolean): Unit = {
+        var done = false
+        for (_ <- 0 until maxCycles if !done) {
+            done = cond
+            if (!done) {
+                clock.step()
+            }
+        }
+        assert(done, s"$label was not observed")
     }
 
     private def issueReq(dut: CacheRamHarness): Unit = {
@@ -355,6 +498,48 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
 
             val missProbeData = issueProbe(dut, addr = 0x280, expectData = false, source = 11)
             assert(missProbeData == 0)
+        }
+    }
+
+    test("Two L1 caches transfer a dirty line through TLCoherenceHub") {
+        simulate(new DualCacheCoherenceHarness(params)) { dut =>
+            dut.io.req0.valid.poke(false.B)
+            dut.io.req1.valid.poke(false.B)
+            dut.io.resp0.ready.poke(true.B)
+            dut.io.resp1.ready.poke(true.B)
+
+            pokeCacheReq(dut.io.req0, addr = 0x100, cmd = CacheCmd.Write, data = BigInt("deadbeefcafef00d", 16))
+            issueCacheReq(dut.io.req0, dut.clock)
+            waitCacheResp(dut.io.resp0, dut.clock, maxCycles = 80, label = "cache0 write miss")
+            dut.io.seenAcquire0.expect(true.B)
+
+            pokeCacheReq(dut.io.req1, addr = 0x100, cmd = CacheCmd.Read)
+            issueCacheReq(dut.io.req1, dut.clock)
+            waitUntil(dut.clock, maxCycles = 20, label = "AcquireBlock from cache1") {
+                dut.io.seenAcquire1.peek().litToBoolean
+            }
+            waitUntil(dut.clock, maxCycles = 20, label = "probe to cache0") {
+                dut.io.seenProbe0.peek().litToBoolean
+            }
+            waitUntil(dut.clock, maxCycles = 20, label = "ProbeAckData from cache0") {
+                dut.io.seenProbeAck0.peek().litToBoolean
+            }
+            waitUntil(dut.clock, maxCycles = 20, label = "ReleaseData to memory") {
+                dut.io.seenReleaseToMemory.peek().litToBoolean
+            }
+            waitUntil(dut.clock, maxCycles = 20, label = "ReleaseAck from memory") {
+                dut.io.seenReleaseAckFromMemory.peek().litToBoolean
+            }
+            waitUntil(dut.clock, maxCycles = 20, label = "GrantData to cache1") {
+                dut.io.seenGrant1.peek().litToBoolean
+            }
+            assert(waitCacheResp(dut.io.resp1, dut.clock, maxCycles = 20, label = "cache1 read transfer") == BigInt("deadbeefcafef00d", 16))
+
+            pokeCacheReq(dut.io.req0, addr = 0x100, cmd = CacheCmd.Read)
+            issueCacheReq(dut.io.req0, dut.clock)
+            assert(waitCacheResp(dut.io.resp0, dut.clock, maxCycles = 100, label = "cache0 read reacquire") == BigInt("deadbeefcafef00d", 16))
+            dut.io.seenProbe1.expect(true.B)
+            dut.io.seenProbeAck1.expect(true.B)
         }
     }
 
