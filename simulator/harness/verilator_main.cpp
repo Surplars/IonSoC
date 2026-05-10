@@ -1337,7 +1337,7 @@ bool run_sim(const SimOptions &opts)
 			printf("[boot-trace cache] ifetch_state=%u ifetch_req=%u icache_state=%u icache_req_ready=%u icache_resp_valid=%u icache_inv_ready=%u bus_a_valid=%u bus_d_ready=%u\n",
 			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__state,
 			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_cache_req_valid_0,
-			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->__PVT__state,
+			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->state,
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_cpu_req_ready,
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_cpu_resp_valid,
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_invalidate_ready,

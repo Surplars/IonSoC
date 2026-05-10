@@ -148,6 +148,14 @@ Linker scripts：
 | `ION_JTAG_RBB_PORT` | remote-bitbang 端口 |
 | `ION_JTAG_ONLY=1` | JTAG-only 运行模式 |
 
+默认 Verilator binary 不编译 VCD trace 支持，以减少 C++ 生成和编译时间。需要波形时使用：
+
+```bash
+TRACE=1 ION_TRACE_WAVE=1 make verilator-run-perf
+```
+
+`TRACE=1` 会使用独立的 `simulator/build/obj-trace*` 目录，不会覆盖普通 smoke/perf binary。
+
 ## 性能 Smoke
 
 `make verilator-run-perf` 会构建 `simulator/payloads/perf.S`，运行一个固定的 load/store/ALU/branch 循环，并启用 `ION_PERF=1`。当前 baseline：
