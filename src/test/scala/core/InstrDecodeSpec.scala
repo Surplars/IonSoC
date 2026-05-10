@@ -15,6 +15,7 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
         dut.io.instr_len_in.poke(0.U)
         dut.io.priv.poke(PrivilegeLevel.Machine)
         dut.io.pred_taken_in.poke(false.B)
+        dut.io.pred_target_in.poke(0.U)
         dut.io.redirect.poke(false.B)
         dut.io.stall.poke(false.B)
         dut.io.reg_rs1_data.poke(1.U)

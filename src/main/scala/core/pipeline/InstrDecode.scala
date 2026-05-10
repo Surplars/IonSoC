@@ -19,6 +19,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         val instr_len_in  = Input(UInt(2.W))
         val priv          = Input(UInt(2.W))
         val pred_taken_in = Input(Bool())
+        val pred_target_in = Input(UInt(XLEN.W))
         val redirect      = Input(Bool())
         val stall         = Input(Bool())
 
@@ -31,6 +32,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         val decoded_out    = Output(new DecodedInstr(XLEN))
         val pc_out         = Output(UInt(XLEN.W))
         val pred_taken_out = Output(Bool())
+        val pred_target_out = Output(UInt(XLEN.W))
         val trap_info      = Output(new TrapInfo(XLEN))
     })
 
@@ -237,5 +239,6 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     io.decoded_out    := RegEnable(Mux(valid, decoded, defaultDecoded), defaultDecoded, update_en)
     io.pc_out         := RegEnable(io.pc_in, 0.U, update_en)
     io.pred_taken_out := RegEnable(io.pred_taken_in, false.B, update_en)
+    io.pred_target_out := RegEnable(io.pred_target_in, 0.U, update_en)
     io.trap_info      := RegEnable(trap_info, 0.U.asTypeOf(io.trap_info), update_en)
 }

@@ -50,6 +50,31 @@ object SStatus {
     }
 }
 
+object HpmEventId {
+    val None = 0
+    val Retire = 1
+    val GlobalStall = 2
+    val IFetchStall = 3
+    val LSUStall = 4
+    val Branch = 5
+    val BranchTaken = 6
+    val BranchRedirect = 7
+    val BranchPredTaken = 8
+    val BranchPredCorrect = 9
+}
+
+class CsrPerfEvents extends Bundle {
+    val retire = Bool()
+    val globalStall = Bool()
+    val ifetchStall = Bool()
+    val lsuStall = Bool()
+    val branch = Bool()
+    val branchTaken = Bool()
+    val branchRedirect = Bool()
+    val branchPredTaken = Bool()
+    val branchPredCorrect = Bool()
+}
+
 class CSRFile(
     XLEN: Int = 64,
     hartID: Int,
@@ -72,6 +97,7 @@ class CSRFile(
         val debug_writable = Output(Bool())
         val debug_write = Input(Bool())
         val debug_wdata = Input(UInt(XLEN.W))
+        val perf = Input(new CsrPerfEvents)
         // 硬件直接交互接口
         val trap_valid = Input(Bool())
         val trap_pc    = Input(UInt(XLEN.W))
@@ -143,13 +169,34 @@ class CSRFile(
     val ssipSw    = RegInit(false.B)
     val mip       = WireInit(0.U(XLEN.W))      // 中断 pending，部分由硬件连线
 
-    // Keep the base performance counters architecturally visible. minstret is
-    // currently cycle-backed until the core exposes a precise retire pulse.
+    private def hpmEventPulse(eventId: UInt): Bool = MuxLookup(eventId, false.B)(
+        Seq(
+            HpmEventId.Retire.U -> io.perf.retire,
+            HpmEventId.GlobalStall.U -> io.perf.globalStall,
+            HpmEventId.IFetchStall.U -> io.perf.ifetchStall,
+            HpmEventId.LSUStall.U -> io.perf.lsuStall,
+            HpmEventId.Branch.U -> io.perf.branch,
+            HpmEventId.BranchTaken.U -> io.perf.branchTaken,
+            HpmEventId.BranchRedirect.U -> io.perf.branchRedirect,
+            HpmEventId.BranchPredTaken.U -> io.perf.branchPredTaken,
+            HpmEventId.BranchPredCorrect.U -> io.perf.branchPredCorrect
+        )
+    )
+
+    // Keep the base performance counters architecturally visible. minstret uses
+    // the core retire pulse, while mhpmcounter3..31 count selected IonSoC
+    // platform events via mhpmevent3..31.
     when(!mcountinhibit(0)) {
         mcycle := mcycle + 1.U
     }
-    when(!mcountinhibit(2)) {
+    when(!mcountinhibit(2) && io.perf.retire) {
         minstret := minstret + 1.U
+    }
+    for (i <- 0 until 29) {
+        val inhibitBit = i + 3
+        when(!mcountinhibit(inhibitBit) && hpmEventPulse(mhpmevent(i)(7, 0))) {
+            mhpmcounter(i) := mhpmcounter(i) + 1.U
+        }
     }
 
     private def bitMask(bit: Int): UInt = (BigInt(1) << bit).U(XLEN.W)

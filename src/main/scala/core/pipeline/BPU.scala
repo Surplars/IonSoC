@@ -267,10 +267,8 @@ class BranchPredictor(val entries: Int = 512) extends Module {
   // Chisel Mem 的读端口是组合逻辑，所以可以： old_cnt = mem(upd_idx) -> new_cnt = calc(old_cnt) -> mem(upd_idx) := new_cnt
   val bht_array = Mem(entries, UInt(2.W))
 
-  // 注意：真实硬件中，BHT 最好是 Reg 给初始值，因为 Mem 初始是随机垃圾值。
-  // 在仿真中，这可能导致一开始预测乱跳。
-  // 一个 workaround 是，如果 Valid 为 0，我们强制把读出来的 BHT 视为 "Weakly Taken" 或 "Strongly Taken" (对于 JAL)
-  // 或者在此处加复位逻辑比较麻烦。对于非 FPGA 综合，大部分仿真器 Mem 初始为0。
+  // BHT 只在 BTB valid/tag 命中时参与预测。更新侧对新分配项显式初始化计数器，
+  // 避免依赖未初始化 Mem 的旧值。
   
   // --------------------------------------------------------
   // 1. 预测逻辑 (Fetch Stage - 组合逻辑)
@@ -305,34 +303,37 @@ class BranchPredictor(val entries: Int = 512) extends Module {
   val upd_idx = getIndex(io.update_pc)
   val upd_tag = getTag(io.update_pc)
   
-  // 这里的读也是组合逻辑，读出当前存储的旧计数器值
-  // 注意：这里可能存在 Read-After-Write 冒险，但因为我们是在时钟沿写，
-  // 组合逻辑读出的应该是寄存器当前维持的值。
+  val upd_valid = valid_array(upd_idx)
+  val upd_hit = upd_valid && (tag_array(upd_idx) === upd_tag)
   val old_cnt = bht_array(upd_idx)
   
   when(io.update_valid) {
-    // 写入 Tag 和 Target
-    valid_array(upd_idx)  := true.B
-    tag_array(upd_idx)    := upd_tag
-    target_array(upd_idx) := io.update_target
+    // Not-taken conditional branches that miss the BTB are not allocated.
+    // This keeps one-off forward branches from polluting the direct-mapped BTB.
+    val shouldWriteBtb = !io.update_is_br || io.update_taken || upd_hit
+    when(shouldWriteBtb) {
+      valid_array(upd_idx)  := true.B
+      tag_array(upd_idx)    := upd_tag
+      target_array(upd_idx) := io.update_target
+    }
 
-    // 更新饱和计数器
-    val new_cnt = Wire(UInt(2.W))
-    new_cnt := old_cnt // 默认保持
+    val base_cnt = Mux(upd_hit, old_cnt, Mux(io.update_taken, 2.U, 1.U))
+    val new_cnt = WireDefault(base_cnt)
 
     when(io.update_is_br) {
       // 条件分支：使用饱和加减逻辑
       when(io.update_taken) {
-        when(old_cnt =/= 3.U) { new_cnt := old_cnt + 1.U }
+        when(base_cnt =/= 3.U) { new_cnt := base_cnt + 1.U }
       }.otherwise {
-        when(old_cnt =/= 0.U) { new_cnt := old_cnt - 1.U }
+        when(base_cnt =/= 0.U) { new_cnt := base_cnt - 1.U }
       }
     }.otherwise {
       // 无条件跳转 (JAL, JALR)：直接设为 Strong Taken (11)
       new_cnt := 3.U
     }
     
-    // 写入 Mem
-    bht_array(upd_idx) := new_cnt
+    when(shouldWriteBtb) {
+      bht_array(upd_idx) := new_cnt
+    }
   }
 }

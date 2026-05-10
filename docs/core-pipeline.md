@@ -28,6 +28,30 @@
 
 `src/main/scala/core/PC.scala` 保存 `ProgramCounter`，默认 reset 到 `Config.resetVector`，即 `0x80000000`。
 
+当前 BPU 位于 `src/main/scala/core/pipeline/BPU.scala`，是面向 MCU profile 的轻量实现：
+
+- Direct-mapped BTB，默认 512 项。
+- BTB index/tag 使用 halfword PC 位，支持 RV64C 的 16-bit 指令边界。
+- 每项带 2-bit 饱和计数器。条件分支按 taken/not-taken 更新，JAL/JALR 直接置为 strongly taken。
+- Not-taken 条件分支在 BTB miss 时不分配，减少一次性前向分支污染。
+- 新分配项显式初始化 BHT 计数器，不依赖未初始化 `Mem` 内容。
+
+预测元数据会随 `PC -> InstrFetch -> InstrDecode -> ALU` 传递。ALU 解析分支后：
+
+- 预测 taken 且目标等于实际目标：不再发 redirect，避免正确预测仍冲刷流水线。
+- 预测 taken 但实际 not-taken：redirect 到 fallthrough。
+- 预测目标错误或未预测 taken 但实际 taken：redirect 到实际 target。
+
+后续性能方向是把 direct-mapped BTB 升级为小型 set-associative BTB，并增加 RAS/return 预测；在进入超标量前，优先用性能计数器量化 branch redirect、I-cache miss、LSU stall 的比例。
+
+Verilator harness 支持 `ION_PERF=1` 输出性能摘要。基础行 `[perf]` 统计 cycles、retired、IPC、全局 stall、I-fetch stall 和 LSU stall；分支行 `[perf-branch]` 统计分支数量、taken 比例、redirect 比例、BPU taken 预测数量以及 taken-target 正确预测数量。推荐先跑 `make verilator-run-perf` 获得瓶颈分布，再决定是否继续扩大 BTB、增加 RAS，或优先优化 cache/LSU。
+
+I-cache path 额外维护一个 64-bit fetch beat buffer。顺序 PC 仍落在上一拍返回的 beat 内时，`InstrFetch` 直接从 buffer 解码，不再向 I-cache 发起一次命中访问。这个优化对 32-bit 顺序代码可复用同一 8-byte beat 内的第二条指令，同时保留跨 beat compressed 指令的第二次取数逻辑。
+
+当前前端也支持 idle 当拍发起 I-cache 请求：如果 PC 不命中 beat buffer，`InstrFetch` 会在 `sIdle` 同拍拉起 `cache.req.valid`，cache ready 时直接进入 wait 状态。这只减少请求状态机的固定空泡；I-cache 本身仍使用 `SyncReadMem` 一拍读 tag/data，再在 compare 周期返回，不依赖异步 SRAM 读，适合后续 FPGA BRAM 映射。
+
+顺序执行跨到下一 64-bit beat 时，前端会在当前指令仍由 beat buffer 供给的同拍发起下一 beat 请求。该请求只在当前 PC 没有 taken 预测时触发；若后续 trap/redirect 发生，晚到 response 通过 `dropResp` 丢弃。因此它是一个不改变架构语义的 ahead fetch，用来隐藏下一 beat 的一部分 I-cache hit 延迟。
+
 输入来源优先级：
 
 1. reset：输出 reset vector，取指暂时关闭。
@@ -58,22 +82,26 @@
 
 ### I-cache path
 
-I-cache path 使用 6 状态状态机：
+I-cache path 使用 7 状态状态机：
 
 - `sIdle`
 - `sFirstReq`
 - `sFirstWait`
 - `sSecondReq`
 - `sSecondWait`
+- `sPrefetchWait`
 - `sRelease`
 
 关键行为：
 
-- 第一拍请求当前 PC 所在 64-bit beat。
+- idle 当拍请求当前 PC 所在 64-bit beat；若 cache 暂时不 ready，则在 `sFirstReq` 保持请求。
 - 如果 compressed enabled 且 PC 指向 beat 最后一个 halfword，同时低 2 位显示这是 32-bit 指令，则发第二次请求取下一个 beat。
+- 当 beat buffer 命中且顺序 next PC 跨到下一 beat 时，若没有 taken 预测，同拍发起下一 beat ahead fetch。
 - `assembledCrossBeat = Cat(nextBeat(15,0), crossBeatLowHalf)` 拼接跨 beat 的 32-bit 指令。
 - `pc_step_len` 在 cache response 被接受的同拍使用刚解出的 `acceptedLen`，避免“上一条 32-bit 后接 16-bit 时 PC 仍加 4”的 bug。
 - flush 后仍保持 response channel 可 drain，避免 late response 把 I-cache 卡在 response 状态，进而阻塞 `fence.i`。
+
+L1 cache hit path 保持 FPGA 友好时序：CPU 请求在 `sIdle` 被接收，tag/data 通过 `SyncReadMem` 读出，下一拍 `sCompare` 做 tag compare 并返回 hit 响应。若 CPU resp backpressure，则把响应数据放入 `refillReg`，回到既有 `sResp` 保持路径。
 
 ## Decode
 
@@ -210,5 +238,6 @@ Debug Module 通过 `debug_haltreq/debug_resumereq` 控制 `debugHalted`。halt 
 - CSR debug write 才被允许。
 - pipeline 全局冻结。
 
-当前 debug 侧适合 bring-up/OpenOCD examine，尚不是完整生产级 debug subsystem。
+`haltreq` 可以保持为电平请求；`resumereq` 是 DMControl 写入产生的一拍脉冲，寄存器读回时该 bit 会被清掉。系统级 JTAG 测试需要按硬件 DMI 布局打包：`op[1:0]`、`data[33:2]`、`addr[40:34]`。
 
+当前 debug 侧适合 bring-up/OpenOCD examine，尚不是完整生产级 debug subsystem。

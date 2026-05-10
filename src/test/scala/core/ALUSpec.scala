@@ -12,6 +12,7 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
         dut.io.valid_in.poke(true.B)
         dut.io.trap_valid.poke(false.B)
         dut.io.pred_taken_in.poke(false.B)
+        dut.io.pred_target_in.poke(0.U)
         dut.io.stall.poke(false.B)
 
         dut.io.trap_info_in.valid.poke(false.B)
@@ -387,6 +388,41 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.br_info.taken.expect(true.B)
             dut.io.br_info.redirect.expect(true.B)
             dut.io.br_info.target.expect("h4000001e".U)
+        }
+    }
+
+    test("ALU suppresses redirect when predicted taken target is correct") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.decoded_in.ctrl.reg_write.poke(false.B)
+            dut.io.decoded_in.ctrl.branch_type.poke(BranchType.BNE)
+            dut.io.decoded_in.op1.poke(1.U)
+            dut.io.decoded_in.op2.poke(2.U)
+            dut.io.decoded_in.br_imm.poke(16.U)
+            dut.io.pred_taken_in.poke(true.B)
+            dut.io.pred_target_in.poke("h80000010".U)
+            dut.clock.step()
+
+            dut.io.br_info.valid.expect(true.B)
+            dut.io.br_info.taken.expect(true.B)
+            dut.io.br_info.redirect.expect(false.B)
+            dut.io.br_info.target.expect("h80000010".U)
+
+            init(dut)
+            dut.io.decoded_in.ctrl.reg_write.poke(false.B)
+            dut.io.decoded_in.ctrl.branch_type.poke(BranchType.BNE)
+            dut.io.decoded_in.op1.poke(1.U)
+            dut.io.decoded_in.op2.poke(2.U)
+            dut.io.decoded_in.br_imm.poke(16.U)
+            dut.io.pred_taken_in.poke(true.B)
+            dut.io.pred_target_in.poke("h80000020".U)
+            dut.clock.step()
+
+            dut.io.br_info.valid.expect(true.B)
+            dut.io.br_info.taken.expect(true.B)
+            dut.io.br_info.redirect.expect(true.B)
+            dut.io.br_info.target.expect("h80000010".U)
         }
     }
 }

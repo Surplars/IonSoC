@@ -1125,6 +1125,11 @@ bool run_sim(const SimOptions &opts)
 	uint64_t perf_stall_cycles = 0;
 	uint64_t perf_ifetch_stall_cycles = 0;
 	uint64_t perf_lsu_stall_cycles = 0;
+	uint64_t perf_branch_count = 0;
+	uint64_t perf_branch_taken = 0;
+	uint64_t perf_branch_redirect = 0;
+	uint64_t perf_branch_pred_taken = 0;
+	uint64_t perf_branch_pred_correct = 0;
 
 	while (opts.max_cycles == 0 || sim_time < opts.max_cycles)
 	{
@@ -1153,6 +1158,11 @@ bool run_sim(const SimOptions &opts)
 			perf_stall_cycles += dut->io_debug_stall ? 1 : 0;
 			perf_ifetch_stall_cycles += dut->io_debug_ifetchStall ? 1 : 0;
 			perf_lsu_stall_cycles += dut->io_debug_lsuStall ? 1 : 0;
+			perf_branch_count += dut->io_debug_branchValid ? 1 : 0;
+			perf_branch_taken += dut->io_debug_branchTaken ? 1 : 0;
+			perf_branch_redirect += dut->io_debug_branchRedirect ? 1 : 0;
+			perf_branch_pred_taken += dut->io_debug_branchPredTaken ? 1 : 0;
+			perf_branch_pred_correct += dut->io_debug_branchPredCorrect ? 1 : 0;
 		}
 
 		if (dut->clock)
@@ -1203,7 +1213,7 @@ bool run_sim(const SimOptions &opts)
 				   " id_v=%u id_rd=%u id_w=%u id_op1=0x%016" PRIx64 " id_op2=0x%016" PRIx64
 				   " lsu_stall=%u load_valid=%u load=0x%016" PRIx64 " alu_v=%u alu_rd=%u alu_w=%u alu_res=0x%016" PRIx64 " alu_pc=0x%016" PRIx64 " alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
 				   " lsu_v=%u lsu_rd=%u lsu_w=%u lsu_res=0x%016" PRIx64 " wb_rd=%u wb_w=%u wb_data=0x%016" PRIx64
-				   " if_state=%u if_acc=%u if_req_pc=0x%016" PRIx64 " if_pc=0x%016" PRIx64 " if_instr=0x%08x if_len=%u if_rel_len=%u pc_step=%u pc_hold=%u bpu_taken=%u bpu_target=0x%016" PRIx64
+					   " if_state=%u if_acc=%u if_req_pc=0x%016" PRIx64 " if_pc=0x%016" PRIx64 " if_instr=0x%08x if_len=%u if_rel_len=%u pc_step=%u pc_hold=%u bpu_taken=%u"
 				   " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
 				   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " plic_src1=%u mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
 				   sim_time,
@@ -1244,11 +1254,10 @@ bool run_sim(const SimOptions &opts)
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_instr_out_r_1,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__acceptedLen,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__releaseLen,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT___io_pc_step_len_T,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirectHold,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT___bpu_io_pred_taken,
-				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT___bpu_io_pred_target,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirect,
+					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__releaseLen,
+					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirectHold,
+					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT___bpu_io_pred_taken,
+					   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__redirect,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__interruptPending,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__interrupt_fire,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__combined_trap,
@@ -1347,6 +1356,11 @@ bool run_sim(const SimOptions &opts)
 		double stall_pct = perf_cycles == 0 ? 0.0 : (100.0 * (double)perf_stall_cycles / (double)perf_cycles);
 		double ifetch_pct = perf_cycles == 0 ? 0.0 : (100.0 * (double)perf_ifetch_stall_cycles / (double)perf_cycles);
 		double lsu_pct = perf_cycles == 0 ? 0.0 : (100.0 * (double)perf_lsu_stall_cycles / (double)perf_cycles);
+		double branch_rate = perf_retired == 0 ? 0.0 : (100.0 * (double)perf_branch_count / (double)perf_retired);
+		double branch_taken_pct = perf_branch_count == 0 ? 0.0 : (100.0 * (double)perf_branch_taken / (double)perf_branch_count);
+		double branch_redirect_pct = perf_branch_count == 0 ? 0.0 : (100.0 * (double)perf_branch_redirect / (double)perf_branch_count);
+		double branch_pred_taken_pct = perf_branch_count == 0 ? 0.0 : (100.0 * (double)perf_branch_pred_taken / (double)perf_branch_count);
+		double branch_pred_correct_pct = perf_branch_count == 0 ? 0.0 : (100.0 * (double)perf_branch_pred_correct / (double)perf_branch_count);
 		printf("[perf]: cycles=%" PRIu64 " retired=%" PRIu64 " ipc=%.4f stall_cycles=%" PRIu64 " stall_pct=%.2f ifetch_stall=%" PRIu64 " ifetch_pct=%.2f lsu_stall=%" PRIu64 " lsu_pct=%.2f\n",
 		       perf_cycles,
 		       perf_retired,
@@ -1357,6 +1371,17 @@ bool run_sim(const SimOptions &opts)
 		       ifetch_pct,
 		       perf_lsu_stall_cycles,
 		       lsu_pct);
+		printf("[perf-branch]: branches=%" PRIu64 " branch_rate=%.2f taken=%" PRIu64 " taken_pct=%.2f redirects=%" PRIu64 " redirect_pct=%.2f pred_taken=%" PRIu64 " pred_taken_pct=%.2f pred_correct=%" PRIu64 " pred_correct_pct=%.2f\n",
+		       perf_branch_count,
+		       branch_rate,
+		       perf_branch_taken,
+		       branch_taken_pct,
+		       perf_branch_redirect,
+		       branch_redirect_pct,
+		       perf_branch_pred_taken,
+		       branch_pred_taken_pct,
+		       perf_branch_pred_correct,
+		       branch_pred_correct_pct);
 	}
 
 	if (opts.jtag_only)

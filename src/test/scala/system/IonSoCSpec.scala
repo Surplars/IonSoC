@@ -70,9 +70,9 @@ class IonSoCSpec extends AnyFunSuite with ChiselSim {
     private def pulseTck(dut: IonSoC, tms: Boolean, tdi: Boolean = false): Boolean = {
         dut.io.jtag_tms.poke(tms.B)
         dut.io.jtag_tdi.poke(tdi.B)
+        val tdo = dut.io.jtag_tdo.peek().litToBoolean
         dut.io.jtag_tck.poke(true.B)
         dut.clock.step()
-        val tdo = dut.io.jtag_tdo.peek().litToBoolean
         dut.io.jtag_tck.poke(false.B)
         dut.clock.step()
         tdo
@@ -96,7 +96,7 @@ class IonSoCSpec extends AnyFunSuite with ChiselSim {
     }
 
     private def dmiWrite(dut: IonSoC, addr: Int, data: BigInt): Unit = {
-        val packet = (data << 9) | (BigInt(addr) << 2) | 2
+        val packet = (BigInt(addr) << 34) | ((data & BigInt("ffffffff", 16)) << 2) | 2
         pulseTck(dut, tms = true)
         pulseTck(dut, tms = false)
         pulseTck(dut, tms = false)

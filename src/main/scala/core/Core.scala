@@ -39,6 +39,11 @@ class Core(
         val debug_stall = Output(Bool())
         val debug_ifetch_stall = Output(Bool())
         val debug_lsu_stall = Output(Bool())
+        val debug_branch_valid = Output(Bool())
+        val debug_branch_taken = Output(Bool())
+        val debug_branch_redirect = Output(Bool())
+        val debug_branch_pred_taken = Output(Bool())
+        val debug_branch_pred_correct = Output(Bool())
 
         val IBus = new TLBundle(tlParams)
         val DBus = new TLBundle(dbusParams)
@@ -347,6 +352,11 @@ class Core(
     io.debug_stall := global_stall
     io.debug_ifetch_stall := ifetch.io.fetch_stall
     io.debug_lsu_stall := lsu.io.stall_req
+    io.debug_branch_valid := alu.io.br_info.valid
+    io.debug_branch_taken := alu.io.br_info.taken
+    io.debug_branch_redirect := alu.io.br_info.redirect
+    io.debug_branch_pred_taken := alu.io.br_info.valid && alu.io.pred_taken_in
+    io.debug_branch_pred_correct := alu.io.br_info.valid && alu.io.pred_taken_in && alu.io.br_info.taken && !alu.io.br_info.redirect
     // CSR
     csr.io.valid      := alu.io.csr_valid
     csr.io.cmd        := alu.io.csr_cmd
@@ -367,11 +377,21 @@ class Core(
     csr.io.is_ret     := ret_redirect
     csr.io.ret_type   := lsu.io.trap_info_out.ret_type
     csr.io.ie_out     := DontCare
+    csr.io.perf.retire := io.debug_retire
+    csr.io.perf.globalStall := global_stall
+    csr.io.perf.ifetchStall := ifetch.io.fetch_stall
+    csr.io.perf.lsuStall := lsu.io.stall_req
+    csr.io.perf.branch := alu.io.br_info.valid
+    csr.io.perf.branchTaken := alu.io.br_info.valid && alu.io.br_info.taken
+    csr.io.perf.branchRedirect := alu.io.br_info.valid && alu.io.br_info.redirect
+    csr.io.perf.branchPredTaken := alu.io.br_info.valid && alu.io.pred_taken_in
+    csr.io.perf.branchPredCorrect := alu.io.br_info.valid && alu.io.pred_taken_in && alu.io.br_info.taken && !alu.io.br_info.redirect
     // ifetch
     ifetch.io.stall         := pipe_stall || decodeUsesPending || debugDcachePending || (debugHalted && !debugIcachePending)
     ifetch.io.pc            := pc.io.pc_out
     ifetch.io.instr_in      := io.instr
     ifetch.io.pred_taken_in := pc.io.pred_taken
+    ifetch.io.pred_target_in := pc.io.pred_target
     ifetch.io.redirect      := pc.io.redirect
     ifetch.io.trap_valid    := frontend_flush
     io.debug_instr          := ifetch.io.instr_out
@@ -385,6 +405,7 @@ class Core(
     idecode.io.instr_len_in  := ifetch.io.instr_len
     idecode.io.priv          := csr.io.mem_cfg_out.priv
     idecode.io.pred_taken_in := ifetch.io.pred_taken_out
+    idecode.io.pred_target_in := ifetch.io.pred_target_out
     val aluBypassValid = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
         !isLoadLikeOp(aluMemOp)
     def bypassSource(valid: Bool, rd: UInt, data: UInt): FwdSource = {
@@ -422,6 +443,7 @@ class Core(
     alu.io.pc_in          := idecode.io.pc_out
     alu.io.next_pc_in     := idecode.io.pc_in
     alu.io.pred_taken_in  := idecode.io.pred_taken_out
+    alu.io.pred_target_in := idecode.io.pred_target_out
     alu.io.decoded_in     := idecode.io.decoded_out
     alu.io.trap_info_in   := idecode.io.trap_info
     alu.io.csr_illegal    := csr.io.illegal

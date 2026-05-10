@@ -9,6 +9,11 @@ class DebugIO extends Bundle {
     val stall = Output(Bool())
     val ifetchStall = Output(Bool())
     val lsuStall = Output(Bool())
+    val branchValid = Output(Bool())
+    val branchTaken = Output(Bool())
+    val branchRedirect = Output(Bool())
+    val branchPredTaken = Output(Bool())
+    val branchPredCorrect = Output(Bool())
 }
 
 class DebugCacheControl extends Bundle {

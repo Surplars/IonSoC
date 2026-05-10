@@ -17,6 +17,7 @@ class ALU(XLEN: Int = 64) extends Module {
         val trap_valid    = Input(Bool())
         val decoded_in    = Input(new DecodedInstr(XLEN))
         val pred_taken_in = Input(Bool())
+        val pred_target_in = Input(UInt(XLEN.W))
         val trap_info_in  = Input(new TrapInfo(XLEN))
         val stall         = Input(Bool())
 
@@ -374,7 +375,9 @@ class ALU(XLEN: Int = 64) extends Module {
 
     val fallthroughTarget = io.pc_in + instrStep
     val redirectTarget = Mux(branch_taken, branch_target, fallthroughTarget)
-    val forceTakenRedirect = branch_taken && ((branch_type === BranchType.JAL) || (branch_type === BranchType.JALR) || branch_is_br)
+    val correctTakenPrediction = io.pred_taken_in && branch_taken && io.pred_target_in === branch_target
+    val forceTakenRedirect = branch_taken && !correctTakenPrediction &&
+        ((branch_type === BranchType.JAL) || (branch_type === BranchType.JALR) || branch_is_br)
     val correctNotTaken = !branch_taken && io.pred_taken_in
 
     io.br_info.pc        := Mux(branch_valid, io.pc_in, 0.U)

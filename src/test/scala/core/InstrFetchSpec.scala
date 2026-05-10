@@ -10,6 +10,7 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         dut.io.pc.poke("h80000000".U)
         dut.io.instr_in.poke("h0000000000000013".U)
         dut.io.pred_taken_in.poke(false.B)
+        dut.io.pred_target_in.poke(0.U)
         dut.io.redirect.poke(false.B)
         dut.io.trap_valid.poke(false.B)
         dut.io.stall.poke(false.B)
@@ -71,7 +72,6 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.io.pc.poke("h1000000e".U)
             dut.io.cache.req.ready.poke(true.B)
 
-            dut.clock.step()
             dut.io.cache.req.valid.expect(true.B)
             dut.io.cache.req.bits.addr.expect("h1000000e".U)
 
@@ -103,7 +103,6 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.pc.poke("h4000f1d4".U)
             dut.clock.step()
-            dut.clock.step()
             dut.io.cache.resp.bits.rdata.poke("h0000100ffe62c3e3".U) // previous blt; fence.i
             dut.io.cache.resp.bits.err.poke(false.B)
             dut.io.cache.resp.valid.poke(true.B)
@@ -117,7 +116,6 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.pc.poke("h4000f1d8".U)
             dut.clock.step()
-            dut.clock.step()
             dut.io.cache.resp.bits.rdata.poke("h0000000000008082".U) // c.jr ra; c.unimp; c.unimp
             dut.io.cache.resp.valid.poke(true.B)
             dut.clock.step()
@@ -125,6 +123,57 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.io.instr_out.expect("h00008067".U) // c.jr ra expands to jalr x0, 0(ra)
             dut.io.instr_len.expect(2.U)
             dut.io.pc_step_len.expect(2.U)
+        }
+    }
+
+    test("InstrFetch cache path reuses buffered 64-bit beat for sequential PC") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+            dut.io.cache.req.ready.poke(true.B)
+
+            dut.io.pc.poke("h1000".U)
+            dut.io.cache.req.valid.expect(true.B)
+            dut.io.cache.req.bits.addr.expect("h1000".U)
+
+            dut.clock.step()
+            dut.io.cache.resp.bits.rdata.poke("h0071019300500113".U) // addi x2,0,5; addi x3,x2,7
+            dut.io.cache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.valid.expect(true.B)
+            dut.io.instr_out.expect("h00500113".U)
+            dut.io.pc_step_len.expect(0.U)
+
+            dut.io.cache.resp.valid.poke(false.B)
+            dut.io.pc.poke("h1004".U)
+            dut.clock.step()
+            dut.io.valid.expect(true.B)
+            dut.io.instr_out.expect("h00710193".U)
+            dut.io.cache.req.valid.expect(true.B)
+            dut.io.cache.req.bits.addr.expect("h1008".U)
+            dut.io.fetch_stall.expect(false.B)
+        }
+    }
+
+    test("InstrFetch cache path skips next-beat prefetch on taken prediction") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+            dut.io.cache.req.ready.poke(true.B)
+
+            dut.io.pc.poke("h1000".U)
+            dut.clock.step()
+            dut.io.cache.resp.bits.rdata.poke("h0071019300500113".U) // addi x2,0,5; addi x3,x2,7
+            dut.io.cache.resp.valid.poke(true.B)
+            dut.clock.step()
+
+            dut.io.cache.resp.valid.poke(false.B)
+            dut.io.pc.poke("h1004".U)
+            dut.io.pred_taken_in.poke(true.B)
+            dut.io.pred_target_in.poke("h2000".U)
+            dut.clock.step()
+            dut.io.valid.expect(true.B)
+            dut.io.instr_out.expect("h00710193".U)
+            dut.io.cache.req.valid.expect(false.B)
+            dut.io.fetch_stall.expect(false.B)
         }
     }
 

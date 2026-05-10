@@ -141,6 +141,11 @@ class IonSoC(
     io.debug.stall := core.io.debug_stall
     io.debug.ifetchStall := core.io.debug_ifetch_stall
     io.debug.lsuStall := core.io.debug_lsu_stall
+    io.debug.branchValid := core.io.debug_branch_valid
+    io.debug.branchTaken := core.io.debug_branch_taken
+    io.debug.branchRedirect := core.io.debug_branch_redirect
+    io.debug.branchPredTaken := core.io.debug_branch_pred_taken
+    io.debug.branchPredCorrect := core.io.debug_branch_pred_correct
 
     // UART TX outputs
     io.uart_tx   := uart.map(_.io.tx_valid).getOrElse(false.B)

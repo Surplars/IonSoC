@@ -472,6 +472,23 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("Cache read hit responds in compare cycle") {
+        simulate(new CacheRamHarness(params)) { dut =>
+            init(dut)
+
+            pokeReq(dut, addr = 0x188, cmd = CacheCmd.Write, data = BigInt("feedfacecafebeef", 16))
+            issueReq(dut)
+            waitResp(dut, maxCycles = 40)
+
+            pokeReq(dut, addr = 0x188, cmd = CacheCmd.Read)
+            issueReq(dut)
+            dut.io.resp.valid.expect(true.B)
+            dut.io.resp.bits.rdata.expect("hfeedfacecafebeef".U)
+            dut.clock.step()
+            dut.io.resp.valid.expect(false.B)
+        }
+    }
+
     test("Cache responds to TL-C probes and invalidates matching lines") {
         simulate(new CacheRamHarness(params)) { dut =>
             init(dut)

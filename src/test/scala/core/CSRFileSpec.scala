@@ -3,7 +3,7 @@ package core
 import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
-import soc.core.csr.CSRFile
+import soc.core.csr.{CSRFile, HpmEventId}
 import soc.core.pipeline.{CSROps, TrapReturnType}
 import soc.isa.{CSR, MCause, PrivilegeLevel}
 
@@ -18,6 +18,18 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
         dut.io.addr.poke(0.U)
         dut.io.write.poke(false.B)
         dut.io.wdata.poke(0.U)
+        dut.io.debug_addr.poke(0.U)
+        dut.io.debug_write.poke(false.B)
+        dut.io.debug_wdata.poke(0.U)
+        dut.io.perf.retire.poke(false.B)
+        dut.io.perf.globalStall.poke(false.B)
+        dut.io.perf.ifetchStall.poke(false.B)
+        dut.io.perf.lsuStall.poke(false.B)
+        dut.io.perf.branch.poke(false.B)
+        dut.io.perf.branchTaken.poke(false.B)
+        dut.io.perf.branchRedirect.poke(false.B)
+        dut.io.perf.branchPredTaken.poke(false.B)
+        dut.io.perf.branchPredCorrect.poke(false.B)
         dut.io.trap_valid.poke(false.B)
         dut.io.trap_pc.poke(0.U)
         dut.io.trap_cause.poke(0.U)
@@ -42,6 +54,15 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
         dut.io.valid.poke(false.B)
         dut.io.write.poke(false.B)
         dut.io.wdata.poke(0.U)
+    }
+
+    private def readCsr(dut: CSRFile, addr: UInt): BigInt = {
+        dut.io.valid.poke(true.B)
+        dut.io.write.poke(false.B)
+        dut.io.addr.poke(addr)
+        val value = dut.io.rdata.peek().litValue
+        dut.io.valid.poke(false.B)
+        value
     }
 
     private def takeTrap(dut: CSRFile, pc: BigInt, cause: BigInt, value: BigInt = 0): Unit = {
@@ -263,6 +284,41 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
             dut.io.wdata.poke(0.U)
             dut.io.rdata.expect(BigInt("1234", 16).U)
             dut.io.valid.poke(false.B)
+        }
+    }
+
+    test("CSRFile counts retire and selected HPM events") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+
+            writeCsr(dut, CSR.MINSTRET, 0)
+            dut.clock.step()
+            assert(readCsr(dut, CSR.MINSTRET) == 0)
+
+            dut.io.perf.retire.poke(true.B)
+            dut.clock.step()
+            dut.io.perf.retire.poke(false.B)
+            assert(readCsr(dut, CSR.MINSTRET) == 1)
+
+            writeCsr(dut, CSR.MCOUNTINHIBIT, 1 << 2)
+            dut.io.perf.retire.poke(true.B)
+            dut.clock.step()
+            dut.io.perf.retire.poke(false.B)
+            assert(readCsr(dut, CSR.MINSTRET) == 1)
+
+            writeCsr(dut, CSR.MCOUNTINHIBIT, 0)
+            writeCsr(dut, CSR.MHPMEVENT3, HpmEventId.BranchRedirect)
+            writeCsr(dut, CSR.MHPMCOUNTER3, 0)
+            dut.io.perf.branchRedirect.poke(true.B)
+            dut.clock.step()
+            dut.io.perf.branchRedirect.poke(false.B)
+            assert(readCsr(dut, CSR.MHPMCOUNTER3) == 1)
+
+            writeCsr(dut, CSR.MCOUNTINHIBIT, 1 << 3)
+            dut.io.perf.branchRedirect.poke(true.B)
+            dut.clock.step()
+            dut.io.perf.branchRedirect.poke(false.B)
+            assert(readCsr(dut, CSR.MHPMCOUNTER3) == 1)
         }
     }
 }

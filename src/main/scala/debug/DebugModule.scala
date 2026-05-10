@@ -66,6 +66,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     val icacheDone = RegInit(false.B)
     val dcacheErrSticky = RegInit(false.B)
     val icacheErrSticky = RegInit(false.B)
+    val haltreqPulse = WireDefault(false.B)
+    val resumereqPulse = WireDefault(false.B)
 
     when(io.hart_halted && !hartHaltedPrev) {
         dpc := io.hart_pc
@@ -338,6 +340,8 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
         when(addr === DebugModuleMap.DMControl.U) {
             val legal = legalizeDmcontrol(data)
             dmcontrol := Mux(data(30), legal & ~(1.U(32.W) << 31), legal)
+            haltreqPulse := data(31) && data(0) && hartSelected
+            resumereqPulse := data(30) && data(0) && hartSelected
             when(data(31)) {
                 resumeAck := false.B
             }.elsewhen(data(30) && data(0) && hartSelected) {
@@ -547,6 +551,6 @@ class DebugModule(params: TLParams, sbaParams: TLParams = TLParams()) extends Mo
     }
 
     io.dmactive := dmcontrol(0)
-    io.haltreq := dmcontrol(31) && dmcontrol(0)
-    io.resumereq := dmcontrol(30) && dmcontrol(0)
+    io.haltreq := (dmcontrol(31) && dmcontrol(0)) || haltreqPulse
+    io.resumereq := resumereqPulse
 }

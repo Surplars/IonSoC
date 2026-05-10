@@ -129,9 +129,24 @@ ALU 中直接组合实现。后续若补全更多 B 扩展，应注意 RV64 imme
 为了兼容 RustSBI 的平台探测，当前实现：
 
 - `mcycle` 每 cycle 自增，受 `mcountinhibit[0]` 控制。
-- `minstret` 当前也是 cycle-backed，受 `mcountinhibit[2]` 控制；后续应改为 retire pulse。
-- `mhpmcounter3..31` 可读写。
-- `mhpmevent3..31` 可读写，但未连接真实 event。
+- `minstret` 由 Core retire pulse 驱动，受 `mcountinhibit[2]` 控制。
+- `mhpmcounter3..31` 可读写，并受 `mcountinhibit[3..31]` 控制。
+- `mhpmevent3..31` 选择 IonSoC 平台事件；当前低 8 bit 作为事件号。
+
+当前事件号：
+
+| ID | Event |
+| --- | --- |
+| 0 | none |
+| 1 | retired instruction |
+| 2 | global pipeline stall |
+| 3 | I-fetch stall |
+| 4 | LSU stall |
+| 5 | branch resolved |
+| 6 | branch taken |
+| 7 | branch redirect / mispredict recovery |
+| 8 | BPU predicted taken |
+| 9 | BPU predicted taken with correct target |
 
 RustSBI 当前会看到较宽的 MHPM mask。bring-up 阶段这是可接受的；后续若做精确 PMU，应让 mask 和 event 能力匹配真实实现。
 

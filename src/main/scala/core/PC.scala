@@ -17,6 +17,7 @@ class PC(XLEN: Int, RESET_VECTOR: BigInt) extends Module {
         val fetch_en   = Output(Bool())
         val pc_out     = Output(UInt(XLEN.W))
         val pred_taken = Output(Bool())
+        val pred_target = Output(UInt(XLEN.W))
         val redirect   = Output(Bool())
     })
 
@@ -48,6 +49,7 @@ class PC(XLEN: Int, RESET_VECTOR: BigInt) extends Module {
 
     io.pc_out     := ProgramCounter
     io.pred_taken := bpu.io.pred_taken
+    io.pred_target := bpu.io.pred_target
     io.redirect   := redirect
 
     bpu.io.update_valid  := io.br_info.valid

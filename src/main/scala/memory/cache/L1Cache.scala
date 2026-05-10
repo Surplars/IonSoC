@@ -97,8 +97,10 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
     val canAcceptProbe = useTLCoherence.B && state === sIdle && !io.invalidate.valid && !io.cpu.req.valid
 
     io.cpu.req.ready  := state === sIdle && !io.invalidate.valid && !io.bus.b.valid
-    io.cpu.resp.valid := false.B
-    io.cpu.resp.bits.rdata := Mux(state === sResp, refillReg, readData)
+    val compareHitReadData = WireDefault(readData)
+    val compareHitResp = WireDefault(false.B)
+    io.cpu.resp.valid := compareHitResp
+    io.cpu.resp.bits.rdata := Mux(compareHitResp, compareHitReadData, refillReg)
     io.cpu.resp.bits.err   := respErrReg
     // ready/fire only accepts the maintenance request. Completion is reported
     // later through cpu.resp, after all dirty writebacks and valid-bit clears.
@@ -141,13 +143,20 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
         is(sCompare) {
             when(hit) {
                 val maskedData = (reqReg.wdata & FillInterleaved(8, reqReg.mask)) | (readData & ~FillInterleaved(8, reqReg.mask))
-                refillReg := Mux(reqReg.cmd === CacheCmd.Write, maskedData, readData)
+                val hitRespData = Mux(reqReg.cmd === CacheCmd.Write, maskedData, readData)
+                compareHitResp := true.B
+                compareHitReadData := hitRespData
                 respErrReg := false.B
                 when(reqReg.cmd === CacheCmd.Write) {
                     dataArray.write(reqIdx, maskedData)
                     dirtyArray(reqIdx) := true.B
                 }
-                state := sResp
+                when(!io.cpu.resp.ready) {
+                    refillReg := hitRespData
+                    state := sResp
+                }.otherwise {
+                    state := sIdle
+                }
             }.otherwise {
                 when(validArray(reqIdx) && dirty) {
                     victimTagReg  := readTag
