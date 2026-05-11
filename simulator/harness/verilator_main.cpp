@@ -556,15 +556,36 @@ int main(int argc, char **argv, char **env)
 		std::string elf_path = (argc > 4) ? argv[4] : kPayloadElfPath;
 		all_pass &= run_one_test(elf_path, name, env_enabled("ION_TRACE_WAVE"), expected_uart);
 	}
-	else if (std::string(argv[1]) == "--rustsbi")
+	else if (std::string(argv[1]) == "--payload-firmware")
+	{
+		std::string name = (argc > 2) ? argv[2] : "payload";
+		std::string expected_uart = (argc > 3) ? argv[3] : "";
+		std::string elf_path = (argc > 4) ? argv[4] : kPayloadElfPath;
+		SimOptions opts;
+		opts.elf_path = elf_path;
+		opts.test_name = name;
+		opts.expected_uart = expected_uart;
+		opts.trace_wave = env_enabled("ION_TRACE_WAVE");
+		opts.direct_elf_load = !env_enabled("ION_BOOTROM_ONLY");
+		opts.uart_stdin = env_enabled("ION_UART_STDIN");
+		opts.trace_irq = env_enabled("ION_TRACE_IRQ");
+		opts.trace_dmi = env_enabled("ION_TRACE_DMI");
+		opts.perf_report = env_enabled("ION_PERF");
+		opts.jtag_rbb_port = (int)env_u64("ION_JTAG_RBB_PORT", 0);
+		opts.max_cycles = env_u64("ION_MAX_CYCLES", MAX_SIM_CYCLES);
+		opts.sram_base = env_u64("ION_SRAM_BASE", FIRMWARE_SRAM_BASE);
+		opts.sram_size = (size_t)env_u64("ION_SRAM_SIZE", DEFAULT_FIRMWARE_SRAM_SIZE);
+		all_pass &= run_sim(opts);
+	}
+	else if (std::string(argv[1]) == "--rustsbi" || std::string(argv[1]) == "--sbi-firmware")
 	{
 		if (argc < 6)
 		{
-			fprintf(stderr, "usage: %s --rustsbi <trampoline.elf> <firmware.elf> <payload.elf> <dtb>\n", argv[0]);
+			fprintf(stderr, "usage: %s %s <trampoline.elf> <firmware.elf> <payload.elf> <dtb>\n", argv[0], argv[1]);
 			return 1;
 		}
 		SimOptions opts;
-		opts.test_name = "rustsbi";
+		opts.test_name = std::string(argv[1]) == "--rustsbi" ? "rustsbi" : "sbi-firmware";
 		opts.elf_path = argv[2];
 		opts.second_elf_path = argv[3];
 		opts.third_elf_path = argv[4];
@@ -1110,13 +1131,21 @@ bool run_sim(const SimOptions &opts)
 	printf("\n--- UART output ---\n");
 	bool saw_exit = false;
 	bool trace_cpu = std::getenv("ION_TRACE_CPU") != nullptr;
+	bool trace_cpu_every = env_enabled("ION_TRACE_CPU_EVERY");
+	bool trace_pc_escape = env_enabled("ION_TRACE_PC_ESCAPE");
+	bool trace_map_u32 = env_enabled("ION_TRACE_MAP_U32");
+	bool trace_ret = env_enabled("ION_TRACE_RET");
+	bool trace_csr = env_enabled("ION_TRACE_CSR");
 	uint64_t trace_pc_start = env_u64("ION_TRACE_PC_START", 0);
 	uint64_t trace_pc_end = env_u64("ION_TRACE_PC_END", UINT64_MAX);
 	bool trace_boot = env_enabled("ION_TRACE_BOOT");
 	bool saw_rom_pc = false;
 	bool saw_sram_pc = false;
 	bool saw_payload_pc = false;
+	bool saw_pc_escape = false;
 	uint64_t last_pc = UINT64_MAX;
+	uint64_t prev_pc = UINT64_MAX;
+	bool prev_pc_valid = false;
 	uint64_t last_mtimecmp = UINT64_MAX;
 	uint8_t last_mtip = 0xff;
 	uint8_t last_dmi_valid = 0;
@@ -1135,6 +1164,10 @@ bool run_sim(const SimOptions &opts)
 	uint64_t perf_lsu_mmio_stall_cycles = 0;
 	uint64_t perf_lsu_atomic_stall_cycles = 0;
 	uint64_t perf_lsu_fence_stall_cycles = 0;
+	uint64_t perf_decode_load_use_cycles = 0;
+	uint64_t perf_lsu_load_only_cycles = 0;
+	uint64_t perf_lsu_store_only_cycles = 0;
+	uint64_t perf_lsu_fence_only_cycles = 0;
 	uint64_t perf_branch_count = 0;
 	uint64_t perf_branch_taken = 0;
 	uint64_t perf_branch_redirect = 0;
@@ -1178,6 +1211,10 @@ bool run_sim(const SimOptions &opts)
 			perf_lsu_mmio_stall_cycles += dut->io_debug_lsuMmioStall ? 1 : 0;
 			perf_lsu_atomic_stall_cycles += dut->io_debug_lsuAtomicStall ? 1 : 0;
 			perf_lsu_fence_stall_cycles += dut->io_debug_lsuFenceStall ? 1 : 0;
+			perf_decode_load_use_cycles += dut->rootp->SimTop__DOT__core__DOT__decodeUsesPending ? 1 : 0;
+			perf_lsu_load_only_cycles += (dut->io_debug_lsuLoadStall && !dut->io_debug_lsuStoreStall && !dut->io_debug_lsuFenceStall) ? 1 : 0;
+			perf_lsu_store_only_cycles += (dut->io_debug_lsuStoreStall && !dut->io_debug_lsuLoadStall && !dut->io_debug_lsuFenceStall) ? 1 : 0;
+			perf_lsu_fence_only_cycles += (dut->io_debug_lsuFenceStall && !dut->io_debug_lsuLoadStall && !dut->io_debug_lsuStoreStall) ? 1 : 0;
 			perf_branch_count += dut->io_debug_branchValid ? 1 : 0;
 			perf_branch_taken += dut->io_debug_branchTaken ? 1 : 0;
 			perf_branch_redirect += dut->io_debug_branchRedirect ? 1 : 0;
@@ -1187,6 +1224,139 @@ bool run_sim(const SimOptions &opts)
 
 		if (dut->clock)
 		{
+			if (trace_map_u32 && pc_now >= 0x4001ccc0ULL && pc_now <= 0x4001cdb0ULL)
+			{
+				auto &regs = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory;
+				printf("[map-u32 %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x"
+				       " a0=0x%016" PRIx64 " a1=0x%016" PRIx64 " a2=0x%016" PRIx64
+				       " a3=0x%016" PRIx64 " a4=0x%016" PRIx64 " a5=0x%016" PRIx64
+				       " a6=0x%016" PRIx64 " t0=0x%016" PRIx64 " ra=0x%016" PRIx64 "\n",
+				       sim_time,
+				       pc_now,
+				       (uint32_t)dut->io_debug_instr,
+				       (uint64_t)regs[10],
+				       (uint64_t)regs[11],
+				       (uint64_t)regs[12],
+				       (uint64_t)regs[13],
+				       (uint64_t)regs[14],
+				       (uint64_t)regs[15],
+				       (uint64_t)regs[16],
+				       (uint64_t)regs[5],
+				       (uint64_t)regs[1]);
+			}
+			uint64_t lsu_pc = dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_pc;
+			bool trace_ret_window = pc_now >= 0x40019590ULL && pc_now <= 0x40019690ULL;
+			bool trace_ret_lsu_window = lsu_pc >= 0x40019590ULL && lsu_pc <= 0x40019690ULL;
+			if (trace_ret && (trace_ret_window || (trace_ret_lsu_window && dut->rootp->SimTop__DOT__core__DOT___lsu_io_valid_out)))
+			{
+				printf("[ret-trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x lsu_pc=0x%016" PRIx64
+				       " has_ret=%u ret_redirect=%u retConsumed=%u lsu_valid=%u out_is_ret=%u ret_type=%u"
+				       " epc=0x%016" PRIx64 " mepc=0x%016" PRIx64 " sepc=0x%016" PRIx64 "\n",
+				       sim_time,
+				       pc_now,
+				       (uint32_t)dut->io_debug_instr,
+				       lsu_pc,
+				       (unsigned)dut->rootp->SimTop__DOT__core__DOT__has_ret,
+				       (unsigned)dut->rootp->SimTop__DOT__core__DOT__ret_redirect,
+				       (unsigned)dut->rootp->SimTop__DOT__core__DOT__retConsumed,
+				       (unsigned)dut->rootp->SimTop__DOT__core__DOT___lsu_io_valid_out,
+				       (unsigned)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_trap_is_ret,
+				       (unsigned)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__out_trap_ret_type,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT___csr_io_epc_out,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__sepc);
+			}
+			if (trace_csr && dut->rootp->SimTop__DOT__core__DOT__csr__DOT__io_wvalid &&
+			    dut->rootp->SimTop__DOT__core__DOT__csr__DOT__io_wwrite)
+			{
+				uint32_t csr_addr = dut->rootp->SimTop__DOT__core__DOT__csr__DOT__io_waddr;
+				if (csr_addr == 0x105 || csr_addr == 0x140 || csr_addr == 0x141 ||
+				    csr_addr == 0x300 || csr_addr == 0x305 || csr_addr == 0x340 || csr_addr == 0x341)
+				{
+					printf("[csr-trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x"
+					       " addr=0x%03x wdata=0x%016" PRIx64
+					       " mepc=0x%016" PRIx64 " sepc=0x%016" PRIx64 " mscratch=0x%016" PRIx64 "\n",
+					       sim_time,
+					       pc_now,
+					       (uint32_t)dut->io_debug_instr,
+					       csr_addr,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__io_wwdata,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__sepc,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mscratch);
+				}
+			}
+
+			bool prev_in_sram = prev_pc_valid && prev_pc >= opts.sram_base && prev_pc < opts.sram_base + opts.sram_size;
+			bool pc_in_sram = pc_now >= opts.sram_base && pc_now < opts.sram_base + opts.sram_size;
+			if (trace_pc_escape && !saw_pc_escape && prev_in_sram && !pc_in_sram)
+			{
+				saw_pc_escape = true;
+				uint64_t ra = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[1];
+				uint64_t sp = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[2];
+				uint64_t t0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[5];
+				uint64_t a0_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
+				uint64_t a1_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[11];
+				uint64_t a2_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[12];
+				uint64_t a7_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
+				printf("[pc-escape %6" PRIu64 "] prev_pc=0x%016" PRIx64 " pc=0x%016" PRIx64
+				       " instr=0x%08x pc_reg=0x%016" PRIx64
+				       " pc_red=%u pc_tgt=0x%016" PRIx64
+				       " alu_br_v=%u alu_br_t=%u alu_br_red=%u alu_br_pc=0x%016" PRIx64 " alu_br_tgt=0x%016" PRIx64
+				       " alu_r_br_v=%u alu_r_br_t=%u alu_r_br_red=%u alu_r_br_pc=0x%016" PRIx64 " alu_r_br_tgt=0x%016" PRIx64
+				       " alu_v=%u alu_pc=0x%016" PRIx64 " alu_rd=%u alu_w=%u alu_res=0x%016" PRIx64
+				       " id_issue=%u id_issued=%u id_pc=0x%016" PRIx64 " id_rd=%u id_w=%u id_op1=0x%016" PRIx64 " id_op2=0x%016" PRIx64
+				       " wb_w=%u wb_rd=%u wb_data=0x%016" PRIx64
+				       " ra=0x%016" PRIx64 " sp=0x%016" PRIx64 " t0=0x%016" PRIx64
+				       " a0=0x%016" PRIx64 " a1=0x%016" PRIx64 " a2=0x%016" PRIx64 " a7=0x%016" PRIx64
+				       " mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64 " mtval=0x%016" PRIx64 "\n",
+				       sim_time,
+				       prev_pc,
+				       pc_now,
+				       (uint32_t)dut->io_debug_instr,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__ProgramCounter,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT____Vcellinp__pc__io_br_info_redirect,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT____Vcellinp__pc__io_br_info_target,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_valid,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_taken,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_redirect,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_pc,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_target,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_br_info_r_valid,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_br_info_r_taken,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_br_info_r_redirect,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_br_info_r_pc,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_br_info_r_target,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_valid_out_r,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_pc_out_r,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_rd_r,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_reg_write_r,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_result_r,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__issueIdToAlu,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idIssuedValid,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idIssuedPc,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_rd,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_ctrl_reg_write,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_op1,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_op2,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_reg_write,
+				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_rd,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_data,
+				       ra,
+				       sp,
+				       t0,
+				       a0_trace,
+				       a1_trace,
+				       a2_trace,
+				       a7_trace,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtvec,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtval);
+			}
+			prev_pc = pc_now;
+			prev_pc_valid = true;
+
 			if (!saw_rom_pc && pc_now >= BROM_BASE && pc_now < BROM_BASE + ROM_SIZE)
 			{
 				saw_rom_pc = true;
@@ -1218,7 +1388,7 @@ bool run_sim(const SimOptions &opts)
 		}
 
 		bool trace_pc_match = pc_now >= trace_pc_start && pc_now <= trace_pc_end;
-		if (trace_cpu && trace_pc_match && dut->clock && (sim_time < 150 || dut->io_debug_pc != last_pc || trace_state_change))
+		if (trace_cpu && trace_pc_match && dut->clock && (trace_cpu_every || sim_time < 150 || dut->io_debug_pc != last_pc || trace_state_change))
 		{
 			last_pc = pc_now;
 			last_mtimecmp = cur_mtimecmp;
@@ -1227,12 +1397,18 @@ bool run_sim(const SimOptions &opts)
 			uint64_t t0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[5];
 			uint64_t s0 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[8];
 			uint64_t t3 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[28];
+			uint64_t t4 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[29];
+			uint64_t t5 = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[30];
 			uint64_t a0_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10];
 			uint64_t a7_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
-			printf("[trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x ra=0x%016" PRIx64 " t0=0x%016" PRIx64 " s0=0x%016" PRIx64 " t3=0x%016" PRIx64 " a0=0x%016" PRIx64 " a7=0x%016" PRIx64
+			printf("[trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x ra=0x%016" PRIx64 " t0=0x%016" PRIx64 " s0=0x%016" PRIx64 " t3=0x%016" PRIx64 " t4=0x%016" PRIx64 " t5=0x%016" PRIx64 " a0=0x%016" PRIx64 " a7=0x%016" PRIx64
 				   " id_v=%u id_rd=%u id_w=%u id_op1=0x%016" PRIx64 " id_op2=0x%016" PRIx64
-				   " lsu_stall=%u load_valid=%u load=0x%016" PRIx64 " alu_v=%u alu_rd=%u alu_w=%u alu_res=0x%016" PRIx64 " alu_pc=0x%016" PRIx64 " alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
+				   " lsu_stall=%u load_valid=%u load_rd=%u load=0x%016" PRIx64 " alu_v=%u alu_rd=%u alu_w=%u alu_mem_v=%u alu_mem_op=%u alu_res=0x%016" PRIx64 " alu_pc=0x%016" PRIx64 " alu_op1=0x%016" PRIx64 " alu_op2=0x%016" PRIx64
 				   " lsu_v=%u lsu_rd=%u lsu_w=%u lsu_res=0x%016" PRIx64 " wb_rd=%u wb_w=%u wb_data=0x%016" PRIx64
+				   " br_v=%u br_t=%u br_red=%u exbp_v=%u exbp_rd=%u exbp_data=0x%016" PRIx64
+				   " fwd_v=%u fwd_rd=%u fwd_data=0x%016" PRIx64 " prev_v=%u prev_rd=%u prev_data=0x%016" PRIx64
+				   " fq_flush=%u decode_stall=%u"
+				   " sb_p=%u sb_rd=%u sb_new=%u sb_done=%u sb_inst=%u sb_inst_rd=%u"
 					   " if_state=%u if_acc=%u if_req_pc=0x%016" PRIx64 " if_pc=0x%016" PRIx64 " if_instr=0x%08x if_len=%u pc_step=%u pc_hold=%u bpu_taken=%u"
 				   " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
 				   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " plic_src1=%u mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
@@ -1243,19 +1419,24 @@ bool run_sim(const SimOptions &opts)
 				   t0,
 				   s0,
 				   t3,
+				   t4,
+				   t5,
 				   a0_trace,
 				   a7_trace,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_valid_out_r,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_r_rd,
-				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_r_ctrl_reg_write,
-				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_r_op1,
-				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_r_op2,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_valid_out,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_rd,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_ctrl_reg_write,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_op1,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_op2,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_req_0,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_load_data_valid,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_load_data_rd,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_load_data,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_valid_out_r,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_rd_r,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_reg_write_r,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_mem_valid_r,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_mem_op_r,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_alu_out_result_r,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_pc_out_r,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__op1,
@@ -1267,6 +1448,26 @@ bool run_sim(const SimOptions &opts)
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_rd,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_reg_write,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_data,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__branch_valid,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__branch_taken,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__branchRedirect,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__exBypassValid,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__exBypassRd,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__exBypassData,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__aluResultFwdValid,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__aluResultFwdRd,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__aluResultFwdData,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__aluResultPrevValid,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__aluResultPrevRd,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__aluResultPrevData,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__frontendQueueFlush,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__decodeStall,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikePending,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikePendingRd,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__newAluLoadLike,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikeComplete,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikeIssued,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikeIssuedRd,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__state,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__acceptResp,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__reqPc,
@@ -1363,6 +1564,82 @@ bool run_sim(const SimOptions &opts)
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_bus_a_valid,
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_bus_d_ready);
 		}
+		printf("[boot-trace frontend] global_stall=%u decode_stall=%u decode_uses_pending=%u load_pending=%u load_rd=%u queue_full=%u queue_empty=%u queue_count=%u head=%u tail=%u id_valid=%u id_rd=%u id_w=%u alu_valid=%u alu_pc=0x%016" PRIx64 " wb_w=%u wb_rd=%u\n",
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__global_stall,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__decodeStall,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__decodeUsesPending,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikePending,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikePendingRd,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__frontendQueue__DOT__io_full,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__frontendQueue__DOT__io_empty,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__frontendQueue__DOT__count,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__frontendQueue__DOT__head,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__frontendQueue__DOT__tail,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_valid_out,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_rd,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__idecode__DOT__io_decoded_out_ctrl_reg_write,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_valid_out_r,
+		       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__alu__DOT__io_pc_out_r,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_reg_write,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___wb_io_reg_wb_rd);
+		if (dut->rootp->__PVT__SimTop__DOT__core__DOT__L1Cache != nullptr)
+		{
+			auto *dcache = dut->rootp->__PVT__SimTop__DOT__core__DOT__L1Cache;
+			printf("[boot-trace lsu] stall=%u raw_load=%u new_load=%u load_pending=%u load_sent=%u load_split=%u load_second=%u load_size=%u load_paddr=0x%016" PRIx64 " load_vaddr=0x%016" PRIx64 " store_pending=%u sb_count=%u sb_valid=%u d_req=%u d_ready=%u d_addr=0x%08x d_resp=%u dcache_state=%u dcache_resp=%u dcache_req_ready=%u dcache_req_addr=0x%08x\n",
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_req_0,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__raw_cache_load,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__new_cache_load,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__cacheLoadPending,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__cacheLoadSent,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__cacheLoadSplit,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__cacheLoadSecond,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__cacheLoadAccess_size,
+			       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__cacheLoadAccess_paddr,
+			       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__cacheLoadAccess_vaddr,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__storeDrainPending,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__storeBuffer__DOT__count,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__storeBuffer__DOT__io_deq_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___lsu_io_dcache_req_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_ready,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_bits_addr,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_resp_valid,
+			       (uint32_t)dcache->state,
+			       (uint32_t)dcache->io_cpu_resp_valid,
+			       (uint32_t)dcache->io_cpu_req_ready,
+			       (uint32_t)dcache->io_cpu_req_bits_addr);
+			printf("[boot-trace dcache-tl] req_reg=0x%08x a_valid=%u a_ready=%u a_op=%u a_addr=0x%08x d_valid=%u d_ready=%u d_denied=%u d_data=0x%016" PRIx64 " c_valid=%u c_ready=%u c_src=%u\n",
+			       (uint32_t)dcache->reqReg_addr,
+			       (uint32_t)dcache->io_bus_a_valid,
+			       (uint32_t)dcache->io_bus_a_ready,
+			       (uint32_t)dcache->io_bus_a_bits_opcode,
+			       (uint32_t)dcache->io_bus_a_bits_address,
+			       (uint32_t)dcache->io_bus_d_valid,
+			       (uint32_t)dcache->io_bus_d_ready,
+			       (uint32_t)dcache->io_bus_d_bits_denied,
+			       (uint64_t)dcache->io_bus_d_bits_data,
+			       (uint32_t)dcache->io_bus_c_valid,
+			       (uint32_t)dcache->io_bus_c_ready,
+			       (uint32_t)dcache->io_bus_c_bits_source);
+			printf("[boot-trace sram] a_valid=%u a_ready=%u a_op=%u a_src=%u a_addr=0x%08x d_valid=%u d_ready=%u d_op=%u d_src=%u d_denied=%u resp_valid=%u resp_src=%u resp_data=0x%016" PRIx64 " req_valid=%u q_valid=%u q_op=%u q_src=%u q_addr=0x%08x\n",
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_a_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_a_ready,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_a_bits_opcode,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_a_bits_source,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_a_bits_address,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_d_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_d_ready,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_d_bits_opcode,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_d_bits_source,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__io_tl_d_bits_denied,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__resp_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__resp_source,
+			       (uint64_t)dut->rootp->SimTop__DOT__sram__DOT__resp_data,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__req_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT___req_queue_q_io_deq_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT___req_queue_q_io_deq_bits_opcode,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT___req_queue_q_io_deq_bits_source,
+			       (uint32_t)dut->rootp->SimTop__DOT__sram__DOT__req_queue_q__DOT__io_deq_bits_address);
+		}
 	}
 
 	bool uart_pass = opts.expected_uart.empty() || (uart.output().find(opts.expected_uart) != std::string::npos);
@@ -1407,6 +1684,11 @@ bool run_sim(const SimOptions &opts)
 		       perf_lsu_mmio_stall_cycles,
 		       perf_lsu_atomic_stall_cycles,
 		       perf_lsu_fence_stall_cycles);
+		printf("[perf-stall-detail]: decode_load_use=%" PRIu64 " lsu_load_only=%" PRIu64 " lsu_store_only=%" PRIu64 " lsu_fence_only=%" PRIu64 "\n",
+		       perf_decode_load_use_cycles,
+		       perf_lsu_load_only_cycles,
+		       perf_lsu_store_only_cycles,
+		       perf_lsu_fence_only_cycles);
 		printf("[perf-overlap]: ifetch_only=%" PRIu64 " ifetch_lsu_overlap=%" PRIu64 "\n",
 		       perf_ifetch_only_stall_cycles,
 		       perf_ifetch_lsu_overlap_cycles);

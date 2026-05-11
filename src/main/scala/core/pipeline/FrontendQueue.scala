@@ -44,9 +44,12 @@ class FrontendQueue(XLEN: Int, entries: Int) extends Module {
     val empty = count === 0.U
     val full = count === entries.U
     val deqFire = io.deq.fire
-    val enqCanUseFreedSlot = full && io.deq.ready && !empty
-
-    io.enq.ready := !io.flush && (!full || enqCanUseFreedSlot)
+    // Do not enqueue into a full queue even if this cycle also dequeues. When
+    // head == tail, a same-slot read/write can let the younger fetch overwrite
+    // the instruction being issued, which is especially visible with dense RVC
+    // streams. Holding IF for one cycle keeps ordering unambiguous and maps
+    // cleanly to FPGA registers or RAMs.
+    io.enq.ready := !io.flush && !full
     io.deq.valid := !io.flush && !empty
     io.deq.bits := mem(head)
     io.count := count

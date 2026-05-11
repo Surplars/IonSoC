@@ -18,6 +18,10 @@ class RegisterFile(XLEN: Int) extends Module {
         val debug_rdata = Output(UInt(XLEN.W))
         val debug_write = Input(Bool())
         val debug_wdata = Input(UInt(XLEN.W))
+        // Architectural snapshot for DiffTest/debug. Each entry includes the
+        // same-cycle write bypass so retire-visible state is observable without
+        // depending on backend register-file read semantics.
+        val debug_snapshot = Output(Vec(32, UInt(XLEN.W)))
     })
 
     val regFile = Mem(32, UInt(XLEN.W))
@@ -43,4 +47,11 @@ class RegisterFile(XLEN: Int) extends Module {
 	)
 
     io.debug_rdata := Mux(io.debug_addr === 0.U, 0.U, regFile.read(io.debug_addr))
+    for (i <- 0 until 32) {
+        io.debug_snapshot(i) := Mux(
+            i.U === 0.U,
+            0.U,
+            Mux(writeEn && writeAddr === i.U, writeData, regFile.read(i.U))
+        )
+    }
 }

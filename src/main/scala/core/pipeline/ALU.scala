@@ -35,6 +35,15 @@ class ALU(XLEN: Int = 64) extends Module {
         val csr_addr    = Output(UInt(12.W))
         val csr_write   = Output(Bool())
         val csr_wdata   = Output(UInt(XLEN.W))
+        // CSR reads must see the current EX instruction combinationally, but
+        // CSR writes are architectural side effects and are committed from the
+        // registered EX slot so stalls/flushes cannot borrow the next decode
+        // slot's CSR address or data.
+        val csr_commit_valid = Output(Bool())
+        val csr_commit_cmd   = Output(UInt(4.W))
+        val csr_commit_addr  = Output(UInt(12.W))
+        val csr_commit_write = Output(Bool())
+        val csr_commit_wdata = Output(UInt(XLEN.W))
         val csr_rdata   = Input(UInt(XLEN.W))
         val csr_illegal = Input(Bool())
     })
@@ -52,34 +61,45 @@ class ALU(XLEN: Int = 64) extends Module {
     val alu_result    = WireInit(0.U(XLEN.W))
     val branch_target = WireInit(0.U(XLEN.W))
     val valid         = io.valid_in && !io.trap_valid
+    val update_en     = !io.stall
 
-    io.csr_addr := 0.U
+    // Adjacent ALU-to-ALU bypass. Keep this as explicit state instead of
+    // reading io.alu_out inside the module; io.alu_out is driven below from
+    // alu_result, so using it as an operand source would create a fragile
+    // self-reference. Older ALU results are supplied by Core's forwarding bus.
+    val exBypassValid = RegInit(false.B)
+    val exBypassRd    = RegInit(0.U(5.W))
+    val exBypassData  = RegInit(0.U(XLEN.W))
+    def fwdMatch(rs: UInt, valid: Bool, rd: UInt): Bool =
+        rs =/= 0.U && valid && rs === rd
+
+    val csr_addr_comb = WireInit(0.U(12.W))
     val trap_info = WireInit(0.U.asTypeOf(io.trap_info_in))
 
     trap_info.valid  := valid && Mux(io.csr_illegal, true.B, io.trap_info_in.valid)
     trap_info.pc     := Mux(io.csr_illegal, io.pc_in, io.trap_info_in.pc)
     trap_info.cause  := Mux(io.csr_illegal, MCause.IllegalInstr, io.trap_info_in.cause)
     trap_info.value  := io.trap_info_in.value
-    trap_info.is_ret := io.trap_info_in.is_ret
-    trap_info.ret_type := io.trap_info_in.ret_type
+    trap_info.is_ret := valid && io.trap_info_in.is_ret
+    trap_info.ret_type := Mux(valid && io.trap_info_in.is_ret, io.trap_info_in.ret_type, TrapReturnType.None)
 
     // 数据转发，优先级：mem > wb > alu输入
     when(!valid) {
         op1 := 0.U
     }.elsewhen(csr_op =/= CSROps.None) { // CSR指令，op1来自CSR寄存器
-        io.csr_addr := io.decoded_in.op1
+        csr_addr_comb := io.decoded_in.op1(11, 0)
         op1         := io.csr_rdata
     }.elsewhen(io.decoded_in.rs1 === 0.U) { // 立即数指令
         op1 := io.decoded_in.op1
-    }.elsewhen(io.fwd.load_valid && io.decoded_in.rs1 === io.fwd.rd) {
+    }.elsewhen(fwdMatch(io.decoded_in.rs1, io.fwd.load_valid, io.fwd.load_rd)) {
         op1 := io.fwd.load_data
-    }.elsewhen(io.alu_out.reg_write && io.decoded_in.rs1 === io.alu_out.rd) {
-        op1 := io.alu_out.result
-    }.elsewhen(io.decoded_in.rs1 === io.fwd.rd && io.fwd.reg_write) {
+    }.elsewhen(fwdMatch(io.decoded_in.rs1, exBypassValid, exBypassRd)) {
+        op1 := exBypassData
+    }.elsewhen(fwdMatch(io.decoded_in.rs1, io.fwd.reg_write, io.fwd.rd)) {
         op1 := io.fwd.alu_result
-    }.elsewhen(io.decoded_in.rs1 === io.fwd.prev_rd && io.fwd.prev_reg_write) {
+    }.elsewhen(fwdMatch(io.decoded_in.rs1, io.fwd.prev_reg_write, io.fwd.prev_rd)) {
         op1 := io.fwd.prev_data
-    }.elsewhen(io.decoded_in.rs1 === io.fwd.wb_rd && io.fwd.wb_reg_write) {
+    }.elsewhen(fwdMatch(io.decoded_in.rs1, io.fwd.wb_reg_write, io.fwd.wb_rd)) {
         op1 := io.fwd.wb_data
     }.otherwise {
         op1 := io.decoded_in.op1
@@ -90,15 +110,15 @@ class ALU(XLEN: Int = 64) extends Module {
         op2 := Cat(Fill(XLEN - 5, 0.U), io.decoded_in.rs2) // CSR zimm 指令，0扩展
     }.elsewhen(io.decoded_in.rs2 === 0.U) { // 立即数指令
         op2 := io.decoded_in.op2
-    }.elsewhen(io.fwd.load_valid && io.decoded_in.rs2 === io.fwd.rd) {
+    }.elsewhen(fwdMatch(io.decoded_in.rs2, io.fwd.load_valid, io.fwd.load_rd)) {
         op2 := io.fwd.load_data
-    }.elsewhen(io.alu_out.reg_write && io.decoded_in.rs2 === io.alu_out.rd) {
-        op2 := io.alu_out.result
-    }.elsewhen(io.decoded_in.rs2 === io.fwd.rd && io.fwd.reg_write) {
+    }.elsewhen(fwdMatch(io.decoded_in.rs2, exBypassValid, exBypassRd)) {
+        op2 := exBypassData
+    }.elsewhen(fwdMatch(io.decoded_in.rs2, io.fwd.reg_write, io.fwd.rd)) {
         op2 := io.fwd.alu_result
-    }.elsewhen(io.decoded_in.rs2 === io.fwd.prev_rd && io.fwd.prev_reg_write) {
+    }.elsewhen(fwdMatch(io.decoded_in.rs2, io.fwd.prev_reg_write, io.fwd.prev_rd)) {
         op2 := io.fwd.prev_data
-    }.elsewhen(io.decoded_in.rs2 === io.fwd.wb_rd && io.fwd.wb_reg_write) {
+    }.elsewhen(fwdMatch(io.decoded_in.rs2, io.fwd.wb_reg_write, io.fwd.wb_rd)) {
         op2 := io.fwd.wb_data
     }.otherwise {
         op2 := io.decoded_in.op2
@@ -183,12 +203,18 @@ class ALU(XLEN: Int = 64) extends Module {
         Mux(branch_type === BranchType.JALR, jalrTarget, io.pc_in + io.decoded_in.br_imm)
     )
 
-    io.csr_valid := valid && csr_op =/= CSROps.None
-    io.csr_write := io.csr_valid && io.csr_addr =/= 0.U &&
+    val csr_valid_comb = valid && csr_op =/= CSROps.None
+    val csr_write_comb = csr_valid_comb && csr_addr_comb =/= 0.U &&
         !((csr_op === CSROps.RS || csr_op === CSROps.RC) && io.decoded_in.rs2 === 0.U) &&
         !((csr_op === CSROps.RSI || csr_op === CSROps.RCI) && io.decoded_in.rs2 === 0.U)
-    io.csr_cmd   := Mux(io.csr_write, csr_op.asUInt, 0.U)
-    io.csr_wdata := op2
+    val csr_cmd_comb = Mux(csr_write_comb, csr_op.asUInt, 0.U)
+    val csr_wdata_comb = op2
+
+    io.csr_valid := csr_valid_comb
+    io.csr_addr  := csr_addr_comb
+    io.csr_write := csr_write_comb
+    io.csr_cmd   := csr_cmd_comb
+    io.csr_wdata := csr_wdata_comb
 
     val isAtomic = mem_atomic
     val mem_addr_calc = op1 + mem_imm
@@ -341,9 +367,9 @@ class ALU(XLEN: Int = 64) extends Module {
         io.pc_in + instrStep
     )
 
-    val update_en = !io.stall
-
     io.valid_out         := RegEnable(valid, false.B, update_en)
+    io.alu_out.instr     := RegEnable(Mux(valid, io.decoded_in.instr, 0.U), 0.U, update_en)
+    io.alu_out.instr_len := RegEnable(Mux(valid, io.decoded_in.instr_len, 0.U), 0.U, update_en)
     io.alu_out.funct3    := RegEnable(Mux(valid, io.decoded_in.funct3, 0.U), 0.U, update_en)
     io.alu_out.rd        := RegEnable(Mux(valid, io.decoded_in.rd, 0.U), 0.U, update_en)
     io.alu_out.reg_write := RegEnable(Mux(valid, io.decoded_in.ctrl.reg_write, false.B), false.B, update_en)
@@ -379,13 +405,47 @@ class ALU(XLEN: Int = 64) extends Module {
     val forceTakenRedirect = branch_taken && !correctTakenPrediction &&
         ((branch_type === BranchType.JAL) || (branch_type === BranchType.JALR) || branch_is_br)
     val correctNotTaken = !branch_taken && io.pred_taken_in
+    val branchRedirect = branch_valid && (forceTakenRedirect || correctNotTaken)
+    val branchInfo = WireInit(0.U.asTypeOf(io.br_info))
+    branchInfo.pc        := Mux(branch_valid, io.pc_in, 0.U)
+    branchInfo.valid     := branch_valid
+    branchInfo.is_branch := branch_is_br
+    branchInfo.taken     := branch_taken
+    branchInfo.target    := redirectTarget
+    branchInfo.redirect  := branchRedirect
+    dontTouch(branch_valid)
+    dontTouch(branch_taken)
+    dontTouch(branchRedirect)
+    dontTouch(exBypassValid)
+    dontTouch(exBypassRd)
+    dontTouch(exBypassData)
 
-    io.br_info.pc        := Mux(branch_valid, io.pc_in, 0.U)
-    io.br_info.valid     := branch_valid
-    io.br_info.is_branch := branch_is_br
-    io.br_info.taken     := branch_taken
-    io.br_info.target    := redirectTarget
-    io.br_info.redirect  := branch_valid && (forceTakenRedirect || correctNotTaken)
+    // Keep redirect metadata in the same pipeline slot as pc_out/alu_out.
+    // Driving PC redirect directly from the current decode wires can mix a
+    // previous ALU instruction (for example AUIPC) with the next instruction's
+    // JALR control, producing a wrong indirect branch target.
+    io.br_info := RegEnable(Mux(valid, branchInfo, 0.U.asTypeOf(io.br_info)), 0.U.asTypeOf(io.br_info), update_en)
+
+    io.csr_commit_valid := RegEnable(csr_valid_comb, false.B, update_en)
+    io.csr_commit_addr  := RegEnable(Mux(csr_valid_comb, csr_addr_comb, 0.U), 0.U, update_en)
+    io.csr_commit_write := RegEnable(csr_write_comb, false.B, update_en)
+    io.csr_commit_cmd   := RegEnable(Mux(csr_valid_comb, csr_cmd_comb, 0.U), 0.U, update_en)
+    io.csr_commit_wdata := RegEnable(Mux(csr_valid_comb, csr_wdata_comb, 0.U), 0.U, update_en)
+
+    // EX bypass is only valid for the next sequential consumer. Any redirect or
+    // back-pressure cycle breaks that adjacency; otherwise a stalled load can
+    // let an older ALU result override the decoded load value several cycles
+    // later.
+    when(io.trap_valid || branchRedirect || io.stall) {
+        exBypassValid := false.B
+        exBypassRd := 0.U
+        exBypassData := 0.U
+    }.elsewhen(update_en) {
+        exBypassValid := valid && io.decoded_in.ctrl.reg_write && io.decoded_in.rd =/= 0.U &&
+            !mem_read && !mem_write && !mem_atomic && !mem_fence && !mem_fence_i
+        exBypassRd   := Mux(valid, io.decoded_in.rd, 0.U)
+        exBypassData := Mux(valid, alu_result, 0.U)
+    }
 
     io.trap_info_out := RegEnable(trap_info, 0.U.asTypeOf(io.trap_info_out), update_en)
     io.pc_out        := RegEnable(io.pc_in, 0.U, update_en)

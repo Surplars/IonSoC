@@ -18,6 +18,11 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
         dut.io.addr.poke(0.U)
         dut.io.write.poke(false.B)
         dut.io.wdata.poke(0.U)
+        dut.io.wvalid.poke(false.B)
+        dut.io.wcmd.poke(CSROps.RW.asUInt)
+        dut.io.waddr.poke(0.U)
+        dut.io.wwrite.poke(false.B)
+        dut.io.wwdata.poke(0.U)
         dut.io.debug_addr.poke(0.U)
         dut.io.debug_write.poke(false.B)
         dut.io.debug_wdata.poke(0.U)
@@ -50,15 +55,16 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
     }
 
     private def writeCsr(dut: CSRFile, addr: UInt, value: BigInt): Unit = {
-        dut.io.valid.poke(true.B)
-        dut.io.write.poke(true.B)
-        dut.io.cmd.poke(CSROps.RW.asUInt)
-        dut.io.addr.poke(addr)
-        dut.io.wdata.poke(value.U)
+        dut.io.wvalid.poke(true.B)
+        dut.io.wwrite.poke(true.B)
+        dut.io.wcmd.poke(CSROps.RW.asUInt)
+        dut.io.waddr.poke(addr)
+        dut.io.wwdata.poke(value.U)
         dut.clock.step()
-        dut.io.valid.poke(false.B)
-        dut.io.write.poke(false.B)
-        dut.io.wdata.poke(0.U)
+        dut.io.wvalid.poke(false.B)
+        dut.io.wwrite.poke(false.B)
+        dut.io.waddr.poke(0.U)
+        dut.io.wwdata.poke(0.U)
     }
 
     private def readCsr(dut: CSRFile, addr: UInt): BigInt = {

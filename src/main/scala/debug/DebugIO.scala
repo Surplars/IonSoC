@@ -22,6 +22,13 @@ class DebugIO extends Bundle {
     val branchRedirect = Output(Bool())
     val branchPredTaken = Output(Bool())
     val branchPredCorrect = Output(Bool())
+    val commitPc = Output(UInt(64.W))
+    val commitInstr = Output(UInt(32.W))
+    val commitInstrLen = Output(UInt(2.W))
+    val commitWen = Output(Bool())
+    val commitWdest = Output(UInt(5.W))
+    val commitWdata = Output(UInt(64.W))
+    val commitSkip = Output(Bool())
 }
 
 class DebugCacheControl extends Bundle {

@@ -53,6 +53,15 @@ class Core(
         val debug_branch_redirect = Output(Bool())
         val debug_branch_pred_taken = Output(Bool())
         val debug_branch_pred_correct = Output(Bool())
+        val debug_commit_pc = Output(UInt(XLEN.W))
+        val debug_commit_instr = Output(UInt(32.W))
+        val debug_commit_instr_len = Output(UInt(2.W))
+        val debug_commit_wen = Output(Bool())
+        val debug_commit_wdest = Output(UInt(5.W))
+        val debug_commit_wdata = Output(UInt(XLEN.W))
+        val debug_commit_skip = Output(Bool())
+        val debug_gpr_snapshot = Output(Vec(32, UInt(XLEN.W)))
+        val debug_csr_snapshot = Output(new soc.core.csr.CsrStateSnapshot(XLEN))
 
         val IBus = new TLBundle(tlParams)
         val DBus = new TLBundle(dbusParams)
@@ -80,13 +89,13 @@ class Core(
     })
 
     val dcache: HasCacheCoreIO = if (hasDCache) {
-        Module(new L1Cache(tlParams, features.dCacheSets))
+        Module(new L1Cache(tlParams, features.dCacheSets, useTLCoherence = features.coherentCaches))
     } else {
         Module(new UncachedTileLinkBridge(tlParams))
     }
     val tracker = Module(new TLTransTracker(tlParams, maxInFlight = 1 << tlParams.sourceBits))
     val dbusXbar = Module(new TLSystemXbar(tlParams, nMasters))
-    val icache = if (hasICache) Some(Module(new L1Cache(tlParams, features.iCacheSets))) else None
+    val icache = if (hasICache) Some(Module(new L1Cache(tlParams, features.iCacheSets, useTLCoherence = features.coherentCaches))) else None
 
     val pc       = Module(new PC(XLEN, soc.config.Config.resetVector))
     val register = Module(new RegisterFile(XLEN))
@@ -95,7 +104,7 @@ class Core(
     val ifetch  = Module(new InstrFetch(XLEN, useCache = hasICache, useCompressed = enabledExt.contains(Extension.C)))
     val idecode = Module(new InstrDecode(XLEN, enabledExt))
     val alu     = Module(new ALU(XLEN))
-    val lsu     = Module(new LSU(XLEN))
+    val lsu     = Module(new LSU(XLEN, features))
     val wb      = Module(new WirteBack(XLEN))
 
     // Global stall includes both memory-stage backpressure and optional
@@ -255,32 +264,56 @@ class Core(
 
     val loadLikePending = RegInit(false.B)
     val loadLikePendingRd = RegInit(0.U(5.W))
+    val loadLikeIssued = RegInit(false.B)
+    val loadLikeIssuedPc = RegInit(0.U(XLEN.W))
+    val loadLikeIssuedRd = RegInit(0.U(5.W))
     val aluLoadLike = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
         isLoadLikeOp(aluMemOp)
-    val loadLikeComplete =
-        loadLikePending && (lsu.io.load_data_valid ||
-            (wb.io.reg_wb.reg_write && wb.io.reg_wb.rd === loadLikePendingRd))
-    val decodeUsesPending =
+    // ALU/LSU can hold the same load-like instruction valid while a cache/MMIO
+    // access is completing. Register each dynamic load once; otherwise a
+    // completed load may be re-marked pending and falsely stall later users.
+    val newAluLoadLike = aluLoadLike &&
+        (!loadLikeIssued || loadLikeIssuedPc =/= alu.io.pc_out || loadLikeIssuedRd =/= alu.io.alu_out.rd)
+    val lsuCompletesPending =
+        lsu.io.load_data_valid && lsu.io.load_data_rd === loadLikePendingRd
+    val wbCompletesPending =
+        wb.io.reg_wb.reg_write && wb.io.reg_wb.rd === loadLikePendingRd
+    val loadLikeComplete = loadLikePending && (lsuCompletesPending || wbCompletesPending)
+    val newAluLoadLikeComplete =
+        newAluLoadLike && lsu.io.load_data_valid && lsu.io.load_data_rd === alu.io.alu_out.rd
+    val decodeUsesPendingReg =
         loadLikePending && !loadLikeComplete && idecode.io.valid_out &&
             usesRd(idecode.io.decoded_out.rs1, idecode.io.decoded_out.rs2, loadLikePendingRd)
+    val decodeUsesAluLoadLike =
+        newAluLoadLike && idecode.io.valid_out &&
+            usesRd(idecode.io.decoded_out.rs1, idecode.io.decoded_out.rs2, alu.io.alu_out.rd)
+    val decodeUsesPending = decodeUsesPendingReg || decodeUsesAluLoadLike
+    // A decoded consumer must be held in ID while the producer load is still
+    // outstanding. Only gating ALU valid lets ID overwrite its operand fields
+    // with stale register-file data, which breaks load-to-branch sequences such
+    // as `lbu; beqz` in firmware string loops.
+    val decodeStall = pipe_stall || decodeUsesPending || debugHalted
     when(loadLikeComplete) {
-        loadLikePending := false.B
-        loadLikePendingRd := 0.U
-    }.elsewhen(aluLoadLike) {
-        loadLikePending := true.B
-        loadLikePendingRd := alu.io.alu_out.rd
+        // A new load-like instruction can enter ALU in the same cycle that the
+        // previous load completes. Preserve the new dependency instead of
+        // clearing the scoreboard and letting the next consumer see stale data.
+        // If that new load also returns immediately, do not leave a stale
+        // dependency behind.
+        loadLikePending := newAluLoadLike && !newAluLoadLikeComplete
+        loadLikePendingRd := Mux(newAluLoadLike && !newAluLoadLikeComplete, alu.io.alu_out.rd, 0.U)
+    }.elsewhen(newAluLoadLike) {
+        loadLikePending := !newAluLoadLikeComplete
+        loadLikePendingRd := Mux(newAluLoadLikeComplete, 0.U, alu.io.alu_out.rd)
     }
-
-    val aluResultFwdValid = RegNext(
-        alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
-            !isLoadLikeOp(aluMemOp),
-        false.B
-    )
-    val aluResultFwdRd = RegEnable(alu.io.alu_out.rd, 0.U, alu.io.valid_out)
-    val aluResultFwdData = RegEnable(alu.io.alu_out.result, 0.U, alu.io.valid_out)
-    val aluResultPrevValid = RegNext(aluResultFwdValid, false.B)
-    val aluResultPrevRd = RegNext(aluResultFwdRd, 0.U)
-    val aluResultPrevData = RegNext(aluResultFwdData, 0.U)
+    when(aluLoadLike) {
+        loadLikeIssued := true.B
+        loadLikeIssuedPc := alu.io.pc_out
+        loadLikeIssuedRd := alu.io.alu_out.rd
+    }.otherwise {
+        loadLikeIssued := false.B
+        loadLikeIssuedPc := 0.U
+        loadLikeIssuedRd := 0.U
+    }
 
     pipe_stall := lsu.io.stall_req
     when(io.debug_resumereq) {
@@ -312,7 +345,7 @@ class Core(
 	    // Combine pipeline traps with external interrupts. External interrupts are
 	    // latched before redirect so CSR and PC consume the same trap PC.
 	    val has_pipeline_trap = lsu.io.trap_info_out.valid
-	    val has_ret           = lsu.io.trap_info_out.is_ret
+	    val has_ret           = lsu.io.trap_info_out.is_ret && lsu.io.valid_out
         val retConsumed       = RegInit(false.B)
 	    val ret_redirect      = has_ret && !retConsumed
         when(ret_redirect) {
@@ -338,6 +371,9 @@ class Core(
 	    val redirect_flush    = combined_trap || ret_redirect
         frontend_flush         := redirect_flush || fenceIActive || debugIcachePending
         val pipeline_flush    = frontend_flush
+        dontTouch(pipeline_flush)
+        dontTouch(frontendQueueFlush)
+        dontTouch(redirect_flush)
 
     // pc
     io.pc            := pc.io.pc_out
@@ -359,6 +395,36 @@ class Core(
     }
     pc.io.br_info <> pcBrInfo
     frontendQueueFlush := frontend_flush || pc.io.redirect
+    val aluResultFwdValid = RegInit(false.B)
+    val aluResultFwdRd = RegInit(0.U(5.W))
+    val aluResultFwdData = RegInit(0.U(XLEN.W))
+    val aluResultPrevValid = RegInit(false.B)
+    val aluResultPrevRd = RegInit(0.U(5.W))
+    val aluResultPrevData = RegInit(0.U(XLEN.W))
+    // ALU forwarding is only for short fixed-latency ALU producers. A
+    // load-like instruction with the same rd, or any variable-latency memory
+    // bubble behind it, must break the chain so a stale ALU value cannot
+    // override the later load result.
+    val aluForwardKill = frontendQueueFlush || redirect_flush || aluLoadLike
+    val aluForwardUpdate = !pipe_stall && !debugHalted
+    val nextAluForwardValid =
+        alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
+            !isLoadLikeOp(aluMemOp)
+    when(aluForwardKill) {
+        aluResultFwdValid := false.B
+        aluResultFwdRd := 0.U
+        aluResultFwdData := 0.U
+        aluResultPrevValid := false.B
+        aluResultPrevRd := 0.U
+        aluResultPrevData := 0.U
+    }.elsewhen(aluForwardUpdate) {
+        aluResultPrevValid := aluResultFwdValid
+        aluResultPrevRd := aluResultFwdRd
+        aluResultPrevData := aluResultFwdData
+        aluResultFwdValid := nextAluForwardValid
+        aluResultFwdRd := Mux(nextAluForwardValid, alu.io.alu_out.rd, 0.U)
+        aluResultFwdData := Mux(nextAluForwardValid, alu.io.alu_out.result, 0.U)
+    }
     // register
     register.io.rs1_addr   := idecode.io.reg_rd_rs1
     register.io.rs2_addr   := idecode.io.reg_rd_rs2
@@ -370,6 +436,14 @@ class Core(
     register.io.debug_wdata := io.debug_gpr_wdata
     io.debug_gpr_rdata := register.io.debug_rdata
     io.debug_retire := wb.io.valid_in && !wb.io.trap_info.valid
+    io.debug_commit_pc := wb.io.pc_in
+    io.debug_commit_instr := wb.io.commit_instr
+    io.debug_commit_instr_len := wb.io.commit_instr_len
+    io.debug_commit_wen := wb.io.reg_wb.reg_write
+    io.debug_commit_wdest := wb.io.reg_wb.rd
+    io.debug_commit_wdata := wb.io.reg_wb.data
+    io.debug_commit_skip := wb.io.commit_skip
+    io.debug_gpr_snapshot := register.io.debug_snapshot
     io.debug_stall := global_stall
     io.debug_ifetch_stall := ifetch.io.fetch_stall
     io.debug_frontend_starved := frontendStarved
@@ -389,15 +463,24 @@ class Core(
     // CSR
     csr.io.valid      := alu.io.csr_valid
     csr.io.cmd        := alu.io.csr_cmd
+    // Keep CSR reads combinational from the current EX instruction, while
+    // committing writes from the registered EX slot. This preserves CSRRS-style
+    // old-value reads without letting a flushed/stalled younger CSR mutate state.
     csr.io.addr       := alu.io.csr_addr
     csr.io.write      := alu.io.csr_write
     csr.io.wdata      := alu.io.csr_wdata
+    csr.io.wvalid     := alu.io.csr_commit_valid
+    csr.io.wcmd       := alu.io.csr_commit_cmd
+    csr.io.waddr      := alu.io.csr_commit_addr
+    csr.io.wwrite     := alu.io.csr_commit_write
+    csr.io.wwdata     := alu.io.csr_commit_wdata
     csr.io.debug_addr := io.debug_csr_addr
     csr.io.debug_write := io.debug_csr_write && debugHalted
     csr.io.debug_wdata := io.debug_csr_wdata
     io.debug_csr_rdata := csr.io.debug_rdata
     io.debug_csr_valid := csr.io.debug_valid
     io.debug_csr_writable := csr.io.debug_writable
+    io.debug_csr_snapshot := csr.io.state_snapshot
     csr.io.trap_valid := combined_trap
     // Exceptions take priority over interrupts for pc/cause
     csr.io.trap_pc    := Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, interruptPc)
@@ -443,14 +526,14 @@ class Core(
         frontendQueue.io.flush := frontendQueueFlush
         frontendQueue.io.enq.valid := ifetch.io.valid && !frontendQueueFlush
         frontendQueue.io.enq.bits := fetchEntry
-        frontendQueue.io.deq.ready := !frontendQueueFlush && !(pipe_stall || decodeUsesPending || debugHalted)
+        frontendQueue.io.deq.ready := !frontendQueueFlush && !decodeStall
         ifetchQueueReady := frontendQueue.io.enq.ready
         decodeInputValid := frontendQueue.io.deq.valid
         frontendQueueFull := frontendQueue.io.full
         frontendQueueEmpty := frontendQueue.io.empty
         decodeEntry := frontendQueue.io.deq.bits
     } else {
-        ifetchQueueReady := !(pipe_stall || decodeUsesPending || debugDcachePending || (debugHalted && !debugIcachePending))
+        ifetchQueueReady := !(decodeStall || debugDcachePending || (debugHalted && !debugIcachePending))
         decodeInputValid := ifetch.io.valid
         frontendQueueFull := !ifetchQueueReady
         frontendQueueEmpty := !ifetch.io.valid
@@ -459,7 +542,7 @@ class Core(
 
     // idcode
     idecode.io.valid_in      := decodeInputValid
-    idecode.io.stall         := pipe_stall || decodeUsesPending || debugHalted
+    idecode.io.stall         := decodeStall
 	    idecode.io.trap_valid    := frontend_flush
     idecode.io.redirect      := ifetch.io.redirect
     idecode.io.pc_in         := decodeEntry.pc
@@ -478,9 +561,10 @@ class Core(
         source
     }
     val decodeBypassSources = Seq(
+        bypassSource(aluBypassValid, alu.io.alu_out.rd, alu.io.alu_out.result),
         bypassSource(wb.io.reg_wb.reg_write, wb.io.reg_wb.rd, wb.io.reg_wb.data),
         bypassSource(lsu.io.mem_out.reg_write, lsu.io.mem_out.rd, lsu.io.mem_out.result),
-        bypassSource(aluBypassValid, alu.io.alu_out.rd, alu.io.alu_out.result)
+        bypassSource(lsu.io.load_data_valid, lsu.io.load_data_rd, lsu.io.load_data)
     )
     def decodeBypass(addr: UInt, regData: UInt): UInt = {
         decodeBypassSources.foldLeft(Mux(addr === 0.U, 0.U, regData)) { (data, source) =>
@@ -499,9 +583,29 @@ class Core(
     idecode.io.reg_rs1_data  := decodeBypass(idecode.io.reg_rd_rs1, register.io.rs1_data)
     idecode.io.reg_rs2_data  := decodeBypass(idecode.io.reg_rd_rs2, register.io.rs2_data)
     // alu
-    alu.io.valid_in       := idecode.io.valid_out && !decodeUsesPending
+    val idIssuedValid = RegInit(false.B)
+    val idIssuedPc = RegInit(0.U(XLEN.W))
+    val idAlreadyIssued = idIssuedValid && idecode.io.valid_out && idecode.io.pc_out === idIssuedPc
+    // Do not mark an ID instruction as issued while EX/MEM is applying
+    // back-pressure. ALU.valid_in would otherwise be sampled during a stall,
+    // then the one-shot gate would suppress the real issue when the load/store
+    // path becomes ready.
+    val exIssueReady = !pipe_stall && !debugHalted
+    val idIssueReady = !decodeUsesPending && exIssueReady
+    val issueIdToAlu = idecode.io.valid_out && idIssueReady && !idAlreadyIssued
+    when(frontendQueueFlush || redirect_flush || !idecode.io.valid_out) {
+        idIssuedValid := false.B
+        idIssuedPc := 0.U
+    }.elsewhen(issueIdToAlu) {
+        idIssuedValid := true.B
+        idIssuedPc := idecode.io.pc_out
+    }
+    alu.io.valid_in       := issueIdToAlu && exIssueReady
     alu.io.stall          := pipe_stall || debugHalted
-	    alu.io.trap_valid     := redirect_flush
+    // Any redirect invalidates the younger instruction currently arriving at
+    // EX. Trap/ret redirects are covered by redirect_flush; branch and fence.i
+    // redirects arrive through pc.io.redirect/frontendQueueFlush.
+	    alu.io.trap_valid     := redirect_flush || frontendQueueFlush
     alu.io.pc_in          := idecode.io.pc_out
     alu.io.next_pc_in     := idecode.io.pc_in
     alu.io.pred_taken_in  := idecode.io.pred_taken_out
@@ -510,7 +614,12 @@ class Core(
     alu.io.trap_info_in   := idecode.io.trap_info
     alu.io.csr_illegal    := csr.io.illegal
     alu.io.fwd.load_valid := lsu.io.load_data_valid
+    alu.io.fwd.load_rd    := lsu.io.load_data_rd
 	alu.io.fwd.load_data  := lsu.io.load_data
+    // ALU-to-ALU adjacency is handled inside ALU with a one-cycle EX bypass.
+    // The delayed slots below cover one-instruction gaps such as
+    // `addi s0,...; addi s1,...; beqz s0,...`. They are explicitly cleared on
+    // redirects so the new control-flow path cannot consume an expired value.
     alu.io.fwd.reg_write  := aluFwd.valid || lsuFwd.valid
     alu.io.fwd.rd         := Mux(aluFwd.valid, aluFwd.rd, lsuFwd.rd)
     alu.io.fwd.alu_result := Mux(aluFwd.valid, aluFwd.data, lsuFwd.data)
@@ -520,7 +629,12 @@ class Core(
     // mem
     lsu.io.pc_in        := alu.io.pc_out
     lsu.io.valid_in     := alu.io.valid_out
-	    lsu.io.trap_valid   := wb.io.trap_info.valid
+    // Trap returns and LSU exceptions resolve after EX, so a younger
+    // fall-through instruction can already be sitting on the ALU->LSU boundary
+    // when the redirect commits. Kill that incoming MEM slot from registered
+    // LSU/WB redirect state only; feeding the full frontend flush back here
+    // would create a stall/flush combinational loop.
+    lsu.io.trap_valid   := wb.io.trap_info.valid || has_pipeline_trap || ret_redirect
     lsu.io.alu_out      := alu.io.alu_out
     lsu.io.trap_info_in := alu.io.trap_info_out
     lsu.io.mem_cfg      := csr.io.mem_cfg_out

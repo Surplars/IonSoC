@@ -5,7 +5,7 @@ import chisel3.util._
 import soc.bus.tilelink._
 import soc.config.Config
 
-class ROM extends BlackBox with HasBlackBoxInline {
+class ROM(initPlusArg: String = "") extends BlackBox(Map("INIT_PLUSARG" -> initPlusArg)) with HasBlackBoxInline {
 	val io = IO(new Bundle {
 		val en = Input(Bool())
 		val pc_in  = Input(UInt(Config.XLEN.W))
@@ -18,7 +18,8 @@ class ROM extends BlackBox with HasBlackBoxInline {
 module ROM #(
     parameter ROM_DEPTH = ${Config.romDepth},
     parameter ADDR_WIDTH = ${Config.XLEN},
-    parameter INSTR_WIDTH = 32
+    parameter INSTR_WIDTH = 32,
+    parameter string INIT_PLUSARG = ""
 )(
     input logic                     en,
     input logic [ADDR_WIDTH-1:0]    pc_in,
@@ -31,6 +32,16 @@ localparam int INDEX_BITS = $$clog2(ROM_DEPTH);
 
 logic [INSTR_WIDTH-1:0] mem [0:ROM_DEPTH - 1];
 logic [INDEX_BITS-1:0] idx;
+string init_file;
+
+initial begin
+    for (int i = 0; i < ROM_DEPTH; i++) begin
+        mem[i] = '0;
+    end
+    if (INIT_PLUSARG != "" && $$value$$plusargs({INIT_PLUSARG, "=%s"}, init_file)) begin
+        $$readmemh(init_file, mem);
+    end
+end
 
 /* verilator lint_off WIDTHTRUNC */
 always_comb begin
@@ -57,8 +68,8 @@ class BROM(XLEN: Int, depth: Int, init: Seq[Int]) extends Module {
         val instr    = Output(UInt(64.W))
     })
 
-	val loRom = Module(new ROM)
-	val hiRom = Module(new ROM)
+	val loRom = Module(new ROM("ion_rom_lo"))
+	val hiRom = Module(new ROM("ion_rom_hi"))
 
 	loRom.io.en := io.fetch_en
 	loRom.io.pc_in := io.addr
@@ -78,8 +89,8 @@ class TLROM(params: TLParams) extends Module {
     private val beatBytes  = params.dataWidth / 8
     private val offsetBits = log2Ceil(beatBytes)
 
-    val loRom = Module(new ROM)
-    val hiRom = Module(new ROM)
+    val loRom = Module(new ROM("ion_rom_lo"))
+    val hiRom = Module(new ROM("ion_rom_hi"))
 
     val beatBase = Cat(io.tl.a.bits.address(params.addrWidth - 1, offsetBits), 0.U(offsetBits.W))
     loRom.io.en    := io.tl.a.fire

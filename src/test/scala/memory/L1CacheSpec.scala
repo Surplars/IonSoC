@@ -489,6 +489,45 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("Cache read hit buffer survives unrelated writes and tracks same-line writes") {
+        simulate(new CacheRamHarness(params)) { dut =>
+            init(dut)
+
+            pokeReq(dut, addr = 0x100, cmd = CacheCmd.Write, data = BigInt("0102030405060708", 16))
+            issueReq(dut)
+            waitResp(dut, maxCycles = 40)
+
+            pokeReq(dut, addr = 0x100, cmd = CacheCmd.Read)
+            issueReq(dut)
+            assert(waitResp(dut, maxCycles = 20) == BigInt("0102030405060708", 16))
+
+            pokeReq(dut, addr = 0x108, cmd = CacheCmd.Write, data = BigInt("1112131415161718", 16))
+            issueReq(dut)
+            waitResp(dut, maxCycles = 40)
+
+            pokeReq(dut, addr = 0x100, cmd = CacheCmd.Read)
+            dut.io.req.valid.poke(true.B)
+            dut.io.req.ready.expect(true.B)
+            dut.io.resp.valid.expect(true.B)
+            dut.io.resp.bits.rdata.expect("h0102030405060708".U)
+            dut.io.req.valid.poke(false.B)
+            dut.clock.step()
+            dut.io.resp.valid.expect(false.B)
+
+            pokeReq(dut, addr = 0x100, cmd = CacheCmd.Write, data = BigInt("00000000aa000000", 16), mask = 0x08)
+            issueReq(dut)
+            waitResp(dut, maxCycles = 20)
+
+            pokeReq(dut, addr = 0x100, cmd = CacheCmd.Read)
+            dut.io.req.valid.poke(true.B)
+            dut.io.req.ready.expect(true.B)
+            dut.io.resp.valid.expect(true.B)
+            dut.io.resp.bits.rdata.expect("h01020304aa060708".U)
+            dut.io.req.valid.poke(false.B)
+            dut.clock.step()
+        }
+    }
+
     test("Cache responds to TL-C probes and invalidates matching lines") {
         simulate(new CacheRamHarness(params)) { dut =>
             init(dut)

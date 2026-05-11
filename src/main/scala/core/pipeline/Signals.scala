@@ -112,6 +112,7 @@ class InstrSignals extends Bundle {
 }
 
 class DecodedInstr(XLEN: Int) extends Bundle {
+    val instr   = UInt(32.W)
     val rs1     = UInt(5.W)
     val rs2     = UInt(5.W)
     val op1     = UInt(XLEN.W)
@@ -129,6 +130,8 @@ class DecodedInstr(XLEN: Int) extends Bundle {
 }
 
 class ALUOut(XLEN: Int) extends Bundle {
+    val instr     = UInt(32.W)
+    val instr_len = UInt(2.W)
     val result    = UInt(XLEN.W)
     val funct3    = UInt(3.W)
     val rd        = UInt(5.W)
@@ -140,9 +143,12 @@ class ALUOut(XLEN: Int) extends Bundle {
 }
 
 class MemOut(XLEN: Int) extends Bundle {
+    val instr     = UInt(32.W)
+    val instr_len = UInt(2.W)
     val result    = UInt(XLEN.W)
     val rd        = UInt(5.W)
     val reg_write = Bool()
+    val diff_skip = Bool()
 }
 
 class RegWrite(XLEN: Int) extends Bundle {
@@ -159,6 +165,7 @@ class FwdSource(XLEN: Int) extends Bundle {
 
 class FwdSignals(XLEN: Int) extends Bundle {
     val load_valid = Bool()
+    val load_rd    = UInt(5.W)
     val load_data  = UInt(XLEN.W)
     val rd         = UInt(5.W)
     val alu_result = UInt(XLEN.W)

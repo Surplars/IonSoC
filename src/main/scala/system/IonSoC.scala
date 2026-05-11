@@ -3,6 +3,7 @@ package soc
 import chisel3._
 import chisel3.util._
 import _root_.circt.stage.ChiselStage
+import difftest._
 
 import soc.config.Config
 import soc.config.InterruptControllerKind
@@ -20,6 +21,7 @@ import soc.bus.tilelink.TLParams
 import soc.bus.tilelink.TLRAM
 import soc.bus.tilelink.TLBundle
 import soc.isa.Extension
+import soc.core.csr.CsrStateSnapshot
 
 class IonSoC(
     features: SoCFeatures = Config.features,
@@ -43,6 +45,8 @@ class IonSoC(
         val jtag_tck = Input(Bool())
         val jtag_tdi = Input(Bool())
         val jtag_tdo = Output(Bool())
+        val debug_gpr_snapshot = Output(Vec(32, UInt(Config.XLEN.W)))
+        val debug_csr_snapshot = Output(new CsrStateSnapshot(Config.XLEN))
     })
 
     val core  = Module(new Core(Config.XLEN, hartID = 0, features, enabledExt))
@@ -154,8 +158,110 @@ class IonSoC(
     io.debug.branchRedirect := core.io.debug_branch_redirect
     io.debug.branchPredTaken := core.io.debug_branch_pred_taken
     io.debug.branchPredCorrect := core.io.debug_branch_pred_correct
+    io.debug.commitPc := core.io.debug_commit_pc
+    io.debug.commitInstr := core.io.debug_commit_instr
+    io.debug.commitInstrLen := core.io.debug_commit_instr_len
+    io.debug.commitWen := core.io.debug_commit_wen
+    io.debug.commitWdest := core.io.debug_commit_wdest
+    io.debug.commitWdata := core.io.debug_commit_wdata
+    io.debug.commitSkip := core.io.debug_commit_skip
+    io.debug_gpr_snapshot := core.io.debug_gpr_snapshot
+    io.debug_csr_snapshot := core.io.debug_csr_snapshot
 
     // UART TX outputs
     io.uart_tx   := uart.map(_.io.tx_valid).getOrElse(false.B)
     io.uart_byte := uart.map(_.io.tx_byte).getOrElse(0.U)
+}
+
+class IonSoCDifftest(
+    features: SoCFeatures = Config.features,
+    enabledExt: Set[Extension.Value] = Config.enabledExt
+) extends IonSoC(features, enabledExt) with HasDiffTestInterfaces {
+    override def cpuName: Option[String] = Some("IonSoC")
+
+    private val archEvent = DifftestModule(new DiffArchEvent, dontCare = true)
+    archEvent.coreid := 0.U
+    archEvent.valid := false.B
+    archEvent.interrupt := 0.U
+    archEvent.exception := 0.U
+    archEvent.exceptionPC := 0.U
+    archEvent.exceptionInst := 0.U
+    archEvent.hasNMI := false.B
+    archEvent.virtualInterruptIsHvictlInject := false.B
+    archEvent.irToHS := false.B
+    archEvent.irToVS := false.B
+
+    private val commit = DifftestModule(new DiffInstrCommit(32), dontCare = true)
+    commit.coreid := 0.U
+    commit.index := 0.U
+    commit.valid := io.debug.retire
+    commit.skip := io.debug.commitSkip
+    commit.isRVC := io.debug.commitInstrLen === 2.U
+    commit.rfwen := io.debug.commitWen
+    commit.fpwen := false.B
+    commit.vecwen := false.B
+    commit.v0wen := false.B
+    commit.wpdest := io.debug.commitWdest
+    commit.wdest := io.debug.commitWdest
+    commit.otherwpdest.foreach(_ := 0.U)
+    commit.pc := io.debug.commitPc
+    commit.instr := io.debug.commitInstr
+    commit.robIdx := 0.U
+    commit.lqIdx := 0.U
+    commit.sqIdx := 0.U
+    commit.isLoad := false.B
+    commit.isStore := false.B
+    commit.nFused := 0.U
+    commit.special := 0.U
+
+    // The official DiffTest emu uses TrapEvent counters for max-cycle/max-
+    // instruction exits and stuck detection. Keep them in hardware so
+    // difftest runs can terminate even before the payload reaches a trap.
+    private val difftestCycleCnt = RegInit(0.U(64.W))
+    private val difftestInstrCnt = RegInit(0.U(64.W))
+    difftestCycleCnt := difftestCycleCnt + 1.U
+    when(io.debug.retire) {
+        difftestInstrCnt := difftestInstrCnt + 1.U
+    }
+
+    private val trap = DifftestModule(new DiffTrapEvent, dontCare = true)
+    trap.coreid := 0.U
+    trap.hasTrap := false.B
+    trap.cycleCnt := difftestCycleCnt
+    trap.instrCnt := difftestInstrCnt
+    trap.hasWFI := false.B
+    trap.code := 0.U
+    trap.pc := io.debug.commitPc
+
+    private val csr = DifftestModule(new DiffCSRState, dontCare = true)
+    csr.coreid := 0.U
+    csr.privilegeMode := io.debug_csr_snapshot.privilegeMode
+    csr.mstatus := io.debug_csr_snapshot.mstatus
+    csr.sstatus := io.debug_csr_snapshot.sstatus
+    csr.mepc := io.debug_csr_snapshot.mepc
+    csr.sepc := io.debug_csr_snapshot.sepc
+    csr.mtval := io.debug_csr_snapshot.mtval
+    csr.stval := io.debug_csr_snapshot.stval
+    csr.mtvec := io.debug_csr_snapshot.mtvec
+    csr.stvec := io.debug_csr_snapshot.stvec
+    csr.mcause := io.debug_csr_snapshot.mcause
+    csr.scause := io.debug_csr_snapshot.scause
+    csr.satp := io.debug_csr_snapshot.satp
+    csr.mip := io.debug_csr_snapshot.mip
+    csr.mie := io.debug_csr_snapshot.mie
+    csr.mscratch := io.debug_csr_snapshot.mscratch
+    csr.sscratch := io.debug_csr_snapshot.sscratch
+    csr.mideleg := io.debug_csr_snapshot.mideleg
+    csr.medeleg := io.debug_csr_snapshot.medeleg
+
+    private val gpr = DifftestModule(new DiffPhyIntRegState(32), dontCare = true)
+    gpr.coreid := 0.U
+    gpr.value := io.debug_gpr_snapshot
+
+    override def connectTopIOs(difftest: DifftestTopIO): Unit = {
+        io.uart_rx_valid := difftest.uart.in.valid
+        io.uart_rx_byte := difftest.uart.in.ch
+        difftest.uart.out.valid := io.uart_tx
+        difftest.uart.out.ch := io.uart_byte
+    }
 }

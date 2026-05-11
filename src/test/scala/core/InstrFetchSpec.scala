@@ -148,8 +148,11 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.io.pc.poke("h1004".U)
             dut.io.valid.expect(true.B)
             dut.io.instr_out.expect("h00710193".U)
-            dut.io.cache.req.valid.expect(true.B)
-            dut.io.cache.req.bits.addr.expect("h1008".U)
+            // Serving a buffered instruction no longer issues an untagged
+            // next-beat prefetch. The old path could drive a prefetched beat as
+            // the current instruction when RVC and 32-bit instructions mixed
+            // around a 64-bit beat boundary.
+            dut.io.cache.req.valid.expect(false.B)
             dut.io.fetch_stall.expect(false.B)
             dut.clock.step()
         }
@@ -196,6 +199,19 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h002080b3".U)
+        }
+    }
+
+    test("InstrFetch expands compressed jump with negative offset") {
+        simulate(new InstrFetch(64, useCompressed = true)) { dut =>
+            init(dut)
+
+            dut.io.pc.poke("h4000f2c8".U)
+            dut.io.instr_in.poke("h000000000000bfe1".U) // c.j 0x4000f2a0
+            dut.clock.step()
+            dut.io.valid.expect(true.B)
+            dut.io.instr_len.expect(2.U)
+            dut.io.instr_out.expect("hfd9ff06f".U)
         }
     }
 

@@ -90,15 +90,23 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val reqPredTarget = RegInit(0.U(XLEN.W))
         val dropResp = RegInit(false.B)
         val crossBeatLowHalf = RegInit(0.U(16.W))
-        val beatBufferValid = RegInit(false.B)
-        val beatBufferAddr = RegInit(0.U((XLEN - beatOffsetBits).W))
-        val beatBufferData = RegInit(0.U(XLEN.W))
+        // Small direct-mapped buffer for recently returned instruction beats.
+        // It is intentionally above the I-cache protocol: fence.i/trap/debug
+        // invalidation clears it, while normal branch redirects can reuse beats
+        // that were already fetched from the coherent I-cache path.
+        val beatBufferEntries = 4
+        val beatBufferIndexBits = log2Ceil(beatBufferEntries)
+        val beatBufferValid = RegInit(VecInit(Seq.fill(beatBufferEntries)(false.B)))
+        val beatBufferAddr = Reg(Vec(beatBufferEntries, UInt((XLEN - beatOffsetBits).W)))
+        val beatBufferData = Reg(Vec(beatBufferEntries, UInt(XLEN.W)))
 
         val flush = io.redirect || io.trap_valid
         val pcBeatAddr = io.pc(XLEN - 1, beatOffsetBits)
-        val beatBufferHit = beatBufferValid && beatBufferAddr === pcBeatAddr
-        val bufferedExpanded = selectAndExpand(beatBufferData, io.pc, io.pc(beatOffsetBits - 1, 0))
-        val bufferedFirstHalf = (beatBufferData >> Cat(io.pc(beatOffsetBits - 1, 0), 0.U(3.W)))(15, 0)
+        val pcBufferIdx = pcBeatAddr(beatBufferIndexBits - 1, 0)
+        val beatBufferHit = beatBufferValid(pcBufferIdx) && beatBufferAddr(pcBufferIdx) === pcBeatAddr
+        val bufferedBeatData = beatBufferData(pcBufferIdx)
+        val bufferedExpanded = selectAndExpand(bufferedBeatData, io.pc, io.pc(beatOffsetBits - 1, 0))
+        val bufferedFirstHalf = (bufferedBeatData >> Cat(io.pc(beatOffsetBits - 1, 0), 0.U(3.W)))(15, 0)
         val bufferedNeedsCrossBeat = if (useCompressed) {
             io.pc(beatOffsetBits - 1, 0) === ((XLEN / 8) - 2).U && bufferedFirstHalf(1, 0) === "b11".U
         } else {
@@ -109,10 +117,16 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val bufferedStepBytes = Mux(bufferedExpanded._2 === 2.U, 2.U(XLEN.W), 4.U(XLEN.W))
         val bufferedNextPc = io.pc + bufferedStepBytes
         val bufferedNextBeatAddr = bufferedNextPc(XLEN - 1, beatOffsetBits)
-        val canPrefetchNextBeat = canServeBuffered && !io.pred_taken_in && bufferedNextBeatAddr =/= pcBeatAddr
+        // Do not speculatively emit next-beat responses as pipeline
+        // instructions. The earlier prefetch path reused the normal response
+        // output and could mis-pair a prefetched beat with the current PC when
+        // 16-bit and 32-bit instructions straddled a 64-bit fetch boundary.
+        // Keep the local beat buffer for same-beat reuse; a future prefetcher
+        // should tag responses and fill the buffer without driving io.valid.
+        val canPrefetchNextBeat = false.B
 
         when(io.trap_valid) {
-            beatBufferValid := false.B
+            beatBufferValid := VecInit(Seq.fill(beatBufferEntries)(false.B))
         }
 
         when(canIssue) {
@@ -138,7 +152,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         // data: the L1 still performs a registered SyncReadMem lookup before
         // responding.
         io.cache.req.valid := (canIssue || canPrefetchNextBeat || state === sFirstReq || state === sSecondReq) && !flush
-        val secondReqPc = reqPc + 2.U
+        val secondReqPc = ((reqPc >> beatOffsetBits.U) + 1.U) << beatOffsetBits.U
         val cacheReqPc = Mux(
             canPrefetchNextBeat,
             bufferedNextPc,
@@ -149,7 +163,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         // Keep the response channel drainable even after a frontend flush has
         // cancelled the matching fetch. Otherwise a late cache response can
         // leave the I-cache in its response state and block fence.i invalidation.
-        io.cache.resp.ready := !io.stall
+        io.cache.resp.ready := !io.stall || flush
 
         when((state === sFirstReq || state === sSecondReq) && flush) {
             dropResp := false.B
@@ -161,41 +175,70 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         }
 
         val respFire = io.cache.resp.valid && io.cache.resp.ready
-        val respExpanded = selectAndExpand(io.cache.resp.bits.rdata, reqPc, reqPc(beatOffsetBits - 1, 0))
-        val prefetchExpanded = selectAndExpand(io.cache.resp.bits.rdata, prefetchPc, prefetchPc(beatOffsetBits - 1, 0))
-        val firstHalf = (io.cache.resp.bits.rdata >> Cat(reqPc(beatOffsetBits - 1, 0), 0.U(3.W)))(15, 0)
+        val instantFirstResp = canIssue && io.cache.req.ready && respFire
+        val instantSecondResp = state === sSecondReq && io.cache.req.ready && respFire && !flush
+        val instantPrefetchResp = canPrefetchNextBeat && io.cache.req.ready && respFire
+        val firstRespPc = Mux(instantFirstResp, io.pc, reqPc)
+        val prefetchRespPc = Mux(instantPrefetchResp, bufferedNextPc, prefetchPc)
+        val respExpanded = selectAndExpand(io.cache.resp.bits.rdata, firstRespPc, firstRespPc(beatOffsetBits - 1, 0))
+        val prefetchExpanded = selectAndExpand(io.cache.resp.bits.rdata, prefetchRespPc, prefetchRespPc(beatOffsetBits - 1, 0))
+        val firstHalf = (io.cache.resp.bits.rdata >> Cat(firstRespPc(beatOffsetBits - 1, 0), 0.U(3.W)))(15, 0)
         val needsCrossBeat = if (useCompressed) {
-            reqPc(beatOffsetBits - 1, 0) === ((XLEN / 8) - 2).U && firstHalf(1, 0) === "b11".U
+            firstRespPc(beatOffsetBits - 1, 0) === ((XLEN / 8) - 2).U && firstHalf(1, 0) === "b11".U
         } else {
             false.B
         }
         val acceptFirstResp =
-            state === sFirstWait && respFire && !needsCrossBeat && !dropResp && !io.cache.resp.bits.err && !flush
+            (state === sFirstWait || instantFirstResp) && respFire && !needsCrossBeat && !dropResp &&
+                !io.cache.resp.bits.err && !flush
         val acceptSecondResp =
-            state === sSecondWait && respFire && !dropResp && !io.cache.resp.bits.err && !flush
+            (state === sSecondWait || instantSecondResp) && respFire && !dropResp && !io.cache.resp.bits.err && !flush
         val acceptPrefetchResp =
-            state === sPrefetchWait && respFire && !dropResp && !io.cache.resp.bits.err && !flush
+            (state === sPrefetchWait || instantPrefetchResp) && respFire && !dropResp && !io.cache.resp.bits.err && !flush
         val assembledCrossBeat = Cat(io.cache.resp.bits.rdata(15, 0), crossBeatLowHalf)
         val acceptResp = acceptFirstResp || acceptSecondResp || acceptPrefetchResp
         val acceptedInstr = Mux(acceptSecondResp, assembledCrossBeat, Mux(acceptPrefetchResp, prefetchExpanded._1, respExpanded._1))
         val acceptedLen = Mux(acceptSecondResp, 0.U(2.W), Mux(acceptPrefetchResp, prefetchExpanded._2, respExpanded._2))
-        val acceptedPc = Mux(acceptPrefetchResp, prefetchPc, reqPc)
+        val acceptedPc = Mux(acceptPrefetchResp, prefetchRespPc, firstRespPc)
 
         when(acceptFirstResp) {
-            beatBufferValid := true.B
-            beatBufferAddr := reqPc(XLEN - 1, beatOffsetBits)
-            beatBufferData := io.cache.resp.bits.rdata
+            val respBeatAddr = firstRespPc(XLEN - 1, beatOffsetBits)
+            val respBufferIdx = respBeatAddr(beatBufferIndexBits - 1, 0)
+            beatBufferValid(respBufferIdx) := true.B
+            beatBufferAddr(respBufferIdx) := respBeatAddr
+            beatBufferData(respBufferIdx) := io.cache.resp.bits.rdata
         }.elsewhen(acceptSecondResp) {
-            beatBufferValid := true.B
-            beatBufferAddr := (reqPc + 2.U)(XLEN - 1, beatOffsetBits)
-            beatBufferData := io.cache.resp.bits.rdata
+            val respBeatAddr = secondReqPc(XLEN - 1, beatOffsetBits)
+            val respBufferIdx = respBeatAddr(beatBufferIndexBits - 1, 0)
+            beatBufferValid(respBufferIdx) := true.B
+            beatBufferAddr(respBufferIdx) := respBeatAddr
+            beatBufferData(respBufferIdx) := io.cache.resp.bits.rdata
         }.elsewhen(acceptPrefetchResp) {
-            beatBufferValid := true.B
-            beatBufferAddr := prefetchPc(XLEN - 1, beatOffsetBits)
-            beatBufferData := io.cache.resp.bits.rdata
+            val respBeatAddr = prefetchRespPc(XLEN - 1, beatOffsetBits)
+            val respBufferIdx = respBeatAddr(beatBufferIndexBits - 1, 0)
+            beatBufferValid(respBufferIdx) := true.B
+            beatBufferAddr(respBufferIdx) := respBeatAddr
+            beatBufferData(respBufferIdx) := io.cache.resp.bits.rdata
         }
 
-        when(state === sFirstWait && respFire) {
+        when(instantFirstResp) {
+            when(io.cache.resp.bits.err || flush) {
+                dropResp := false.B
+                state := sIdle
+            }.elsewhen(needsCrossBeat) {
+                crossBeatLowHalf := firstHalf
+                state := sSecondReq
+            }.otherwise {
+                dropResp := false.B
+                state := sIdle
+            }
+        }.elsewhen(instantSecondResp) {
+            dropResp := false.B
+            state := sIdle
+        }.elsewhen(instantPrefetchResp) {
+            dropResp := false.B
+            state := sIdle
+        }.elsewhen(state === sFirstWait && respFire) {
             when(dropResp || io.cache.resp.bits.err || flush) {
                 dropResp := false.B
                 state := sIdle

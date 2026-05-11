@@ -85,6 +85,27 @@ class CsrPerfEvents extends Bundle {
     val lsuMmioStall = Bool()
 }
 
+class CsrStateSnapshot(XLEN: Int) extends Bundle {
+    val privilegeMode = UInt(XLEN.W)
+    val mstatus = UInt(XLEN.W)
+    val sstatus = UInt(XLEN.W)
+    val mepc = UInt(XLEN.W)
+    val sepc = UInt(XLEN.W)
+    val mtval = UInt(XLEN.W)
+    val stval = UInt(XLEN.W)
+    val mtvec = UInt(XLEN.W)
+    val stvec = UInt(XLEN.W)
+    val mcause = UInt(XLEN.W)
+    val scause = UInt(XLEN.W)
+    val satp = UInt(XLEN.W)
+    val mip = UInt(XLEN.W)
+    val mie = UInt(XLEN.W)
+    val mscratch = UInt(XLEN.W)
+    val sscratch = UInt(XLEN.W)
+    val mideleg = UInt(XLEN.W)
+    val medeleg = UInt(XLEN.W)
+}
+
 class CSRFile(
     XLEN: Int = 64,
     hartID: Int,
@@ -98,6 +119,11 @@ class CSRFile(
         val addr    = Input(UInt(12.W))
         val write   = Input(Bool())
         val wdata   = Input(UInt(XLEN.W))
+        val wvalid  = Input(Bool())
+        val wcmd    = Input(UInt(4.W))
+        val waddr   = Input(UInt(12.W))
+        val wwrite  = Input(Bool())
+        val wwdata  = Input(UInt(XLEN.W))
         val rdata   = Output(UInt(XLEN.W))
         val illegal = Output(Bool())
         // Debug abstract commands access CSRs while the core is halted.
@@ -129,6 +155,7 @@ class CSRFile(
         val ie_out          = Output(Bool()) // MIE全局中断使能
         val interrupt       = Output(Bool()) // 是否有待处理的中断
         val mem_cfg_out = Output(new MemorySystemConfig(XLEN))
+        val state_snapshot = Output(new CsrStateSnapshot(XLEN))
     })
 
     val CurrentPrivLevel = RegInit(PrivilegeLevel.Machine)
@@ -309,6 +336,15 @@ class CSRFile(
             Mux(isMhpmEvent(io.addr), mhpmevent(mhpmEventIndex(io.addr)), MuxLookup(io.addr, 0.U)(mapping.toSeq))
         )
     )
+    val wdata_read_pre = Mux(
+        isPmpAddr(io.waddr),
+        pmpaddr(pmpAddrIndex(io.waddr)),
+        Mux(
+            isMhpmCounter(io.waddr),
+            mhpmcounter(mhpmCounterIndex(io.waddr)),
+            Mux(isMhpmEvent(io.waddr), mhpmevent(mhpmEventIndex(io.waddr)), MuxLookup(io.waddr, 0.U)(mapping.toSeq))
+        )
+    )
     val debug_rdata_pre = Mux(
         isPmpAddr(io.debug_addr),
         pmpaddr(pmpAddrIndex(io.debug_addr)),
@@ -320,13 +356,19 @@ class CSRFile(
     )
 
     val addr_valid = mapping.keys.map(_ === io.addr).reduce(_ || _) || isPmpAddr(io.addr) || isMhpmCounter(io.addr) || isMhpmEvent(io.addr)
+    val waddr_valid =
+        mapping.keys.map(_ === io.waddr).reduce(_ || _) || isPmpAddr(io.waddr) || isMhpmCounter(io.waddr) || isMhpmEvent(io.waddr)
     val debug_addr_valid =
         mapping.keys.map(_ === io.debug_addr).reduce(_ || _) || isPmpAddr(io.debug_addr) || isMhpmCounter(io.debug_addr) || isMhpmEvent(io.debug_addr)
     val csrRequiredPriv = io.addr(9, 8)
+    val wcsrRequiredPriv = io.waddr(9, 8)
     val csrReadOnly = io.addr(11, 10) === 3.U
+    val wcsrReadOnly = io.waddr(11, 10) === 3.U
     val debugCsrReadOnly = io.debug_addr(11, 10) === 3.U
     val csrPrivOk = CurrentPrivLevel >= csrRequiredPriv
+    val wcsrPrivOk = CurrentPrivLevel >= wcsrRequiredPriv
     val csrReadonlyWrite = io.write && csrReadOnly
+    val wcsrReadonlyWrite = io.wwrite && wcsrReadOnly
 
     io.rdata   := rdata_pre
     io.debug_rdata := debug_rdata_pre
@@ -334,22 +376,23 @@ class CSRFile(
     io.debug_writable := debug_addr_valid && !debugCsrReadOnly
     io.illegal := io.valid && (!addr_valid || !csrPrivOk || csrReadonlyWrite)
 
-    val wdata_final = MuxLookup(io.cmd, 0.U)(
+    val wdata_final = MuxLookup(io.wcmd, 0.U)(
         Seq(
-            CSROps.RW.asUInt  -> io.wdata,                // 直接写入
-            CSROps.RS.asUInt  -> (rdata_pre | io.wdata),  // 读
-            CSROps.RC.asUInt  -> (rdata_pre & ~io.wdata), // 清除
-            CSROps.RWI.asUInt -> io.wdata,                // 直接写入，rs2编码为zimm
-            CSROps.RSI.asUInt -> (rdata_pre | io.wdata),  // 读，rs2编码为zimm
-            CSROps.RCI.asUInt -> (rdata_pre & ~io.wdata)  // 清除，rs2编码为zimm
+            CSROps.RW.asUInt  -> io.wwdata,                // 直接写入
+            CSROps.RS.asUInt  -> (wdata_read_pre | io.wwdata),  // 读
+            CSROps.RC.asUInt  -> (wdata_read_pre & ~io.wwdata), // 清除
+            CSROps.RWI.asUInt -> io.wwdata,                // 直接写入，rs2编码为zimm
+            CSROps.RSI.asUInt -> (wdata_read_pre | io.wwdata),  // 读，rs2编码为zimm
+            CSROps.RCI.asUInt -> (wdata_read_pre & ~io.wwdata)  // 清除，rs2编码为zimm
         )
     )
 
-	    val do_write = io.valid && !io.illegal && io.write &&
-	        (io.cmd === CSROps.RW.asUInt || io.cmd === CSROps.RS.asUInt || io.cmd === CSROps.RC.asUInt ||
-	            io.cmd === CSROps.RWI.asUInt || io.cmd === CSROps.RSI.asUInt || io.cmd === CSROps.RCI.asUInt)
+    val writeIllegal = !waddr_valid || !wcsrPrivOk || wcsrReadonlyWrite
+	    val do_write = io.wvalid && !writeIllegal && io.wwrite &&
+	        (io.wcmd === CSROps.RW.asUInt || io.wcmd === CSROps.RS.asUInt || io.wcmd === CSROps.RC.asUInt ||
+	            io.wcmd === CSROps.RWI.asUInt || io.wcmd === CSROps.RSI.asUInt || io.wcmd === CSROps.RCI.asUInt)
 
-    val writeAddr = Mux(io.debug_write, io.debug_addr, io.addr)
+    val writeAddr = Mux(io.debug_write, io.debug_addr, io.waddr)
     val writeData = Mux(io.debug_write, io.debug_wdata, wdata_final)
     val writeEnable = io.debug_write || do_write
 
@@ -539,4 +582,23 @@ class CSRFile(
     io.mem_cfg_out.mxr := false.B
     io.mem_cfg_out.sum := false.B
     io.mem_cfg_out.mprv := false.B
+
+    io.state_snapshot.privilegeMode := CurrentPrivLevel
+    io.state_snapshot.mstatus := mstatus
+    io.state_snapshot.sstatus := sstatus
+    io.state_snapshot.mepc := mepc
+    io.state_snapshot.sepc := sepc
+    io.state_snapshot.mtval := mtval
+    io.state_snapshot.stval := stval
+    io.state_snapshot.mtvec := mtvec
+    io.state_snapshot.stvec := stvec
+    io.state_snapshot.mcause := mcause
+    io.state_snapshot.scause := scause
+    io.state_snapshot.satp := satp
+    io.state_snapshot.mip := mip
+    io.state_snapshot.mie := mie
+    io.state_snapshot.mscratch := mscratch
+    io.state_snapshot.sscratch := sscratch
+    io.state_snapshot.mideleg := mideleg
+    io.state_snapshot.medeleg := medeleg
 }

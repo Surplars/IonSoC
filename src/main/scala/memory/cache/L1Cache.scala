@@ -70,6 +70,9 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
     val probeHitReg = RegInit(false.B)
     val probeDirtyReg = RegInit(false.B)
     val probeDataReg = RegInit(0.U(params.dataWidth.W))
+    val hitBufferValid = RegInit(false.B)
+    val hitBufferAddr  = RegInit(0.U((params.addrWidth - offsetBits).W))
+    val hitBufferData  = RegInit(0.U(params.dataWidth.W))
     
     // 从 SRAM 读出的数据
     val readTag  = tagArray.read(getIdx(io.cpu.req.bits.addr), io.cpu.req.valid && state === sIdle)
@@ -93,14 +96,30 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
     val hit = validArray(reqIdx) && (readTag === reqTag)
     val dirty = dirtyArray(reqIdx)
 
+    val reqLineAddr = io.cpu.req.bits.addr(params.addrWidth - 1, offsetBits)
+    val reqRegLineAddr = reqReg.addr(params.addrWidth - 1, offsetBits)
+    val hitBufferMatchesReq = hitBufferValid && hitBufferAddr === reqRegLineAddr
+    val hitBufferMatchesReqIdx = hitBufferValid && hitBufferAddr(indexBits - 1, 0) === reqIdx
+    val hitBufferWriteHit =
+        state === sIdle && io.cpu.req.valid && io.cpu.req.bits.cmd === CacheCmd.Write &&
+            !io.cpu.req.bits.fence && !io.cpu.req.bits.fencei &&
+            hitBufferValid && hitBufferAddr === reqLineAddr
+    val hitBufferWriteData =
+        (io.cpu.req.bits.wdata & FillInterleaved(8, io.cpu.req.bits.mask)) |
+            (hitBufferData & ~FillInterleaved(8, io.cpu.req.bits.mask))
+    val hitBufferReadHit =
+        state === sIdle && io.cpu.req.valid && io.cpu.req.bits.cmd === CacheCmd.Read &&
+            !io.cpu.req.bits.fence && !io.cpu.req.bits.fencei &&
+            hitBufferValid && hitBufferAddr === reqLineAddr
+
     // 接口默认值
     val canAcceptProbe = useTLCoherence.B && state === sIdle && !io.invalidate.valid && !io.cpu.req.valid
 
     io.cpu.req.ready  := state === sIdle && !io.invalidate.valid && !io.bus.b.valid
     val compareHitReadData = WireDefault(readData)
     val compareHitResp = WireDefault(false.B)
-    io.cpu.resp.valid := compareHitResp
-    io.cpu.resp.bits.rdata := Mux(compareHitResp, compareHitReadData, refillReg)
+    io.cpu.resp.valid := compareHitResp || hitBufferReadHit
+    io.cpu.resp.bits.rdata := Mux(hitBufferReadHit, hitBufferData, Mux(compareHitResp, compareHitReadData, refillReg))
     io.cpu.resp.bits.err   := respErrReg
     // ready/fire only accepts the maintenance request. Completion is reported
     // later through cpu.resp, after all dirty writebacks and valid-bit clears.
@@ -126,11 +145,14 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
                 respErrReg := false.B
                 flushIdx := 0.U
                 state := sFlushRead
-            }.elsewhen(io.cpu.req.valid) {
+            }.elsewhen(io.cpu.req.valid && !hitBufferReadHit) {
                 reqReg := io.cpu.req.bits
                 respErrReg := false.B
                 assert(!io.cpu.req.bits.device && io.cpu.req.bits.cacheable, "L1Cache: device/uncached request must bypass cache")
                 assert(!io.cpu.req.bits.atomic, "L1Cache: atomic request not supported yet")
+                when(hitBufferWriteHit) {
+                    hitBufferData := hitBufferWriteData
+                }
                 when(io.cpu.req.bits.fence || io.cpu.req.bits.fencei) {
                     flushIdx := 0.U
                     refillReg := 0.U
@@ -150,6 +172,15 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
                 when(reqReg.cmd === CacheCmd.Write) {
                     dataArray.write(reqIdx, maskedData)
                     dirtyArray(reqIdx) := true.B
+                    // Keep the read bypass buffer coherent with write hits.
+                    // A write to a different line leaves the buffered line valid.
+                    when(hitBufferMatchesReq) {
+                        hitBufferData := maskedData
+                    }
+                }.otherwise {
+                    hitBufferValid := true.B
+                    hitBufferAddr := reqRegLineAddr
+                    hitBufferData := readData
                 }
                 when(!io.cpu.resp.ready) {
                     refillReg := hitRespData
@@ -237,11 +268,21 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
                 respErrReg := io.bus.d.bits.denied
                 when(io.bus.d.bits.denied) {
                     refillReg := 0.U
+                    when(hitBufferMatchesReqIdx) {
+                        hitBufferValid := false.B
+                    }
                 }.otherwise {
                     validArray(reqIdx) := true.B
                     dirtyArray(reqIdx) := isWrite
                     tagArray.write(reqIdx, reqTag)
                     dataArray.write(reqIdx, writeToSram)
+                    when(!isWrite || hitBufferMatchesReq) {
+                        hitBufferValid := true.B
+                        hitBufferAddr := reqRegLineAddr
+                        hitBufferData := writeToSram
+                    }.elsewhen(hitBufferMatchesReqIdx) {
+                        hitBufferValid := false.B
+                    }
 
                     // 拦截写入寄存器以支持 Cache Bypass 当拍给流水线返回
                     refillReg := writeToSram
@@ -277,6 +318,7 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
                 when(probeHitReg) {
                     validArray(probeIdxReg) := false.B
                     dirtyArray(probeIdxReg) := false.B
+                    hitBufferValid := false.B
                 }
                 state := sIdle
             }
@@ -292,6 +334,7 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
             }.otherwise {
                 validArray(flushIdx) := false.B
                 dirtyArray(flushIdx) := false.B
+                hitBufferValid := false.B
                 when(flushIdx === (nSets - 1).U) {
                     state := sResp
                 }.otherwise {

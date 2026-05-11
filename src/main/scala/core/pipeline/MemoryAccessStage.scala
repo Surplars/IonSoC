@@ -4,10 +4,11 @@ import chisel3._
 import chisel3.util._
 
 import soc.config.Config
+import soc.config.SoCFeatures
 import soc.isa.MCause
 import soc.isa.PrivilegeLevel
 
-class MemoryAccessStage(XLEN: Int = 64) extends Module {
+class MemoryAccessStage(XLEN: Int = 64, features: SoCFeatures = Config.features) extends Module {
     val io = IO(new Bundle {
         val in    = Input(new MemoryAccessInfo(XLEN))
         val cfg   = Input(new MemorySystemConfig(XLEN))
@@ -18,7 +19,7 @@ class MemoryAccessStage(XLEN: Int = 64) extends Module {
     private def inRegion(region: soc.config.AddressRegion): Bool = region.contains(io.in.vaddr, XLEN)
 
     val inRom    = inRegion(Config.RomRegion)
-    val inSram   = inRegion(Config.SramRegion)
+    val inSram   = Config.sramRegionFor(features).contains(io.in.vaddr, XLEN)
     val inDevice = Config.deviceRegions.map(inRegion).reduce(_ || _)
 
     val translateEnabled = io.in.valid && io.cfg.mmu_en && (io.cfg.satp =/= 0.U) && !io.in.attrs.device

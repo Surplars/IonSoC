@@ -2,6 +2,7 @@ package sim
 
 import chisel3._
 import _root_.circt.stage.ChiselStage
+import difftest.DifftestModule
 import soc._
 import soc.config.ISAProfiles
 import soc.config.SoCFeatures
@@ -45,4 +46,11 @@ object ICacheTopMain extends App {
 
 object FirmwareTopMain extends App {
     EmitHelper.emit(new SimTopFirmware, "build/rtl-firmware")
+}
+
+object DifftestTopMain extends App {
+    EmitHelper.emit(
+        DifftestModule.top(new IonSoCDifftest(SoCProfiles.LinuxCapablePLIC.copy(mmu = false), ISAProfiles.RV64IMACB)),
+        "build/rtl-difftest"
+    )
 }

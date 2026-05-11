@@ -172,6 +172,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     )
 
     decoded.ctrl    := ctrl
+    decoded.instr   := io.instr_in
     decoded.rs1     := rs1
     decoded.rs2     := rs2
     decoded.op1     := op1_out
@@ -208,7 +209,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     decoded.mem_imm := Mux(valid && (ctrl.mem_read || ctrl.mem_write), imm, 0.U)
     decoded.instr_len := io.instr_len_in
 
-    trap_info.valid := illegal
+    trap_info.valid := valid && illegal
     trap_info.pc    := io.pc_in
     trap_info.cause := Mux(
         illegal,
@@ -226,7 +227,7 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         0.U
     )
     trap_info.value := io.instr_in
-    trap_info.is_ret := branch_type === BranchType.MRET || branch_type === BranchType.SRET || branch_type === BranchType.MNRET
+    trap_info.is_ret := valid && (branch_type === BranchType.MRET || branch_type === BranchType.SRET || branch_type === BranchType.MNRET)
     trap_info.ret_type := MuxLookup(branch_type, TrapReturnType.None)(
         Seq(
             BranchType.MRET  -> TrapReturnType.MRET,
@@ -235,10 +236,33 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
         )
     )
 
-    io.valid_out      := RegEnable(valid, false.B, update_en)
-    io.decoded_out    := RegEnable(Mux(valid, decoded, defaultDecoded), defaultDecoded, update_en)
-    io.pc_out         := RegEnable(io.pc_in, 0.U, update_en)
-    io.pred_taken_out := RegEnable(io.pred_taken_in, false.B, update_en)
-    io.pred_target_out := RegEnable(io.pred_target_in, 0.U, update_en)
-    io.trap_info      := RegEnable(trap_info, 0.U.asTypeOf(io.trap_info), update_en)
+    val validOutReg = RegInit(false.B)
+    val decodedOutReg = RegInit(defaultDecoded)
+    val pcOutReg = RegInit(0.U(XLEN.W))
+    val predTakenOutReg = RegInit(false.B)
+    val predTargetOutReg = RegInit(0.U(XLEN.W))
+    val trapInfoReg = RegInit(0.U.asTypeOf(io.trap_info))
+
+    when(io.trap_valid || io.redirect) {
+        validOutReg := false.B
+        decodedOutReg := defaultDecoded
+        pcOutReg := 0.U
+        predTakenOutReg := false.B
+        predTargetOutReg := 0.U
+        trapInfoReg := 0.U.asTypeOf(io.trap_info)
+    }.elsewhen(update_en) {
+        validOutReg := valid
+        decodedOutReg := Mux(valid, decoded, defaultDecoded)
+        pcOutReg := io.pc_in
+        predTakenOutReg := io.pred_taken_in
+        predTargetOutReg := io.pred_target_in
+        trapInfoReg := trap_info
+    }
+
+    io.valid_out := validOutReg
+    io.decoded_out := decodedOutReg
+    io.pc_out := pcOutReg
+    io.pred_taken_out := predTakenOutReg
+    io.pred_target_out := predTargetOutReg
+    io.trap_info := trapInfoReg
 }

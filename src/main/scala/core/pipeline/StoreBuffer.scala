@@ -28,6 +28,7 @@ class StoreBuffer(val entries: Int, val AW: Int, val DW: Int) extends Module {
         val search_addr = Input(UInt(AW.W))
         val search_mask = Input(UInt((DW / 8).W))
         val search_hit  = Output(Bool())
+        val search_conflict = Output(Bool())
         val search_data = Output(UInt(DW.W))
         // Deq (发往 Memory/Bus)
         val deq_valid = Output(Bool())
@@ -101,14 +102,31 @@ class StoreBuffer(val entries: Int, val AW: Int, val DW: Int) extends Module {
 
     val hitByAge  = Wire(Vec(entries, Bool()))
     val dataByAge = Wire(Vec(entries, UInt(DW.W)))
+    val searchBeatAddr = io.search_addr(AW - 1, log2Ceil(DW / 8))
 
     for (age <- 0 until entries) {
         val idx = ptrMinus(tail, age + 1)
-        hitByAge(age) := buffer(idx).valid && (buffer(idx).addr === io.search_addr) && ((buffer(idx).mask & io.search_mask) === io.search_mask)
+        val entryBeatAddr = buffer(idx).addr(AW - 1, log2Ceil(DW / 8))
+        val sameBeat = entryBeatAddr === searchBeatAddr
+        hitByAge(age) := buffer(idx).valid && sameBeat && ((buffer(idx).mask & io.search_mask) === io.search_mask)
         dataByAge(age) := buffer(idx).data
+    }
+
+    val conflictByAge = Wire(Vec(entries, Bool()))
+    for (age <- 0 until entries) {
+        val idx = ptrMinus(tail, age + 1)
+        val entryBeatAddr = buffer(idx).addr(AW - 1, log2Ceil(DW / 8))
+        val sameBeat = entryBeatAddr === searchBeatAddr
+        val overlap = (buffer(idx).mask & io.search_mask).orR
+        // If a load overlaps an older store but the store buffer cannot supply
+        // every requested byte lane, the load must wait for the store to drain.
+        // Otherwise byte/halfword loads can bypass pending wider stores and see
+        // stale cache data.
+        conflictByAge(age) := buffer(idx).valid && sameBeat && overlap && !hitByAge(age)
     }
 
     val newestHitOH = PriorityEncoderOH(hitByAge.asUInt)
     io.search_hit  := hitByAge.asUInt.orR
+    io.search_conflict := conflictByAge.asUInt.orR
     io.search_data := Mux1H(newestHitOH, dataByAge)
 }

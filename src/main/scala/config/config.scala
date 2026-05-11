@@ -44,6 +44,10 @@ case class SoCFeatures(
     mmu: Boolean = false,
     iCache: Boolean = false,
     dCache: Boolean = true,
+    // Cache transport mode is a platform contract, not a cache-size detail.
+    // Single-core MCU/firmware profiles use TL-UL-style Get/Put traffic; future
+    // multicore profiles can enable TL-C once a full coherence manager is used.
+    coherentCaches: Boolean = false,
     iCacheSets: Int = 256,
     dCacheSets: Int = 256,
     frontendQueueEntries: Int = 4,
@@ -93,6 +97,8 @@ object SoCProfiles {
     )
 
     val ModernAIA: SoCFeatures = LinuxCapablePLIC.copy(interruptController = InterruptControllerKind.AIA)
+
+    val CoherentMulticorePreview: SoCFeatures = LinuxCapablePLIC.copy(coherentCaches = true)
 }
 
 case class AddressRegion(name: String, base: BigInt, size: BigInt) {
@@ -156,7 +162,7 @@ object Config {
         mmioRegionsFor(features).map(region => (region.base, region.size))
     def addrMapFor(features: SoCFeatures): Seq[UInt => Bool] = mkAddrMap(mmioRegionsFor(features), XLEN)
     def releaseSupportFor(features: SoCFeatures): Seq[Boolean] =
-        mmioRegionsFor(features).map(_.name == "sram")
+        mmioRegionsFor(features).map(region => features.coherentCaches && region.name == "sram")
 
     val optionalRegions: Seq[AddressRegion] = optionalRegionsFor(features)
     val MMIORegions: Seq[AddressRegion]     = alwaysOnRegions ++ optionalRegions

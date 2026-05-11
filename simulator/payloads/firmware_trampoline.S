@@ -4,6 +4,10 @@
 .equ UART_BASE, 0x10010000
 
 _start:
+    mv   s3, a0
+    mv   s4, a1
+    mv   s5, a2
+
     la   t0, early_trap
     csrw mtvec, t0
 
@@ -11,6 +15,9 @@ _start:
     mv   a0, t0
     jal  ra, puts
 
+    mv   a0, s3
+    mv   a1, s4
+    mv   a2, s5
     li   t0, 0x40000000
     jr   t0
 

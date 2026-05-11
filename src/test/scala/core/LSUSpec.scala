@@ -259,7 +259,7 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
-    test("LSU drains stores before issuing a D-cache fence") {
+    test("LSU drains stores before retiring a memory fence") {
         simulate(new LSU(64)) { dut =>
             init(dut)
 
@@ -276,23 +276,17 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.dcache.resp.valid.poke(false.B)
 
-            var sawFenceReq = false
-            for (_ <- 0 until 4 if !sawFenceReq) {
-                dut.io.stall_req.expect(true.B)
-                if (dut.io.dcache.req.valid.peek().litToBoolean && dut.io.dcache.req.bits.fence.peek().litToBoolean) {
-                    sawFenceReq = true
-                } else {
-                    dut.clock.step()
-                }
-            }
-            assert(sawFenceReq, "LSU did not issue D-cache fence after draining stores")
+            dut.io.stall_req.expect(true.B)
+            dut.io.dcache.req.valid.expect(false.B)
             dut.clock.step()
 
-            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.io.valid_out.expect(true.B)
+            dut.io.mem_out.reg_write.expect(false.B)
             dut.clock.step()
-            dut.io.dcache.resp.valid.poke(false.B)
 
             dut.io.stall_req.expect(false.B)
+            dut.io.valid_out.expect(false.B)
         }
     }
 
@@ -322,12 +316,12 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
             dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
             driveLoad(dut, BigInt("10000008", 16))
-            dut.clock.step()
-
-            dut.io.trap_info_out.valid.expect(false.B)
             dut.io.dcache.req.valid.expect(true.B)
             dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
             dut.io.dcache.req.bits.addr.expect(BigInt("10000008", 16))
+            dut.clock.step()
+
+            dut.io.trap_info_out.valid.expect(false.B)
         }
     }
 
