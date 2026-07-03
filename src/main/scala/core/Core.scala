@@ -16,6 +16,7 @@ import soc.debug.DebugCacheControl
 import soc.config.Config
 import soc.config.SoCFeatures
 import soc.isa.Extension
+import soc.isa.MCause
 
 class Core(
     XLEN: Int,
@@ -60,6 +61,11 @@ class Core(
         val debug_commit_wdest = Output(UInt(5.W))
         val debug_commit_wdata = Output(UInt(XLEN.W))
         val debug_commit_skip = Output(Bool())
+        val debug_arch_event_valid = Output(Bool())
+        val debug_arch_event_interrupt = Output(Bool())
+        val debug_arch_event_cause = Output(UInt(XLEN.W))
+        val debug_arch_event_pc = Output(UInt(XLEN.W))
+        val debug_arch_event_instr = Output(UInt(32.W))
         val debug_gpr_snapshot = Output(Vec(32, UInt(XLEN.W)))
         val debug_csr_snapshot = Output(new soc.core.csr.CsrStateSnapshot(XLEN))
 
@@ -443,6 +449,18 @@ class Core(
     io.debug_commit_wdest := wb.io.reg_wb.rd
     io.debug_commit_wdata := wb.io.reg_wb.data
     io.debug_commit_skip := wb.io.commit_skip
+    val archEventCause = Mux(has_pipeline_trap, lsu.io.trap_info_out.cause, interruptCause)
+    val archEventPc = Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, interruptPc)
+    val archEventInstr = Mux(
+        has_pipeline_trap && lsu.io.trap_info_out.cause === MCause.IllegalInstr,
+        lsu.io.trap_info_out.value(31, 0),
+        lsu.io.mem_out.instr
+    )
+    io.debug_arch_event_valid := RegNext(combined_trap, false.B)
+    io.debug_arch_event_interrupt := RegNext(interrupt_fire, false.B)
+    io.debug_arch_event_cause := RegNext(archEventCause, 0.U)
+    io.debug_arch_event_pc := RegNext(archEventPc, 0.U)
+    io.debug_arch_event_instr := RegNext(archEventInstr, 0.U)
     io.debug_gpr_snapshot := register.io.debug_snapshot
     io.debug_stall := global_stall
     io.debug_ifetch_stall := ifetch.io.fetch_stall

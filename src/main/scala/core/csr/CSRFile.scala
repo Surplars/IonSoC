@@ -29,6 +29,7 @@ object MStatus {
 	        val mask = (BigInt(3) << MPP).U(mstatus.getWidth.W)
 	        (mstatus & ~mask) | ((level & 3.U) << MPP)
 	    }
+        def getMPP(mstatus: UInt): UInt = mstatus(MPP + 1, MPP)
 }
 
 object SStatus {
@@ -565,7 +566,7 @@ class CSRFile(
             CurrentPrivLevel := Mux(mstatus(SStatus.SPP), PrivilegeLevel.Supervisor, PrivilegeLevel.User)
         }.otherwise {
             mstatus := MStatus.setMPIE(MStatus.setMPP(MStatus.setMIE(mstatus, mstatus(MStatus.MPIE)), 0.U), true.B)
-            CurrentPrivLevel := mstatus(MStatus.MPP)
+            CurrentPrivLevel := MStatus.getMPP(mstatus)
         }
     }
 
@@ -583,8 +584,24 @@ class CSRFile(
     io.mem_cfg_out.sum := false.B
     io.mem_cfg_out.mprv := false.B
 
-    io.state_snapshot.privilegeMode := CurrentPrivLevel
-    io.state_snapshot.mstatus := mstatus
+    val snapshotSret = io.is_ret && io.ret_type === TrapReturnType.SRET && supervisorEnabled
+    val snapshotMstatus = Mux(
+        io.is_ret,
+        Mux(
+            snapshotSret,
+            SStatus.setSPP(SStatus.setSPIE(SStatus.setSIE(mstatus, mstatus(SStatus.SPIE)), true.B), PrivilegeLevel.User),
+            MStatus.setMPIE(MStatus.setMPP(MStatus.setMIE(mstatus, mstatus(MStatus.MPIE)), 0.U), true.B)
+        ),
+        mstatus
+    )
+    val snapshotPriv = Mux(
+        io.is_ret,
+        Mux(snapshotSret, Mux(mstatus(SStatus.SPP), PrivilegeLevel.Supervisor, PrivilegeLevel.User), MStatus.getMPP(mstatus)),
+        CurrentPrivLevel
+    )
+
+    io.state_snapshot.privilegeMode := snapshotPriv
+    io.state_snapshot.mstatus := snapshotMstatus
     io.state_snapshot.sstatus := sstatus
     io.state_snapshot.mepc := mepc
     io.state_snapshot.sepc := sepc

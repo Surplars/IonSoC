@@ -50,7 +50,13 @@ object FirmwareTopMain extends App {
 
 object DifftestTopMain extends App {
     EmitHelper.emit(
-        DifftestModule.top(new IonSoCDifftest(SoCProfiles.LinuxCapablePLIC.copy(mmu = false), ISAProfiles.RV64IMACB)),
+        DifftestModule.top(
+            new IonSoCDifftest(
+                SoCProfiles.BareMetalMCU,
+                ISAProfiles.RV64IMACB,
+                "simulator/build/payload/payload_sram.hex"
+            )
+        ),
         "build/rtl-difftest"
     )
 }

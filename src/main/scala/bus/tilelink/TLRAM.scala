@@ -2,8 +2,9 @@ package soc.bus.tilelink
 
 import chisel3._
 import chisel3.util._
+import chisel3.util.experimental.loadMemoryFromFileInline
 
-class TLRAM(params: TLParams, sizeBytes: Int, base: BigInt = 0) extends Module {
+class TLRAM(params: TLParams, sizeBytes: Int, base: BigInt = 0, initFile: String = "") extends Module {
     val io = IO(new Bundle {
         val tl = Flipped(new TLBundle(params))
     })
@@ -20,6 +21,9 @@ class TLRAM(params: TLParams, sizeBytes: Int, base: BigInt = 0) extends Module {
 
     val depth = sizeBytes / beatBytes
     val mem   = SyncReadMem(depth, Vec(beatBytes, UInt(8.W)))
+    if (initFile.nonEmpty) {
+        loadMemoryFromFileInline(mem, initFile)
+    }
 
     val req_queue = Queue(io.tl.a, 2)
     val rel_queue = Queue(io.tl.c, 2)

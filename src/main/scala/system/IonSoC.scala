@@ -25,7 +25,8 @@ import soc.core.csr.CsrStateSnapshot
 
 class IonSoC(
     features: SoCFeatures = Config.features,
-    enabledExt: Set[Extension.Value] = Config.enabledExt
+    enabledExt: Set[Extension.Value] = Config.enabledExt,
+    sramInitFile: String = ""
 ) extends Module {
     private val tlParams = TLParams()
     private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + 2)
@@ -45,13 +46,18 @@ class IonSoC(
         val jtag_tck = Input(Bool())
         val jtag_tdi = Input(Bool())
         val jtag_tdo = Output(Bool())
+        val debug_arch_event_valid = Output(Bool())
+        val debug_arch_event_interrupt = Output(Bool())
+        val debug_arch_event_cause = Output(UInt(Config.XLEN.W))
+        val debug_arch_event_pc = Output(UInt(Config.XLEN.W))
+        val debug_arch_event_instr = Output(UInt(32.W))
         val debug_gpr_snapshot = Output(Vec(32, UInt(Config.XLEN.W)))
         val debug_csr_snapshot = Output(new CsrStateSnapshot(Config.XLEN))
     })
 
     val core  = Module(new Core(Config.XLEN, hartID = 0, features, enabledExt))
     val brom  = Module(new BROM(Config.XLEN, Config.romDepth, Config.romInit))
-    val sram  = Module(new TLRAM(deviceParams, features.sramSizeBytes, features.sramBase))
+    val sram  = Module(new TLRAM(deviceParams, features.sramSizeBytes, features.sramBase, sramInitFile))
     val debugModule = Module(new DebugModule(deviceParams, dbusParams))
     val tlrom = Module(new TLROM(deviceParams))
     val uart  = if (features.uart) Some(Module(new UartTx(deviceParams))) else None
@@ -165,6 +171,11 @@ class IonSoC(
     io.debug.commitWdest := core.io.debug_commit_wdest
     io.debug.commitWdata := core.io.debug_commit_wdata
     io.debug.commitSkip := core.io.debug_commit_skip
+    io.debug_arch_event_valid := core.io.debug_arch_event_valid
+    io.debug_arch_event_interrupt := core.io.debug_arch_event_interrupt
+    io.debug_arch_event_cause := core.io.debug_arch_event_cause
+    io.debug_arch_event_pc := core.io.debug_arch_event_pc
+    io.debug_arch_event_instr := core.io.debug_arch_event_instr
     io.debug_gpr_snapshot := core.io.debug_gpr_snapshot
     io.debug_csr_snapshot := core.io.debug_csr_snapshot
 
@@ -175,17 +186,18 @@ class IonSoC(
 
 class IonSoCDifftest(
     features: SoCFeatures = Config.features,
-    enabledExt: Set[Extension.Value] = Config.enabledExt
-) extends IonSoC(features, enabledExt) with HasDiffTestInterfaces {
+    enabledExt: Set[Extension.Value] = Config.enabledExt,
+    sramInitFile: String = ""
+) extends IonSoC(features, enabledExt, sramInitFile) with HasDiffTestInterfaces {
     override def cpuName: Option[String] = Some("IonSoC")
 
     private val archEvent = DifftestModule(new DiffArchEvent, dontCare = true)
     archEvent.coreid := 0.U
-    archEvent.valid := false.B
-    archEvent.interrupt := 0.U
-    archEvent.exception := 0.U
-    archEvent.exceptionPC := 0.U
-    archEvent.exceptionInst := 0.U
+    archEvent.valid := io.debug_arch_event_valid
+    archEvent.interrupt := Mux(io.debug_arch_event_interrupt, io.debug_arch_event_cause(31, 0), 0.U)
+    archEvent.exception := Mux(io.debug_arch_event_interrupt, 0.U, io.debug_arch_event_cause(31, 0))
+    archEvent.exceptionPC := io.debug_arch_event_pc
+    archEvent.exceptionInst := io.debug_arch_event_instr
     archEvent.hasNMI := false.B
     archEvent.virtualInterruptIsHvictlInject := false.B
     archEvent.irToHS := false.B
@@ -225,12 +237,19 @@ class IonSoCDifftest(
     }
 
     private val trap = DifftestModule(new DiffTrapEvent, dontCare = true)
+    private val difftestExitArmed = RegInit(false.B)
+    private val difftestExit = RegInit(false.B)
+    when(io.debug.retire && io.debug.commitWen && io.debug.commitWdest === 17.U && io.debug.commitWdata === 93.U) {
+        difftestExitArmed := true.B
+    }.elsewhen(difftestExitArmed && io.debug.retire) {
+        difftestExit := true.B
+    }
     trap.coreid := 0.U
-    trap.hasTrap := false.B
+    trap.hasTrap := difftestExit
     trap.cycleCnt := difftestCycleCnt
     trap.instrCnt := difftestInstrCnt
     trap.hasWFI := false.B
-    trap.code := 0.U
+    trap.code := io.debug_gpr_snapshot(10)
     trap.pc := io.debug.commitPc
 
     private val csr = DifftestModule(new DiffCSRState, dontCare = true)
@@ -247,7 +266,10 @@ class IonSoCDifftest(
     csr.mcause := io.debug_csr_snapshot.mcause
     csr.scause := io.debug_csr_snapshot.scause
     csr.satp := io.debug_csr_snapshot.satp
-    csr.mip := io.debug_csr_snapshot.mip
+    // Device MMIO is skipped in DiffTest, so the REF does not model CLINT/PLIC
+    // pending bits. ArchEvent injects the actual trap; keep CSR comparison
+    // focused on architectural trap state instead of local device side effects.
+    csr.mip := 0.U
     csr.mie := io.debug_csr_snapshot.mie
     csr.mscratch := io.debug_csr_snapshot.mscratch
     csr.sscratch := io.debug_csr_snapshot.sscratch

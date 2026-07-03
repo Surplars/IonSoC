@@ -61,8 +61,11 @@ FIRMWARE_LDS = $(PAYLOAD_SRC_DIR)/firmware.ld
 FIRMWARE_BSWAP_LDS = $(PAYLOAD_SRC_DIR)/firmware_bswap.ld
 SBI_PAYLOAD_LDS = $(PAYLOAD_SRC_DIR)/sbi_payload.ld
 PAYLOAD = $(PAYLOAD_BUILD_DIR)/payload
+PAYLOAD_ELF = $(PAYLOAD_BUILD_DIR)/payload.elf
 PAYLOAD_ROM_LO_HEX = $(PAYLOAD_BUILD_DIR)/payload_rom_lo.hex
 PAYLOAD_ROM_HI_HEX = $(PAYLOAD_BUILD_DIR)/payload_rom_hi.hex
+PAYLOAD_SRAM_BIN = $(PAYLOAD_BUILD_DIR)/payload_sram.bin
+PAYLOAD_SRAM_HEX = $(PAYLOAD_BUILD_DIR)/payload_sram.hex
 FIRMWARE_TRAMPOLINE_ELF = $(PAYLOAD_BUILD_DIR)/firmware_trampoline.elf
 TIMER_ELF = $(PAYLOAD_BUILD_DIR)/timer.elf
 BASIC_ELF = $(PAYLOAD_BUILD_DIR)/basic.elf
@@ -109,8 +112,11 @@ NEMU_DEFCONFIG ?= riscv64-ionsoc-ref_defconfig
 NEMU_LOCAL_DEFCONFIG ?= $(SIMULATOR_DIR)/difftest/$(NEMU_DEFCONFIG)
 DIFFTEST_MAX_CYCLES ?= 1000000
 DIFFTEST_MAX_INSTR ?= 100000
+DIFFTEST_BUILD_JOBS ?= $(NPROC)
+DIFFTEST_SIM_VFLAGS ?= +define+DIFFTEST +define+ENABLE_INITIAL_MEM_
 DIFFTEST_MAKE_ARGS = WITH_CHISELDB=0 WITH_CONSTANTIN=0 NO_ZSTD_COMPRESSION=1 \
-	NEMU_HOME=$(NEMU_HOME) NOOP_HOME=$(NOOP_HOME) RTL_DIR=$(abspath $(DIFFTEST_SYSTEM_VERILOG_DIR))
+	NEMU_HOME=$(NEMU_HOME) NOOP_HOME=$(NOOP_HOME) RTL_DIR=$(abspath $(DIFFTEST_SYSTEM_VERILOG_DIR)) \
+	VERILATOR_BUILD_JOBS=$(DIFFTEST_BUILD_JOBS) SIM_VFLAGS="$(DIFFTEST_SIM_VFLAGS) $(SIM_VFLAGS)"
 SIM_TOP = sim.TopMain
 
 # Scala test groups are deliberately split so edit loops can target the block
@@ -145,8 +151,8 @@ $(NEMU_SO): $(NEMU_LOCAL_DEFCONFIG)
 	NEMU_HOME=$(NEMU_HOME) $(MAKE) -C $(NEMU_HOME) $(NEMU_DEFCONFIG)
 	NEMU_HOME=$(NEMU_HOME) $(MAKE) -C $(NEMU_HOME) -j$(NPROC)
 
-difftest-run-payload: difftest-emu payload-rom-hex nemu-so
-	$(NOOP_HOME)/build/emu --diff=$(NEMU_SO) --image=$(PAYLOAD) --max-instr=$(DIFFTEST_MAX_INSTR) --max-cycles=$(DIFFTEST_MAX_CYCLES) -- +ion_rom_lo=$(PAYLOAD_ROM_LO_HEX) +ion_rom_hi=$(PAYLOAD_ROM_HI_HEX)
+difftest-run-payload: difftest-emu payload-rom-hex payload-sram-hex nemu-so
+	$(NOOP_HOME)/build/emu --diff=$(NEMU_SO) --image=$(PAYLOAD_ELF) --max-instr=$(DIFFTEST_MAX_INSTR) --max-cycles=$(DIFFTEST_MAX_CYCLES) -- +ion_rom_lo=$(PAYLOAD_ROM_LO_HEX) +ion_rom_hi=$(PAYLOAD_ROM_HI_HEX)
 
 $(RTL_STAMP): $(RTL_SCALA_SOURCES) build.mill
 	mill -i IonSoC.test.runMain $(SIM_TOP)
@@ -224,13 +230,29 @@ test-slow:
 
 payload:
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
-	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $(PAYLOAD_BUILD_DIR)/payload.elf $(PAYLOAD_SRC)
-	$(OBJCOPY) -O binary $(PAYLOAD_BUILD_DIR)/payload.elf $(PAYLOAD)
+	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $(PAYLOAD_ELF) $(PAYLOAD_SRC)
+	$(OBJCOPY) -O binary --only-section=.text $(PAYLOAD_ELF) $(PAYLOAD)
 
 payload-rom-hex: payload
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	@od -An -v -tx4 -w4 $(PAYLOAD) | awk '{ print $$1 }' > $(PAYLOAD_ROM_LO_HEX)
 	@cp $(PAYLOAD_ROM_LO_HEX) $(PAYLOAD_ROM_HI_HEX)
+
+payload-sram-hex: payload
+	@mkdir -p $(PAYLOAD_BUILD_DIR)
+	$(OBJCOPY) -O binary --only-section=.data $(PAYLOAD_ELF) $(PAYLOAD_SRAM_BIN)
+	@od -An -v -tx1 $(PAYLOAD_SRAM_BIN) | awk ' \
+	    { for (i = 1; i <= NF; i++) bytes[n++] = $$i } \
+	    END { \
+	        for (w = 0; w < 8192; w++) { \
+	            line = ""; \
+	            for (b = 7; b >= 0; b--) { \
+	                idx = w * 8 + b; \
+	                line = line (idx in bytes ? bytes[idx] : "00"); \
+	            } \
+	            print line; \
+	        } \
+	    }' > $(PAYLOAD_SRAM_HEX)
 
 $(TIMER_ELF): $(PAYLOAD_SRC_DIR)/timer.S $(PAYLOAD_LDS)
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
