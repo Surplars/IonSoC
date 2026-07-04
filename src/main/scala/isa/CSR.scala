@@ -61,6 +61,11 @@ object CSR {
     val MINSTRET     = 0xb02.U(12.W)
     val MHPMCOUNTER3 = 0xb03.U(12.W)
     val MHPMCOUNTER31 = 0xb1f.U(12.W)
+    // User-level counter/timer views. Access below M-mode is controlled by
+    // mcounteren/scounteren in CSRFile.
+    val CYCLE   = 0xc00.U(12.W)
+    val TIME    = 0xc01.U(12.W)
+    val INSTRET = 0xc02.U(12.W)
 }
 
 object MCause {

@@ -234,6 +234,32 @@ class Sv39Spec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("Sv39PageTableWalker accepts a memory response in the request cycle") {
+        simulate(new Sv39PageTableWalker(64)) { dut =>
+            initWalker(dut)
+            val root = BigInt("0000000080000000", 16)
+            val leafPa = BigInt("0000000040000000", 16)
+            val va = BigInt("0000000012345678", 16)
+            val vpn2 = (va >> 30) & 0x1ff
+
+            dut.io.req.valid.poke(true.B)
+            dut.io.req.bits.vaddr.poke(va.U)
+            dut.io.req.bits.satp.poke(satp(root).U)
+            dut.clock.step()
+            dut.io.req.valid.poke(false.B)
+
+            expectRead(dut, root + vpn2 * 8)
+            dut.io.mem.resp.valid.poke(true.B)
+            dut.io.mem.resp.bits.rdata.poke(pte(ppn(leafPa), V | R | W | A | D).U)
+            dut.clock.step()
+            dut.io.mem.resp.valid.poke(false.B)
+
+            dut.io.resp.valid.expect(true.B)
+            dut.io.resp.bits.fault.valid.expect(false.B)
+            dut.io.resp.bits.paddr.expect((leafPa | (va & BigInt("3fffffff", 16))).U)
+        }
+    }
+
     test("Sv39PageTableWalker returns page faults and memory access faults") {
         simulate(new Sv39PageTableWalker(64)) { dut =>
             initWalker(dut)

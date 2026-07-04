@@ -137,6 +137,7 @@ class ALU(XLEN: Int = 64) extends Module {
     private def sext32(value: UInt): UInt = Cat(Fill(XLEN - 32, value(31)), value)
     private def sext8(value: UInt): UInt = Cat(Fill(XLEN - 8, value(7)), value(7, 0))
     private def sext16(value: UInt): UInt = Cat(Fill(XLEN - 16, value(15)), value(15, 0))
+    private def zext16(value: UInt): UInt = Cat(0.U((XLEN - 16).W), value(15, 0))
     private def zext32(value: UInt): UInt = Cat(0.U((XLEN - 32).W), value(31, 0))
     private def lowestSetBitIndex(value: UInt): UInt = {
         Mux(value === 0.U, XLEN.U, PriorityEncoder(value))
@@ -340,6 +341,7 @@ class ALU(XLEN: Int = 64) extends Module {
                         ALUOps.MAXU -> Mux(op1 > op2, op1, op2),
                         ALUOps.SEXTB -> sext8(op1),
                         ALUOps.SEXTH -> sext16(op1),
+                        ALUOps.ZEXTH -> zext16(op1),
                         ALUOps.ROL -> rotateLeft(op1, shamt64),
                         ALUOps.ROR -> rotateRight(op1, shamt64),
                         ALUOps.RORI -> rotateRight(op1, shamt64),
@@ -356,6 +358,7 @@ class ALU(XLEN: Int = 64) extends Module {
                         ALUOps.SH2ADD -> ((op1 << 2) + op2),
                         ALUOps.SH3ADD -> ((op1 << 3) + op2),
                         ALUOps.ADDUW -> (zext32(op1) + op2),
+                        ALUOps.SLLIUW -> ((zext32(op1) << shamt64)(XLEN - 1, 0)),
                         ALUOps.SH1ADDUW -> ((zext32(op1) << 1) + op2),
                         ALUOps.SH2ADDUW -> ((zext32(op1) << 2) + op2),
                         ALUOps.SH3ADDUW -> ((zext32(op1) << 3) + op2)

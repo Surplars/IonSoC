@@ -290,6 +290,24 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("CSRFile forwards same-cycle CSR writeback to CSR reads") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+
+            dut.io.wvalid.poke(true.B)
+            dut.io.wwrite.poke(true.B)
+            dut.io.wcmd.poke(CSROps.RW.asUInt)
+            dut.io.waddr.poke(CSR.SSCRATCH)
+            dut.io.wwdata.poke(BigInt("12345678", 16).U)
+            dut.io.valid.poke(true.B)
+            dut.io.write.poke(false.B)
+            dut.io.addr.poke(CSR.SSCRATCH)
+
+            dut.io.illegal.expect(false.B)
+            dut.io.rdata.expect(BigInt("12345678", 16).U)
+        }
+    }
+
     test("CSRFile exposes machine performance counter CSRs for RustSBI probing") {
         simulate(new CSRFile(xlen, hartID = 0)) { dut =>
             init(dut)
@@ -326,6 +344,36 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
             dut.io.wdata.poke(0.U)
             dut.io.rdata.expect(BigInt("1234", 16).U)
             dut.io.valid.poke(false.B)
+        }
+    }
+
+    test("CSRFile allows supervisor rdtime when enabled by mcounteren") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+            val time = "hc01".U(12.W)
+
+            enterSupervisor(dut)
+            dut.io.valid.poke(true.B)
+            dut.io.addr.poke(time)
+            dut.io.write.poke(false.B)
+            dut.io.illegal.expect(true.B)
+        }
+
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+            val time = "hc01".U(12.W)
+            writeCsr(dut, CSR.MCOUNTEREN, BigInt(1) << 1)
+            dut.clock.step(4)
+            enterSupervisor(dut)
+
+            dut.io.valid.poke(true.B)
+            dut.io.addr.poke(time)
+            dut.io.write.poke(false.B)
+            dut.io.illegal.expect(false.B)
+            val first = dut.io.rdata.peek().litValue
+            dut.clock.step(2)
+            val second = dut.io.rdata.peek().litValue
+            assert(second > first)
         }
     }
 

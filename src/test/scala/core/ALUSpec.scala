@@ -208,6 +208,9 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             stepAlu(dut, ALUOps.SEXTH, BigInt("0000000000008001", 16), 0)
             dut.io.alu_out.result.expect(BigInt("ffffffffffff8001", 16))
 
+            stepAlu(dut, ALUOps.ZEXTH, BigInt("ffffffffffff8001", 16), 0)
+            dut.io.alu_out.result.expect(BigInt("0000000000008001", 16))
+
             stepAlu(dut, ALUOps.ORCB, BigInt("000000ff01008000", 16), 0)
             dut.io.alu_out.result.expect(BigInt("000000ffff00ff00", 16))
 
@@ -267,6 +270,9 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
 
             stepAlu(dut, ALUOps.SH2ADDUW, BigInt("ffffffff00000005", 16), 10)
             dut.io.alu_out.result.expect(30.U)
+
+            stepAlu(dut, ALUOps.SLLIUW, BigInt("ffffffff00000005", 16), 4)
+            dut.io.alu_out.result.expect(80.U)
         }
     }
 
@@ -487,6 +493,25 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.decoded_in.op2.poke(1.U)
             dut.clock.step()
             dut.io.br_info.target.expect(BigInt("80000002", 16))
+        }
+    }
+
+    test("ALU redirects Linux __delay halfword-aligned BLTU to the encoded target") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.pc_in.poke("hffffffff800d2ef2".U)
+            dut.io.decoded_in.ctrl.reg_write.poke(false.B)
+            dut.io.decoded_in.ctrl.branch_type.poke(BranchType.BLTU)
+            dut.io.decoded_in.op1.poke(1.U)
+            dut.io.decoded_in.op2.poke(2.U)
+            dut.io.decoded_in.br_imm.poke(6.U)
+            dut.clock.step()
+
+            dut.io.br_info.valid.expect(true.B)
+            dut.io.br_info.taken.expect(true.B)
+            dut.io.br_info.redirect.expect(true.B)
+            dut.io.br_info.target.expect("hffffffff800d2ef8".U)
         }
     }
 

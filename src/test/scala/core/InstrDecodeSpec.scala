@@ -217,10 +217,24 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.REV8)
 
             init(dut)
+            dut.io.instr_in.poke("h080741bb".U) // zext.h x3, x14
+            dut.io.reg_rs1_data.poke(BigInt("ffffffffffff8001", 16).U)
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.ZEXTH)
+
+            init(dut)
             dut.io.instr_in.poke("h082081bb".U) // add.uw x3, x1, x2
             dut.clock.step()
             dut.io.trap_info.valid.expect(false.B)
             dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.ADDUW)
+
+            init(dut)
+            dut.io.instr_in.poke("h0840919b".U) // slli.uw x3, x1, 4
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.alu_op.expect(ALUOps.SLLIUW)
+            dut.io.decoded_out.op2.expect(4.U)
         }
     }
 
@@ -232,6 +246,20 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.trap_info.valid.expect(false.B)
             dut.io.decoded_out.instr_len.expect(2.U)
+        }
+    }
+
+    test("InstrDecode decodes Linux __delay BLTU immediate at halfword-aligned PC") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I, Extension.C))) { dut =>
+            init(dut)
+            dut.io.pc_in.poke("hffffffff800d2ef2".U)
+            dut.io.instr_in.poke("h00a7e363".U) // bltu a5, a0, 0xffffffff800d2ef8
+            dut.clock.step()
+
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.branch_type.expect(BranchType.BLTU)
+            dut.io.decoded_out.br_imm.expect(6.U)
+            dut.io.decoded_out.instr_len.expect(0.U)
         }
     }
 

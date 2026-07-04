@@ -65,6 +65,10 @@ class ConfigSpec extends AnyFunSuite {
         assert(dts.contains("memory@40000000"))
         assert(dts.contains("reg = <0x00000000 0x40000000 0x00000000 0x08000000>;"))
         assert(dts.contains("""mmu-type = "riscv,sv39";"""))
+        assert(dts.contains("""bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10010000";"""))
+        assert(dts.contains("""compatible = "openion,ionsoc-uart", "ns16550a";"""))
+        assert(dts.contains("reg-shift = <0>;"))
+        assert(dts.contains("reg-io-width = <1>;"))
         assert(dts.contains("interrupt-controller@c000000"))
     }
 

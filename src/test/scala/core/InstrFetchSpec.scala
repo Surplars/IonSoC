@@ -28,6 +28,10 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         dut.io.cache.resp.valid.poke(false.B)
         dut.io.cache.resp.bits.rdata.poke(0.U)
         dut.io.cache.resp.bits.err.poke(false.B)
+        dut.io.ptw.req.ready.poke(false.B)
+        dut.io.ptw.resp.valid.poke(false.B)
+        dut.io.ptw.resp.bits.rdata.poke(0.U)
+        dut.io.ptw.resp.bits.err.poke(false.B)
         dut.io.mem_cfg.priv.poke(PrivilegeLevel.Machine)
         dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Machine)
         dut.io.mem_cfg.mmu_en.poke(false.B)
@@ -53,6 +57,17 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         dut.io.cache.resp.bits.err.poke(false.B)
     }
 
+    private def acceptPtwRead(dut: InstrFetch, data: BigInt, err: Boolean = false): Unit = {
+        dut.clock.step()
+        dut.io.ptw.resp.valid.poke(true.B)
+        dut.io.ptw.resp.bits.rdata.poke(data.U)
+        dut.io.ptw.resp.bits.err.poke(err.B)
+        dut.clock.step()
+        dut.io.ptw.resp.valid.poke(false.B)
+        dut.io.ptw.resp.bits.rdata.poke(0.U)
+        dut.io.ptw.resp.bits.err.poke(false.B)
+    }
+
     private def expectCacheRead(dut: InstrFetch, addr: BigInt, vaddr: Option[BigInt] = None, maxCycles: Int = 8): Unit = {
         var seen = false
         var cycles = 0
@@ -68,6 +83,24 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         }
         if (!seen) {
             dut.io.cache.req.valid.expect(true.B)
+        }
+    }
+
+    private def expectPtwRead(dut: InstrFetch, addr: BigInt, maxCycles: Int = 8): Unit = {
+        var seen = false
+        var cycles = 0
+        while (!seen && cycles < maxCycles) {
+            if (dut.io.ptw.req.valid.peek().litToBoolean) {
+                dut.io.ptw.req.bits.addr.expect(addr.U)
+                dut.io.ptw.req.bits.vaddr.expect(addr.U)
+                seen = true
+            } else {
+                dut.clock.step()
+                cycles += 1
+            }
+        }
+        if (!seen) {
+            dut.io.ptw.req.valid.expect(true.B)
         }
     }
 
@@ -119,6 +152,20 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.io.valid.expect(true.B)
             dut.io.instr_len.expect(0.U)
             dut.io.instr_out.expect("h00500113".U)
+        }
+    }
+
+    test("InstrFetch drains stale PTW responses after translation is cancelled") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(BigInt("40000000", 16)).U)
+
+            dut.io.ptw.resp.valid.poke(true.B)
+            dut.io.ptw.resp.bits.rdata.poke(0.U)
+            dut.io.ptw.resp.bits.err.poke(false.B)
+            dut.io.ptw.resp.ready.expect(true.B)
         }
     }
 
@@ -192,6 +239,69 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.valid.expect(true.B)
             dut.io.instr_out.expect("h00008067".U) // c.jr ra expands to jalr x0, 0(ra)
+            dut.io.instr_len.expect(2.U)
+            dut.io.pc_step_len.expect(2.U)
+        }
+    }
+
+    test("InstrFetch steps over Linux __delay mixed compressed and 32-bit sequence") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+            dut.io.cache.req.ready.poke(true.B)
+
+            val base = BigInt("ffffffff800d2ee8", 16)
+            val firstBeat = BigInt("c01027f3c0102773", 16) // rdtime a4; rdtime a5
+            val secondBeat = BigInt("808200a7e3638f99", 16) // c.sub; bltu; c.jr ra
+
+            dut.io.pc.poke(base.U)
+            dut.io.cache.req.valid.expect(true.B)
+            dut.io.cache.req.bits.addr.expect(base.U)
+
+            dut.clock.step()
+            dut.io.cache.resp.bits.rdata.poke(firstBeat.U)
+            dut.io.cache.resp.valid.poke(true.B)
+            dut.io.valid.expect(true.B)
+            dut.io.pc_out.expect(base.U)
+            dut.io.instr_out.expect("hc0102773".U)
+            dut.io.instr_len.expect(0.U)
+            dut.io.pc_step_len.expect(0.U)
+            dut.clock.step()
+
+            dut.io.cache.resp.valid.poke(false.B)
+            dut.io.pc.poke((base + 4).U)
+            dut.io.valid.expect(true.B)
+            dut.io.pc_out.expect((base + 4).U)
+            dut.io.instr_out.expect("hc01027f3".U)
+            dut.io.instr_len.expect(0.U)
+            dut.io.pc_step_len.expect(0.U)
+            dut.clock.step()
+
+            dut.io.pc.poke((base + 8).U)
+            dut.io.cache.req.valid.expect(true.B)
+            dut.io.cache.req.bits.addr.expect((base + 8).U)
+
+            dut.clock.step()
+            dut.io.cache.resp.bits.rdata.poke(secondBeat.U)
+            dut.io.cache.resp.valid.poke(true.B)
+            dut.io.valid.expect(true.B)
+            dut.io.pc_out.expect((base + 8).U)
+            dut.io.instr_len.expect(2.U)
+            dut.io.pc_step_len.expect(2.U)
+            dut.clock.step()
+
+            dut.io.cache.resp.valid.poke(false.B)
+            dut.io.pc.poke((base + 10).U)
+            dut.io.valid.expect(true.B)
+            dut.io.pc_out.expect((base + 10).U)
+            dut.io.instr_out.expect("h00a7e363".U)
+            dut.io.instr_len.expect(0.U)
+            dut.io.pc_step_len.expect(0.U)
+            dut.clock.step()
+
+            dut.io.pc.poke((base + 14).U)
+            dut.io.valid.expect(true.B)
+            dut.io.pc_out.expect((base + 14).U)
+            dut.io.instr_out.expect("h00008067".U)
             dut.io.instr_len.expect(2.U)
             dut.io.pc_step_len.expect(2.U)
         }
@@ -336,19 +446,21 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.pc.poke(va.U)
             dut.io.cache.req.ready.poke(true.B)
+            dut.io.ptw.req.ready.poke(true.B)
             dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.mmu_en.poke(true.B)
             dut.io.mem_cfg.satp.poke(satp(root).U)
 
-            expectCacheRead(dut, root + vpn2 * 8, Some(root + vpn2 * 8))
-            acceptCacheRead(dut, pte(ppn(l1), V))
+            expectPtwRead(dut, root + vpn2 * 8)
+            dut.io.cache.req.valid.expect(false.B)
+            acceptPtwRead(dut, pte(ppn(l1), V))
 
-            expectCacheRead(dut, l1 + vpn1 * 8)
-            acceptCacheRead(dut, pte(ppn(l0), V))
+            expectPtwRead(dut, l1 + vpn1 * 8)
+            acceptPtwRead(dut, pte(ppn(l0), V))
 
-            expectCacheRead(dut, l0 + vpn0 * 8)
-            acceptCacheRead(dut, pte(ppn(leafPa), V | R | X | A))
+            expectPtwRead(dut, l0 + vpn0 * 8)
+            acceptPtwRead(dut, pte(ppn(leafPa), V | R | X | A))
 
             expectCacheRead(dut, leafPa, Some(va))
             acceptCacheRead(dut, BigInt("0000000000500113", 16))
@@ -369,13 +481,14 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.pc.poke(va.U)
             dut.io.cache.req.ready.poke(true.B)
+            dut.io.ptw.req.ready.poke(true.B)
             dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.mmu_en.poke(true.B)
             dut.io.mem_cfg.satp.poke(satp(root).U)
 
-            expectCacheRead(dut, root + vpn2 * 8)
-            acceptCacheRead(dut, pte(0x1000, V | R | A))
+            expectPtwRead(dut, root + vpn2 * 8)
+            acceptPtwRead(dut, pte(0x1000, V | R | A))
 
             expectFetchTrap(dut, MCause.InstrPageFault, va, va)
             dut.io.cache.req.valid.expect(false.B)

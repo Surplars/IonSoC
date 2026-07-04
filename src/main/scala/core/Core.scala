@@ -200,9 +200,43 @@ class Core(
     dontTouch(fenceIActive)
     dontTouch(fenceIHold)
 
-    dcache.io.cpu <> lsu.io.dcache
-    val debugDcacheInvalidateValid = debugDcachePending && !debugDcacheIssued
-    fenceIDcacheFlushValid := hasDCache.B && fenceIPending && !fenceIDcacheDone && !fenceIDcacheIssued
+    val dcacheRespOwnerPtw = RegInit(false.B)
+    val dcacheRespPending = RegInit(false.B)
+    val dcacheMaintRespPending = fenceIDcacheIssued || debugDcacheIssued
+    val dcacheRespOutstanding = dcacheRespPending && !dcache.io.cpu.req.ready
+    val ifetchPtwReqSelected = ifetch.io.ptw.req.valid && !lsu.io.dcache.req.valid && !dcacheRespOutstanding &&
+        !dcacheMaintRespPending
+    dcache.io.cpu.req.valid := !dcacheMaintRespPending &&
+        Mux(ifetchPtwReqSelected, ifetch.io.ptw.req.valid, lsu.io.dcache.req.valid)
+    dcache.io.cpu.req.bits := Mux(ifetchPtwReqSelected, ifetch.io.ptw.req.bits, lsu.io.dcache.req.bits)
+    ifetch.io.ptw.req.ready := ifetchPtwReqSelected && dcache.io.cpu.req.ready
+    lsu.io.dcache.req.ready := !dcacheMaintRespPending && !ifetchPtwReqSelected && dcache.io.cpu.req.ready
+
+    val dcacheCpuReqFire = dcache.io.cpu.req.fire
+    val dcacheCpuRespOwnerPtw = Mux(dcacheCpuReqFire, ifetchPtwReqSelected, dcacheRespOwnerPtw)
+    ifetch.io.ptw.resp.valid := dcache.io.cpu.resp.valid && !dcacheMaintRespPending && dcacheCpuRespOwnerPtw
+    ifetch.io.ptw.resp.bits := dcache.io.cpu.resp.bits
+    lsu.io.dcache.resp.valid := dcache.io.cpu.resp.valid && !dcacheMaintRespPending && !dcacheCpuRespOwnerPtw
+    lsu.io.dcache.resp.bits := dcache.io.cpu.resp.bits
+    dcache.io.cpu.resp.ready := Mux(
+        dcacheMaintRespPending,
+        true.B,
+        Mux(dcacheCpuRespOwnerPtw, ifetch.io.ptw.resp.ready, lsu.io.dcache.resp.ready)
+    )
+    val dcacheCpuRespAnyFire = dcache.io.cpu.resp.fire
+    val dcacheCpuRespFire = dcacheCpuRespAnyFire && !dcacheMaintRespPending
+    when(dcacheCpuReqFire && !dcacheCpuRespAnyFire) {
+        dcacheRespPending := true.B
+        dcacheRespOwnerPtw := ifetchPtwReqSelected
+    }.elsewhen(dcacheCpuRespAnyFire && !dcacheCpuReqFire) {
+        dcacheRespPending := false.B
+    }.elsewhen(dcacheRespPending && dcache.io.cpu.req.ready && !dcache.io.cpu.resp.valid) {
+        dcacheRespPending := false.B
+    }
+
+    val debugDcacheInvalidateValid = debugDcachePending && !debugDcacheIssued && !dcacheRespPending
+    fenceIDcacheFlushValid := hasDCache.B && fenceIPending && !fenceIDcacheDone && !fenceIDcacheIssued &&
+        !dcacheRespPending
     dcache.io.invalidate.valid := hasDCache.B && (fenceIDcacheFlushValid || debugDcacheInvalidateValid)
     dcache.io.invalidate.bits := false.B
     when(fenceIDcacheFlushValid && dcache.io.invalidate.fire) {
@@ -210,8 +244,8 @@ class Core(
     }.elsewhen(debugDcacheInvalidateValid && dcache.io.invalidate.fire) {
         debugDcacheIssued := true.B
     }
-    fenceIDcacheAck := fenceIDcacheIssued && dcache.io.cpu.resp.fire
-    when(debugDcachePending && debugDcacheIssued && dcache.io.cpu.resp.fire) {
+    fenceIDcacheAck := fenceIDcacheIssued && dcacheMaintRespPending && dcache.io.cpu.resp.fire
+    when(debugDcachePending && debugDcacheIssued && dcacheMaintRespPending && dcache.io.cpu.resp.fire) {
         debugDcacheErr := dcache.io.cpu.resp.bits.err
         debugDcacheAck := true.B
     }
@@ -437,16 +471,18 @@ class Core(
     val aluResultPrevValid = RegInit(false.B)
     val aluResultPrevRd = RegInit(0.U(5.W))
     val aluResultPrevData = RegInit(0.U(XLEN.W))
-    // ALU forwarding is only for short fixed-latency ALU producers. A
-    // load-like instruction with the same rd, or any variable-latency memory
-    // bubble behind it, must break the chain so a stale ALU value cannot
-    // override the later load result.
-    val aluForwardKill = frontendQueueFlush || redirect_flush || aluLoadLike
+    // ALU forwarding is only for short fixed-latency ALU producers. A load-like
+    // instruction must invalidate only entries for its own rd; otherwise an
+    // independent ALU result can be lost while the load stalls the next consumer.
+    val aluForwardFlush = frontendQueueFlush || redirect_flush
+    val aluLoadLikeRd = alu.io.alu_out.rd
+    val keepAluFwd = !(aluLoadLike && aluResultFwdValid && aluResultFwdRd === aluLoadLikeRd)
+    val keepPrevAluFwd = !(aluLoadLike && aluResultPrevValid && aluResultPrevRd === aluLoadLikeRd)
     val aluForwardUpdate = !pipe_stall && !debugHalted
     val nextAluForwardValid =
         alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
             !isLoadLikeOp(aluMemOp)
-    when(aluForwardKill) {
+    when(aluForwardFlush) {
         aluResultFwdValid := false.B
         aluResultFwdRd := 0.U
         aluResultFwdData := 0.U
@@ -454,12 +490,23 @@ class Core(
         aluResultPrevRd := 0.U
         aluResultPrevData := 0.U
     }.elsewhen(aluForwardUpdate) {
-        aluResultPrevValid := aluResultFwdValid
-        aluResultPrevRd := aluResultFwdRd
-        aluResultPrevData := aluResultFwdData
+        aluResultPrevValid := aluResultFwdValid && keepAluFwd
+        aluResultPrevRd := Mux(aluResultFwdValid && keepAluFwd, aluResultFwdRd, 0.U)
+        aluResultPrevData := Mux(aluResultFwdValid && keepAluFwd, aluResultFwdData, 0.U)
         aluResultFwdValid := nextAluForwardValid
         aluResultFwdRd := Mux(nextAluForwardValid, alu.io.alu_out.rd, 0.U)
         aluResultFwdData := Mux(nextAluForwardValid, alu.io.alu_out.result, 0.U)
+    }.otherwise {
+        when(!keepAluFwd) {
+            aluResultFwdValid := false.B
+            aluResultFwdRd := 0.U
+            aluResultFwdData := 0.U
+        }
+        when(!keepPrevAluFwd) {
+            aluResultPrevValid := false.B
+            aluResultPrevRd := 0.U
+            aluResultPrevData := 0.U
+        }
     }
     // register
     register.io.rs1_addr   := idecode.io.reg_rd_rs1

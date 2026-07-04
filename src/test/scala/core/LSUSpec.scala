@@ -105,8 +105,9 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         dut.io.alu_out.mem.signed.poke(false.B)
     }
 
-    private def driveFence(dut: LSU): Unit = {
+    private def driveFence(dut: LSU, instr: BigInt = 0x0000000fL): Unit = {
         dut.io.valid_in.poke(true.B)
+        dut.io.alu_out.instr.poke(instr.U)
         dut.io.alu_out.mem.valid.poke(true.B)
         dut.io.alu_out.mem.op.poke(MemOpType.Fence)
         dut.io.alu_out.mem.vaddr.poke(0.U)
@@ -175,6 +176,24 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
                 dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
                 dut.io.dcache.req.bits.addr.expect(addr.U)
                 dut.io.dcache.req.bits.wdata.expect(data.U)
+                seen = true
+            } else {
+                dut.clock.step()
+                cycles += 1
+            }
+        }
+        if (!seen) {
+            dut.io.dcache.req.valid.expect(true.B)
+        }
+    }
+
+    private def expectDCacheFence(dut: LSU, maxCycles: Int = 8): Unit = {
+        var seen = false
+        var cycles = 0
+        while (!seen && cycles < maxCycles) {
+            if (dut.io.dcache.req.valid.peek().litToBoolean) {
+                dut.io.dcache.req.bits.fence.expect(true.B)
+                dut.io.dcache.req.bits.fencei.expect(false.B)
                 seen = true
             } else {
                 dut.clock.step()
@@ -367,6 +386,33 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
 
             dut.io.stall_req.expect(false.B)
             dut.io.valid_out.expect(false.B)
+        }
+    }
+
+    test("LSU drains stores before retiring SFENCE.VMA without a full DCache flush") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            driveStore(dut, BigInt("10000038", 16), BigInt("8877665544332211", 16))
+            dut.clock.step()
+
+            driveFence(dut, instr = 0x12000073L) // sfence.vma x0, x0
+            dut.io.stall_req.expect(true.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            dut.io.stall_req.expect(true.B)
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.clock.step()
+
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.io.valid_out.expect(true.B)
+            dut.io.mem_out.reg_write.expect(false.B)
         }
     }
 

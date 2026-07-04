@@ -7,7 +7,9 @@ case class DeviceTreeOptions(
     model: String = "OpenIon IonSoC",
     timebaseFrequency: Int = 10000000,
     uartClockFrequency: Int = 50000000,
-    uartBaud: Int = 115200
+    uartBaud: Int = 115200,
+    bootargs: Option[String] = None,
+    uartNs16550Fallback: Boolean = false
 )
 
 object DeviceTree {
@@ -15,7 +17,14 @@ object DeviceTree {
         dts(SoCProfiles.LinuxCapablePLIC, ISAProfiles.RV64IMACB)
 
     def linuxBootDts(): String =
-        dts(SoCProfiles.LinuxBootPLIC, ISAProfiles.RV64IMACB)
+        dts(
+            SoCProfiles.LinuxBootPLIC,
+            ISAProfiles.RV64IMACB,
+            DeviceTreeOptions(
+                bootargs = Some("console=ttyS0,115200 earlycon=uart8250,mmio,0x10010000"),
+                uartNs16550Fallback = true
+            )
+        )
 
     def dts(
         features: SoCFeatures,
@@ -27,6 +36,7 @@ object DeviceTree {
         val uart = if (features.uart) uartNode(features, options) else ""
         val clint = if (features.clint) clintNode() else ""
         val plic = if (features.interruptController == InterruptControllerKind.PLIC) plicNode() else ""
+        val bootargs = options.bootargs.map(args => s"""        bootargs = "$args";""").getOrElse("")
 
         s"""/dts-v1/;
            |
@@ -38,6 +48,7 @@ object DeviceTree {
            |
            |    chosen {
            |        stdout-path = "serial0:${options.uartBaud}n8";
+           |$bootargs
            |    };
            |
            |    cpus {
@@ -119,14 +130,19 @@ object DeviceTree {
         s"""
            |
            |        serial0: uart@${hexAddr(Config.UartBase)} {
-           |            compatible = "openion,ionsoc-uart";
+           |            compatible = "${uartCompatible(options)}";
            |            reg = <${regCells(Config.UartBase, Config.UartSize)}>;$interruptProps
            |            clock-frequency = <${options.uartClockFrequency}>;
            |            current-speed = <${options.uartBaud}>;
+           |            reg-shift = <0>;
+           |            reg-io-width = <1>;
            |            status = "okay";
            |        };
            |""".stripMargin
     }
+
+    private def uartCompatible(options: DeviceTreeOptions): String =
+        if (options.uartNs16550Fallback) "openion,ionsoc-uart\", \"ns16550a" else "openion,ionsoc-uart"
 
     private def clintNode(): String =
         s"""

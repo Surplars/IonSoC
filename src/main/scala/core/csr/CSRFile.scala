@@ -194,6 +194,7 @@ class CSRFile(
     val scounteren = RegInit(0.U(XLEN.W))
     val menvcfg    = RegInit(0.U(XLEN.W))
     val mcountinhibit = RegInit(0.U(XLEN.W))
+    val timeCounter = RegInit(0.U(XLEN.W))
     val mcycle     = RegInit(0.U(XLEN.W))
     val minstret   = RegInit(0.U(XLEN.W))
     val mhpmcounter = RegInit(VecInit(Seq.fill(29)(0.U(XLEN.W))))
@@ -231,9 +232,10 @@ class CSRFile(
         )
     )
 
-    // Keep the base performance counters architecturally visible. minstret uses
-    // the core retire pulse, while mhpmcounter3..31 count selected IonSoC
-    // platform events via mhpmevent3..31.
+    // Keep the base performance counters architecturally visible. time is a
+    // monotonic counter independent of mcountinhibit; minstret uses the core
+    // retire pulse, while mhpmcounter3..31 count selected IonSoC events.
+    timeCounter := timeCounter + 1.U
     when(!mcountinhibit(0)) {
         mcycle := mcycle + 1.U
     }
@@ -324,6 +326,9 @@ class CSRFile(
         CSR.PMPcfg0    -> pmpcfg0,
         CSR.MCYCLE     -> mcycle,
         CSR.MINSTRET   -> minstret,
+        CSR.CYCLE      -> mcycle,
+        CSR.TIME       -> timeCounter,
+        CSR.INSTRET    -> minstret,
         CSR.MNSCRATCH  -> mnscratch,
         CSR.MNEPC      -> mnepc,
         CSR.MNCAUSE    -> mncause,
@@ -337,6 +342,26 @@ class CSRFile(
     private def mhpmCounterIndex(addr: UInt): UInt = (addr - CSR.MHPMCOUNTER3)(4, 0)
     private def isMhpmEvent(addr: UInt): Bool = addr >= CSR.MHPMEVENT3 && addr <= CSR.MHPMEVENT31
     private def mhpmEventIndex(addr: UInt): UInt = (addr - CSR.MHPMEVENT3)(4, 0)
+    private def counterEnableBit(addr: UInt): UInt = MuxLookup(addr, 0.U(log2Ceil(XLEN).W))(
+        Seq(
+            CSR.CYCLE -> 0.U,
+            CSR.TIME -> 1.U,
+            CSR.INSTRET -> 2.U
+        )
+    )
+    private def isCounterView(addr: UInt): Bool = addr === CSR.CYCLE || addr === CSR.TIME || addr === CSR.INSTRET
+    private def counterAccessOk(addr: UInt): Bool = {
+        val bit = counterEnableBit(addr)
+        Mux(
+            !isCounterView(addr) || CurrentPrivLevel === PrivilegeLevel.Machine,
+            true.B,
+            Mux(
+                CurrentPrivLevel === PrivilegeLevel.Supervisor,
+                mcounteren(bit),
+                mcounteren(bit) && scounteren(bit)
+            )
+        )
+    }
 
     val rdata_pre = Mux(
         isPmpAddr(io.addr),
@@ -381,12 +406,6 @@ class CSRFile(
     val csrReadonlyWrite = io.write && csrReadOnly
     val wcsrReadonlyWrite = io.wwrite && wcsrReadOnly
 
-    io.rdata   := rdata_pre
-    io.debug_rdata := debug_rdata_pre
-    io.debug_valid := debug_addr_valid
-    io.debug_writable := debug_addr_valid && !debugCsrReadOnly
-    io.illegal := io.valid && (!addr_valid || !csrPrivOk || csrReadonlyWrite)
-
     val wdata_final = MuxLookup(io.wcmd, 0.U)(
         Seq(
             CSROps.RW.asUInt  -> io.wwdata,                // 直接写入
@@ -406,6 +425,23 @@ class CSRFile(
     val writeAddr = Mux(io.debug_write, io.debug_addr, io.waddr)
     val writeData = Mux(io.debug_write, io.debug_wdata, wdata_final)
     val writeEnable = io.debug_write || do_write
+    val directWriteBypass =
+        writeEnable && writeAddr === io.addr &&
+            (writeAddr === CSR.MCOUNTEREN || writeAddr === CSR.SCOUNTEREN ||
+                writeAddr === CSR.MENVCFG || writeAddr === CSR.MCOUNTINHIBIT ||
+                writeAddr === CSR.MCYCLE || writeAddr === CSR.MINSTRET ||
+                writeAddr === CSR.MSCRATCH || writeAddr === CSR.MEPC ||
+                writeAddr === CSR.MCAUSE || writeAddr === CSR.MTVAL ||
+                writeAddr === CSR.SSCRATCH || writeAddr === CSR.SEPC ||
+                writeAddr === CSR.SCAUSE || writeAddr === CSR.STVAL ||
+                writeAddr === CSR.SATP || writeAddr === CSR.MNSCRATCH ||
+                writeAddr === CSR.MNSTATUS)
+
+    io.rdata := Mux(directWriteBypass, writeData, rdata_pre)
+    io.debug_rdata := debug_rdata_pre
+    io.debug_valid := debug_addr_valid
+    io.debug_writable := debug_addr_valid && !debugCsrReadOnly
+    io.illegal := io.valid && (!addr_valid || !csrPrivOk || csrReadonlyWrite || !counterAccessOk(io.addr))
 
     when(writeEnable) {
         switch(writeAddr) {

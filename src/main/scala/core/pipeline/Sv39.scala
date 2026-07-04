@@ -147,7 +147,10 @@ class Sv39PageTableWalker(XLEN: Int = 64) extends Module {
     private val pteAddr = tableBase + (vpn << 3)
 
     private val translator = Module(new Sv39PteTranslator(XLEN))
-    translator.io.valid := state === sReadResp && io.mem.resp.valid
+    private val instantReadResp = state === sReadReq && io.mem.req.fire
+    private val readRespActive = state === sReadResp || instantReadResp
+
+    translator.io.valid := readRespActive && io.mem.resp.valid
     translator.io.vaddr := reqReg.vaddr
     translator.io.pte := io.mem.resp.bits.rdata
     translator.io.level := level
@@ -170,7 +173,7 @@ class Sv39PageTableWalker(XLEN: Int = 64) extends Module {
     io.mem.req.bits.cacheable := true.B
     io.mem.req.bits.device := false.B
 
-    io.mem.resp.ready := state === sReadResp
+    io.mem.resp.ready := readRespActive
 
     when(io.req.fire) {
         reqReg := io.req.bits
@@ -184,7 +187,7 @@ class Sv39PageTableWalker(XLEN: Int = 64) extends Module {
         state := sReadResp
     }
 
-    when(state === sReadResp && io.mem.resp.fire) {
+    when(readRespActive && io.mem.resp.fire) {
         when(io.mem.resp.bits.err) {
             respReg.paddr := 0.U
             respReg.fault.valid := true.B

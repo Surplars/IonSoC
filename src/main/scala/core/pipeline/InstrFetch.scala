@@ -35,6 +35,10 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
             val req  = Decoupled(new CacheReq(XLEN, XLEN))
             val resp = Flipped(Decoupled(new CacheResp(XLEN)))
         }
+        val ptw = new Bundle {
+            val req  = Decoupled(new CacheReq(XLEN, XLEN))
+            val resp = Flipped(Decoupled(new CacheResp(XLEN)))
+        }
     })
 
     private val beatOffsetBits = log2Ceil(XLEN / 8)
@@ -53,6 +57,9 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
     io.cache.req.bits.cacheable := true.B
     io.cache.req.bits.device    := false.B
     io.cache.resp.ready         := true.B
+    io.ptw.req.valid            := false.B
+    io.ptw.req.bits             := 0.U.asTypeOf(io.ptw.req.bits)
+    io.ptw.resp.ready           := true.B
     io.trap_info                := 0.U.asTypeOf(io.trap_info)
 
     val directUpdate = !io.stall
@@ -242,16 +249,22 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         normalCacheReqBits.atomic := false.B
         normalCacheReqBits.cacheable := true.B
         normalCacheReqBits.device := false.B
-        io.cache.req.valid := Mux(xlatePending, ptw.io.mem.req.valid, normalFetchReqValid)
-        io.cache.req.bits := Mux(xlatePending, ptw.io.mem.req.bits, normalCacheReqBits)
-        ptw.io.mem.req.ready := xlatePending && io.cache.req.ready
+        io.cache.req.valid := normalFetchReqValid
+        io.cache.req.bits := normalCacheReqBits
+        io.ptw.req.valid := xlatePending && ptw.io.mem.req.valid
+        io.ptw.req.bits := ptw.io.mem.req.bits
+        ptw.io.mem.req.ready := xlatePending && io.ptw.req.ready
         // Keep the response channel drainable even after a frontend flush has
         // cancelled the matching fetch. Otherwise a late cache response can
         // leave the I-cache in its response state and block fence.i invalidation.
         val normalRespReady = !io.stall || flush
-        io.cache.resp.ready := Mux(xlatePending, ptw.io.mem.resp.ready, normalRespReady)
-        ptw.io.mem.resp.valid := xlatePending && io.cache.resp.valid
-        ptw.io.mem.resp.bits := io.cache.resp.bits
+        io.cache.resp.ready := normalRespReady
+        // A redirect/trap can cancel the frontend translation while the shared
+        // D-cache response is still in flight. Drain that stale response so the
+        // D-cache/PTW arbiter cannot stay permanently owned by IFetch.
+        io.ptw.resp.ready := !xlatePending || ptw.io.mem.resp.ready
+        ptw.io.mem.resp.valid := xlatePending && io.ptw.resp.valid
+        ptw.io.mem.resp.bits := io.ptw.resp.bits
 
         when((state === sFirstReq || state === sSecondReq) && flush) {
             dropResp := false.B

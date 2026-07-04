@@ -1162,8 +1162,10 @@ bool run_sim(const SimOptions &opts)
 	bool trace_map_u32 = env_enabled("ION_TRACE_MAP_U32");
 	bool trace_ret = env_enabled("ION_TRACE_RET");
 	bool trace_csr = env_enabled("ION_TRACE_CSR");
+	bool trace_atomic = env_enabled("ION_TRACE_ATOMIC");
 	uint64_t trace_pc_start = env_u64("ION_TRACE_PC_START", 0);
 	uint64_t trace_pc_end = env_u64("ION_TRACE_PC_END", UINT64_MAX);
+	uint64_t trace_atomic_addr = env_u64("ION_TRACE_ATOMIC_ADDR", 0);
 	bool trace_boot = env_enabled("ION_TRACE_BOOT");
 	bool saw_rom_pc = false;
 	bool saw_sram_pc = false;
@@ -1401,12 +1403,93 @@ bool run_sim(const SimOptions &opts)
 			if (trace_boot && dut->rootp->SimTop__DOT__core__DOT__combined_trap)
 			{
 				printf("[boot-trace %6" PRIu64 "] trap pc=0x%016" PRIx64 " mtvec=0x%016" PRIx64
-				       " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64 "\n",
+				       " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
+				       " stvec=0x%016" PRIx64 " sepc=0x%016" PRIx64
+				       " scause=0x%016" PRIx64 " stval=0x%016" PRIx64
+				       " sscratch=0x%016" PRIx64 " tp=0x%016" PRIx64 " sp=0x%016" PRIx64
+				       " ra=0x%016" PRIx64 " s0=0x%016" PRIx64 " s1=0x%016" PRIx64
+				       " a0=0x%016" PRIx64 " a3=0x%016" PRIx64 " s2=0x%016" PRIx64 "\n",
 				       sim_time,
 				       pc_now,
 				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mtvec,
 				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mepc,
-				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause);
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__mcause,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__stvec,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__sepc,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__scause,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__stval,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__csr__DOT__sscratch,
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[4],
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[2],
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[1],
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[8],
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[9],
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10],
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[13],
+				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[18]);
+			}
+			if (trace_atomic)
+			{
+				const uint64_t atomic_vaddr = (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicAccess_vaddr;
+				const uint64_t atomic_paddr = (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicAccess_paddr;
+				const uint64_t req_addr = (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_bits_addr;
+				const bool target_match = trace_atomic_addr == 0 ||
+				                          trace_atomic_addr == atomic_vaddr ||
+				                          trace_atomic_addr == atomic_paddr ||
+				                          trace_atomic_addr == req_addr;
+				const bool atomic_active =
+				    dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__raw_atomic_req ||
+				    dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__new_atomic_req ||
+				    dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__do_atomic_read_req ||
+				    dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__do_atomic_write_req ||
+				    dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicRespValid;
+				if (atomic_active && target_match)
+				{
+					printf("[atomic-trace %6" PRIu64 "] pc=0x%016" PRIx64 " instr=0x%08x"
+					       " raw=%u new=%u pend=%u rd_sent=%u wr_sent=%u do_wr=%u resp_v=%u"
+					       " op=%u atom=%u size=%u mask=0x%02x"
+					       " vaddr=0x%016" PRIx64 " paddr=0x%016" PRIx64
+					       " awdata=0x%016" PRIx64 " wrdata=0x%016" PRIx64
+					       " old=0x%016" PRIx64 " resp=0x%016" PRIx64
+					       " req_v=%u req_r=%u req_cmd=%u req_addr=0x%016" PRIx64
+					       " req_wdata=0x%016" PRIx64 " req_mask=0x%02x resp_in=%u resp_err=%u resp_data=0x%016" PRIx64
+					       " rs1/a0=0x%016" PRIx64 " rs2/a3=0x%016" PRIx64 " s0=0x%016" PRIx64
+					       " s1=0x%016" PRIx64 " s2=0x%016" PRIx64 "\n",
+					       sim_time,
+					       pc_now,
+					       (uint32_t)dut->io_debug_instr,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__raw_atomic_req,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__new_atomic_req,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicPending,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicReadSent,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicWriteSent,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicDoWrite,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicRespValid,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicAccess_op,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicAccess_atomic,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicAccess_size,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicAccess_mask,
+					       atomic_vaddr,
+					       atomic_paddr,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicAccess_wdata,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicWriteData,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicOldData,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__atomicRespData,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_valid,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_ready,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_bits_cmd,
+					       req_addr,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_bits_wdata,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_bits_mask,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_resp_valid,
+					       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_resp_bits_err,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_resp_bits_rdata,
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[10],
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[13],
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[8],
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[9],
+					       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[18]);
+				}
 			}
 		}
 
@@ -1432,7 +1515,9 @@ bool run_sim(const SimOptions &opts)
 				   " fwd_v=%u fwd_rd=%u fwd_data=0x%016" PRIx64 " prev_v=%u prev_rd=%u prev_data=0x%016" PRIx64
 				   " fq_flush=%u decode_stall=%u"
 				   " sb_p=%u sb_rd=%u sb_new=%u sb_done=%u sb_inst=%u sb_inst_rd=%u"
-					   " if_state=%u if_acc=%u if_req_pc=0x%016" PRIx64 " if_pc=0x%016" PRIx64 " if_instr=0x%08x if_len=%u pc_step=%u pc_hold=%u bpu_taken=%u"
+				   " if_state=%u if_acc=%u if_req_pc=0x%016" PRIx64 " if_req_pa=0x%016" PRIx64
+				   " if_xlate_rdy=%u if_xlate_pa=0x%016" PRIx64
+				   " if_pc=0x%016" PRIx64 " if_instr=0x%08x if_len=%u pc_step=%u pc_hold=%u bpu_taken=%u"
 				   " redirect=%u int_p=%u int_f=%u trap=%u flush=%u mtvec=0x%016" PRIx64 " mepc=0x%016" PRIx64 " mcause=0x%016" PRIx64
 				   " mstatus=0x%016" PRIx64 " mie=0x%016" PRIx64 " plic_src1=%u mtip=%u mtime=0x%016" PRIx64 " mtimecmp=0x%016" PRIx64 "\n",
 				   sim_time,
@@ -1494,6 +1579,9 @@ bool run_sim(const SimOptions &opts)
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__state,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__acceptResp,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__reqPc,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___ifetch_io_cache_req_bits_addr,
+				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__translatedReady,
+				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__xlatePaddr,
 				   (uint64_t)dut->rootp->SimTop__DOT__core__DOT___ifetch_io_pc_out,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___ifetch_io_instr_out,
 				   (uint32_t)dut->rootp->SimTop__DOT__core__DOT___ifetch_io_instr_len,
@@ -1577,9 +1665,11 @@ bool run_sim(const SimOptions &opts)
 		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__fenceIAck);
 		if (dut->rootp->__PVT__SimTop__DOT__core__DOT__icache != nullptr)
 		{
-			printf("[boot-trace cache] ifetch_state=%u ifetch_req=%u icache_state=%u icache_req_ready=%u icache_resp_valid=%u icache_inv_ready=%u bus_a_valid=%u bus_d_ready=%u\n",
+			printf("[boot-trace cache] ifetch_state=%u ifetch_req=%u ifetch_ptw_req=%u ifetch_ptw_resp=%u icache_state=%u icache_req_ready=%u icache_resp_valid=%u icache_inv_ready=%u bus_a_valid=%u bus_d_ready=%u\n",
 			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__state,
-			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_cache_req_valid_0,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_cache_req_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_ptw_req_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_ptw_resp_valid,
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->state,
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_cpu_req_ready,
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_cpu_resp_valid,
@@ -1587,10 +1677,52 @@ bool run_sim(const SimOptions &opts)
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_bus_a_valid,
 			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__icache->io_bus_d_ready);
 		}
-		printf("[boot-trace frontend] global_stall=%u decode_stall=%u decode_uses_pending=%u load_pending=%u load_rd=%u queue_full=%u queue_empty=%u queue_count=%u head=%u tail=%u id_valid=%u id_rd=%u id_w=%u alu_valid=%u alu_pc=0x%016" PRIx64 " wb_w=%u wb_rd=%u\n",
+		if (dut->rootp->__PVT__SimTop__DOT__core__DOT__L1Cache != nullptr)
+		{
+			printf("[boot-trace dcache] arb_pending=%u arb_owner_ptw=%u ptw_sel=%u d_req_v=%u d_req_r=%u d_resp_v=%u d_resp_r=%u lsu_req_v=%u lsu_req_r=%u lsu_resp_v=%u lsu_resp_r=%u ptw_req_v=%u ptw_req_r=%u ptw_resp_v=%u ptw_resp_r=%u state=%u bus_a_valid=%u bus_d_ready=%u\n",
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__dcacheRespPending,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__dcacheRespOwnerPtw,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetchPtwReqSelected,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__L1Cache_io_cpu_req_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___L1Cache_io_cpu_req_ready,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___L1Cache_io_cpu_resp_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__L1Cache_io_cpu_resp_ready,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_req_ready,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_resp_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_dcache_resp_ready,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_ptw_req_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_ptw_req_ready,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_ptw_resp_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__ifetch__DOT__io_ptw_resp_ready,
+			       (uint32_t)dut->rootp->__PVT__SimTop__DOT__core__DOT__L1Cache->state,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___L1Cache_io_bus_a_valid,
+			       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___L1Cache_io_bus_d_ready);
+		}
+		printf("[boot-trace lsu] op=%u is_load=%u is_store=%u raw_xlate=%u xlate_not_ready=%u xlate_busy=%u xlate_pending=%u xlate_done=%u raw_cache_load=%u new_cache_load=%u cache_pending=%u raw_load_hit_sb=%u\n",
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__memAccess_op,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__is_load,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__is_store,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__rawNeedsTranslation,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__translationNotReady,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__translationBusy,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__xlatePending,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__xlateDone,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__raw_cache_load,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__new_cache_load,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__cacheLoadPending,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__raw_load_hit_sb);
+		printf("[boot-trace frontend] global_stall=%u pipe_stall=%u decode_stall=%u decode_uses_pending=%u lsu_stall=%u lsu_load=%u lsu_store=%u lsu_mmio=%u lsu_atomic=%u lsu_fence=%u load_pending=%u load_rd=%u queue_full=%u queue_empty=%u queue_count=%u head=%u tail=%u id_valid=%u id_rd=%u id_w=%u alu_valid=%u alu_pc=0x%016" PRIx64 " wb_w=%u wb_rd=%u\n",
 		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__global_stall,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___global_stall_T,
 		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__decodeStall,
 		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__decodeUsesPending,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_req,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_load,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_store,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_mmio,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_atomic,
+		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__lsu__DOT__io_stall_fence,
 		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikePending,
 		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__loadLikePendingRd,
 		       (uint32_t)dut->rootp->SimTop__DOT__core__DOT__frontendQueue__DOT__io_full,
