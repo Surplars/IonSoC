@@ -17,6 +17,11 @@ _start:
     csrw mhpmevent6, t0
     li   t0, 12
     csrw mhpmevent7, t0
+
+    # NEMU models mhpmcounter/mhpmevent as read-only zero. Keep HPM counters
+    # inhibited in difftest payloads so only IonSoC-local tests check events.
+    li   t0, -8
+    csrw mcountinhibit, t0
     csrw mhpmcounter3, zero
     csrw mhpmcounter4, zero
     csrw mhpmcounter5, zero

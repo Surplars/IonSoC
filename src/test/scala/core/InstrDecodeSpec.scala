@@ -102,6 +102,25 @@ class InstrDecodeSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("InstrDecode gates SFENCE.VMA on supervisor support and decodes it as a fence") {
+        simulate(new InstrDecode(64, Set(Extension.RV64I, Extension.Zicsr))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h12000073".U) // sfence.vma x0, x0
+            dut.clock.step()
+            dut.io.trap_info.valid.expect(true.B)
+        }
+
+        simulate(new InstrDecode(64, Set(Extension.RV64I, Extension.Zicsr, Extension.S))) { dut =>
+            init(dut)
+            dut.io.instr_in.poke("h12208073".U) // sfence.vma x1, x2
+            dut.clock.step()
+
+            dut.io.trap_info.valid.expect(false.B)
+            dut.io.decoded_out.ctrl.mem_fence.expect(true.B)
+            dut.io.decoded_out.ctrl.reg_write.expect(false.B)
+        }
+    }
+
     test("InstrDecode gates RV64A atomic instructions by enabled extensions") {
         simulate(new InstrDecode(64, Set(Extension.RV64I))) { dut =>
             init(dut)

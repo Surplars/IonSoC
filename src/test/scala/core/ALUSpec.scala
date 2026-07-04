@@ -43,6 +43,7 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
         dut.io.decoded_in.ctrl.branch_type.poke(BranchType.None)
 
         dut.io.fwd.load_valid.poke(false.B)
+        dut.io.fwd.load_rd.poke(0.U)
         dut.io.fwd.load_data.poke(0.U)
         dut.io.fwd.rd.poke(0.U)
         dut.io.fwd.alu_result.poke(0.U)
@@ -305,6 +306,20 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("ALU emits a fence memory operation for SFENCE.VMA-style barriers") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            dut.io.decoded_in.ctrl.reg_write.poke(false.B)
+            dut.io.decoded_in.ctrl.mem_fence.poke(true.B)
+            dut.clock.step()
+
+            dut.io.alu_out.mem.valid.expect(true.B)
+            dut.io.alu_out.mem.op.expect(MemOpType.Fence)
+            dut.io.alu_out.reg_write.expect(false.B)
+        }
+    }
+
     test("ALU forwards LSU load-like results by forwarding rd") {
         simulate(new ALU(64)) { dut =>
             init(dut)
@@ -315,7 +330,7 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.decoded_in.op2.poke(1.U)
             dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADD)
             dut.io.fwd.load_valid.poke(true.B)
-            dut.io.fwd.rd.poke(3.U)
+            dut.io.fwd.load_rd.poke(3.U)
             dut.io.fwd.load_data.poke(41.U)
             dut.clock.step()
             dut.io.alu_out.result.expect(42.U)
@@ -324,10 +339,110 @@ class ALUSpec extends AnyFunSuite with ChiselSim {
             dut.io.decoded_in.rs2.poke(4.U)
             dut.io.decoded_in.op1.poke(1.U)
             dut.io.decoded_in.op2.poke(1.U)
-            dut.io.fwd.rd.poke(4.U)
+            dut.io.fwd.load_rd.poke(4.U)
             dut.io.fwd.load_data.poke(9.U)
             dut.clock.step()
             dut.io.alu_out.result.expect(10.U)
+        }
+    }
+
+    test("ALU forwards adjacent ALU result into store rs2 data") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            val storeData = BigInt("8877665544332211", 16)
+            val staleRs2 = BigInt("40004000", 16)
+
+            dut.io.decoded_in.rd.poke(6.U)
+            dut.io.decoded_in.rs1.poke(0.U)
+            dut.io.decoded_in.rs2.poke(0.U)
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(storeData.U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADD)
+            dut.io.decoded_in.ctrl.reg_write.poke(true.B)
+            dut.clock.step()
+            dut.io.alu_out.result.expect(storeData.U)
+
+            dut.io.decoded_in.rd.poke(0.U)
+            dut.io.decoded_in.rs1.poke(5.U)
+            dut.io.decoded_in.rs2.poke(6.U)
+            dut.io.decoded_in.op1.poke(staleRs2.U)
+            dut.io.decoded_in.op2.poke(staleRs2.U)
+            dut.io.decoded_in.mem_imm.poke(0.U)
+            dut.io.decoded_in.funct3.poke(3.U)
+            dut.io.decoded_in.ctrl.reg_write.poke(false.B)
+            dut.io.decoded_in.ctrl.mem_write.poke(true.B)
+            dut.clock.step()
+
+            dut.io.alu_out.mem.wdata.expect(storeData.U)
+        }
+    }
+
+    test("ALU forwards a multi-instruction immediate into an adjacent store") {
+        simulate(new ALU(64)) { dut =>
+            init(dut)
+
+            val storeData = BigInt("8877665544332211", 16)
+            val staleRs2 = BigInt("40004000", 16)
+
+            dut.io.decoded_in.rd.poke(6.U)
+            dut.io.decoded_in.rs1.poke(0.U)
+            dut.io.decoded_in.rs2.poke(0.U)
+            dut.io.decoded_in.ctrl.reg_write.poke(true.B)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADD)
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(BigInt("fffffffffe21e000", 16).U)
+            dut.clock.step()
+
+            dut.io.decoded_in.rs1.poke(6.U)
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(BigInt("fffffffffffffd99", 16).U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADDW)
+            dut.clock.step()
+
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(12.U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.SLL)
+            dut.clock.step()
+
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(0x551.U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADD)
+            dut.clock.step()
+
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(13.U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.SLL)
+            dut.clock.step()
+
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(0x199.U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADD)
+            dut.clock.step()
+
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(13.U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.SLL)
+            dut.clock.step()
+
+            dut.io.decoded_in.op1.poke(0.U)
+            dut.io.decoded_in.op2.poke(0x211.U)
+            dut.io.decoded_in.ctrl.alu_op.poke(ALUOps.ADD)
+            dut.clock.step()
+            dut.io.alu_out.result.expect(storeData.U)
+
+            dut.io.decoded_in.rd.poke(0.U)
+            dut.io.decoded_in.rs1.poke(5.U)
+            dut.io.decoded_in.rs2.poke(6.U)
+            dut.io.decoded_in.op1.poke(staleRs2.U)
+            dut.io.decoded_in.op2.poke(staleRs2.U)
+            dut.io.decoded_in.mem_imm.poke(0.U)
+            dut.io.decoded_in.funct3.poke(3.U)
+            dut.io.decoded_in.ctrl.reg_write.poke(false.B)
+            dut.io.decoded_in.ctrl.mem_write.poke(true.B)
+            dut.clock.step()
+
+            dut.io.alu_out.mem.wdata.expect(storeData.U)
         }
     }
 

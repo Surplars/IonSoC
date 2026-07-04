@@ -11,6 +11,10 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
     private val xlen = 64
     private val mieMask = (1L << 3) | (1L << 7) | (1L << 11)
     private val sInterruptMask = (1L << 1) | (1L << 5) | (1L << 9)
+    private val mstatusMprv = BigInt(1) << 17
+    private val mstatusSum = BigInt(1) << 18
+    private val mstatusMxr = BigInt(1) << 19
+    private val mstatusMppS = BigInt(1) << 11
 
     private def init(dut: CSRFile): Unit = {
         dut.io.valid.poke(false.B)
@@ -97,6 +101,24 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
         writeCsr(dut, CSR.MSTATUS, 1 << 11) // MPP=S
         takeRet(dut)
         dut.io.mem_cfg_out.priv.expect(PrivilegeLevel.Supervisor)
+    }
+
+    test("CSRFile WARL-aligns trap vectors and preserves valid vectored mode") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+
+            writeCsr(dut, CSR.MTVEC, BigInt("80000046", 16))
+            dut.io.addr.poke(CSR.MTVEC)
+            dut.io.rdata.expect(BigInt("80000044", 16))
+
+            writeCsr(dut, CSR.STVEC, BigInt("80000047", 16))
+            dut.io.addr.poke(CSR.STVEC)
+            dut.io.rdata.expect(BigInt("80000044", 16))
+
+            writeCsr(dut, CSR.MTVEC, BigInt("80000101", 16))
+            dut.io.addr.poke(CSR.MTVEC)
+            dut.io.rdata.expect(BigInt("80000101", 16))
+        }
     }
 
     test("CSRFile arbitrates machine interrupts by privileged priority") {
@@ -287,14 +309,49 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
             dut.io.cmd.poke(CSROps.RW.asUInt)
             dut.io.addr.poke(mhpmcounter3)
             dut.io.wdata.poke(BigInt("1234", 16).U)
+            dut.io.wvalid.poke(true.B)
+            dut.io.wwrite.poke(true.B)
+            dut.io.wcmd.poke(CSROps.RW.asUInt)
+            dut.io.waddr.poke(mhpmcounter3)
+            dut.io.wwdata.poke(BigInt("1234", 16).U)
             dut.io.illegal.expect(false.B)
             dut.io.rdata.expect(1.U)
             dut.clock.step()
 
+            dut.io.wvalid.poke(false.B)
+            dut.io.wwrite.poke(false.B)
+            dut.io.waddr.poke(0.U)
+            dut.io.wwdata.poke(0.U)
             dut.io.write.poke(false.B)
             dut.io.wdata.poke(0.U)
             dut.io.rdata.expect(BigInt("1234", 16).U)
             dut.io.valid.poke(false.B)
+        }
+    }
+
+    test("CSRFile exports memory privilege controls for S-mode and MPRV data accesses") {
+        simulate(new CSRFile(xlen, hartID = 0)) { dut =>
+            init(dut)
+
+            writeCsr(dut, CSR.MSTATUS, mstatusMxr | mstatusSum)
+            dut.io.mem_cfg_out.priv.expect(PrivilegeLevel.Machine)
+            dut.io.mem_cfg_out.data_priv.expect(PrivilegeLevel.Machine)
+            dut.io.mem_cfg_out.mxr.expect(true.B)
+            dut.io.mem_cfg_out.sum.expect(true.B)
+            dut.io.mem_cfg_out.mprv.expect(false.B)
+
+            writeCsr(dut, CSR.SSTATUS, mstatusMxr)
+            dut.io.mem_cfg_out.mxr.expect(true.B)
+            dut.io.mem_cfg_out.sum.expect(false.B)
+            dut.io.addr.poke(CSR.SSTATUS)
+            dut.io.rdata.expect(mstatusMxr.U)
+
+            writeCsr(dut, CSR.MSTATUS, mstatusMprv | mstatusMppS | mstatusMxr | mstatusSum)
+            dut.io.mem_cfg_out.priv.expect(PrivilegeLevel.Machine)
+            dut.io.mem_cfg_out.data_priv.expect(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg_out.mxr.expect(true.B)
+            dut.io.mem_cfg_out.sum.expect(true.B)
+            dut.io.mem_cfg_out.mprv.expect(true.B)
         }
     }
 

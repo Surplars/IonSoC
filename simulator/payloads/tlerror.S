@@ -11,7 +11,7 @@ _start:
 
     # Use a truly unmapped address so the crossbar local error responder must
     # return a denied TileLink response and raise load access fault.
-    li   t0, 0x40000000
+    li   t0, 0x90000000
     ld   t1, 0(t0)
 
 fail_no_trap:
@@ -22,13 +22,14 @@ fail_no_trap:
     li   a0, 1
     j    fail_no_trap
 
+.balign 4
 trap_handler:
     csrr t0, mcause
     li   t1, 5
     bne  t0, t1, fail_bad_trap
 
     csrr t0, mtval
-    li   t1, 0x40000000
+    li   t1, 0x90000000
     bne  t0, t1, fail_bad_trap
 
     li   t0, 0x10010000

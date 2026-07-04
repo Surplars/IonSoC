@@ -50,9 +50,9 @@ object FirmwareTopMain extends App {
 
 object DifftestTopMain extends App {
     EmitHelper.emit(
-        DifftestModule.top(
-            new IonSoCDifftest(
-                SoCProfiles.BareMetalMCU,
+            DifftestModule.top(
+                new IonSoCDifftest(
+                SoCProfiles.BareMetalMCU.copy(mmu = true),
                 ISAProfiles.RV64IMACB,
                 "simulator/build/payload/payload_sram.hex"
             )

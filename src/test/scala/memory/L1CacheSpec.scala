@@ -40,7 +40,7 @@ class UncachedDeniedHarness(params: TLParams) extends Module {
     error.io.tl <> bridge.io.bus
 }
 
-class CacheRamHarness(params: TLParams) extends Module {
+class CacheRamHarness(params: TLParams, nSets: Int = 4) extends Module {
     val io = IO(new Bundle {
         val req  = Flipped(Decoupled(new soc.memory.CacheReq(params.addrWidth, params.dataWidth)))
         val resp = Decoupled(new soc.memory.CacheResp(params.dataWidth))
@@ -51,7 +51,7 @@ class CacheRamHarness(params: TLParams) extends Module {
         val seenRelease = Output(Bool())
     })
 
-    val cache = Module(new L1Cache(params, nSets = 4))
+    val cache = Module(new L1Cache(params, nSets = nSets))
     val ram = Module(new TLRAM(params, sizeBytes = 4096))
 
     val seenAcquire = RegInit(false.B)
@@ -296,7 +296,7 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
 
     private def issueInvalidate(dut: CacheRamHarness, maxCycles: Int = 80): Unit = {
         dut.io.invalidate.valid.poke(true.B)
-        dut.io.invalidate.bits.poke(true.B)
+        dut.io.invalidate.bits.poke(false.B)
         dut.io.invalidate.ready.expect(true.B)
         dut.clock.step()
         dut.io.invalidate.valid.poke(false.B)
@@ -430,6 +430,20 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
             pokeReq(dut, addr = 0x80, cmd = CacheCmd.Read)
             issueReq(dut)
             assert(waitResp(dut, maxCycles = 40) == BigInt("cafebabedeadbeef", 16))
+        }
+    }
+
+    test("Cache drop-only invalidate completes without scanning every set") {
+        simulate(new CacheRamHarness(params, nSets = 512)) { dut =>
+            init(dut)
+
+            dut.io.invalidate.valid.poke(true.B)
+            dut.io.invalidate.bits.poke(true.B)
+            dut.io.invalidate.ready.expect(true.B)
+            dut.clock.step()
+            dut.io.invalidate.valid.poke(false.B)
+
+            waitResp(dut, maxCycles = 16)
         }
     }
 

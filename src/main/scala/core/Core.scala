@@ -151,8 +151,12 @@ class Core(
     }
 
     val fenceIPending = RegInit(false.B)
+    val fenceIDcacheIssued = RegInit(false.B)
+    val fenceIDcacheDone = RegInit(false.B)
     val fenceIFlushIssued = RegInit(false.B)
     val fenceIStart = fenceIReq && !fenceIPending && !fenceIFlushIssued
+    val fenceIDcacheFlushValid = WireInit(false.B)
+    val fenceIDcacheAck = WireInit(false.B)
     val fenceIInvalidateFire = WireInit(false.B)
     val fenceIAck = WireInit(false.B)
 
@@ -160,6 +164,18 @@ class Core(
         fenceIPending := false.B
     }.elsewhen(fenceIStart) {
         fenceIPending := true.B
+    }
+    when(fenceIAck) {
+        fenceIDcacheIssued := false.B
+        fenceIDcacheDone := false.B
+    }.elsewhen(fenceIDcacheAck) {
+        fenceIDcacheIssued := false.B
+        fenceIDcacheDone := true.B
+    }.elsewhen(fenceIDcacheFlushValid && dcache.io.invalidate.fire) {
+        fenceIDcacheIssued := true.B
+    }.elsewhen(fenceIStart) {
+        fenceIDcacheIssued := false.B
+        fenceIDcacheDone := !hasDCache.B
     }
     when(fenceIAck) {
         fenceIFlushIssued := false.B
@@ -174,6 +190,10 @@ class Core(
     dontTouch(fenceIReq)
     dontTouch(fenceIStart)
     dontTouch(fenceIPending)
+    dontTouch(fenceIDcacheIssued)
+    dontTouch(fenceIDcacheDone)
+    dontTouch(fenceIDcacheFlushValid)
+    dontTouch(fenceIDcacheAck)
     dontTouch(fenceIFlushIssued)
     dontTouch(fenceIInvalidateFire)
     dontTouch(fenceIAck)
@@ -182,11 +202,15 @@ class Core(
 
     dcache.io.cpu <> lsu.io.dcache
     val debugDcacheInvalidateValid = debugDcachePending && !debugDcacheIssued
-    dcache.io.invalidate.valid := hasDCache.B && debugDcacheInvalidateValid
+    fenceIDcacheFlushValid := hasDCache.B && fenceIPending && !fenceIDcacheDone && !fenceIDcacheIssued
+    dcache.io.invalidate.valid := hasDCache.B && (fenceIDcacheFlushValid || debugDcacheInvalidateValid)
     dcache.io.invalidate.bits := false.B
-    when(debugDcacheInvalidateValid && dcache.io.invalidate.fire) {
+    when(fenceIDcacheFlushValid && dcache.io.invalidate.fire) {
+        fenceIDcacheIssued := true.B
+    }.elsewhen(debugDcacheInvalidateValid && dcache.io.invalidate.fire) {
         debugDcacheIssued := true.B
     }
+    fenceIDcacheAck := fenceIDcacheIssued && dcache.io.cpu.resp.fire
     when(debugDcachePending && debugDcacheIssued && dcache.io.cpu.resp.fire) {
         debugDcacheErr := dcache.io.cpu.resp.bits.err
         debugDcacheAck := true.B
@@ -228,7 +252,7 @@ class Core(
         ifetch.io.cache.resp.valid := !debugIcacheUsesPort && cache.io.cpu.resp.valid
         ifetch.io.cache.resp.bits := cache.io.cpu.resp.bits
         cache.io.cpu.resp.ready := Mux(debugIcacheUsesPort, debugIcacheRespReady, ifetch.io.cache.resp.ready)
-        cache.io.invalidate.valid := (fenceIStart || fenceIPending) && !fenceIFlushIssued
+        cache.io.invalidate.valid := fenceIPending && fenceIDcacheDone && !fenceIFlushIssued
         cache.io.invalidate.bits := true.B
         fenceIInvalidateFire := cache.io.invalidate.fire
         fenceIAck := fenceIFlushIssued && cache.io.cpu.resp.fire
@@ -244,7 +268,7 @@ class Core(
         ifetch.io.cache.resp.valid := false.B
         ifetch.io.cache.resp.bits.rdata := 0.U
         ifetch.io.cache.resp.bits.err := false.B
-        fenceIAck := fenceIPending || fenceIStart
+        fenceIAck := fenceIPending && fenceIDcacheDone
         when(debugIcachePending) {
             debugIcacheAck := true.B
             debugIcacheErr := false.B
@@ -348,9 +372,11 @@ class Core(
     csr.io.stip := io.stip
     csr.io.seip := io.seip
 
-	    // Combine pipeline traps with external interrupts. External interrupts are
+	    // Combine pipeline traps with frontend traps and external interrupts.
+        // External interrupts are
 	    // latched before redirect so CSR and PC consume the same trap PC.
 	    val has_pipeline_trap = lsu.io.trap_info_out.valid
+        val has_fetch_trap    = ifetch.io.trap_info.valid
 	    val has_ret           = lsu.io.trap_info_out.is_ret && lsu.io.valid_out
         val retConsumed       = RegInit(false.B)
 	    val ret_redirect      = has_ret && !retConsumed
@@ -363,17 +389,21 @@ class Core(
         val interruptPc      = RegInit(0.U(XLEN.W))
         val interruptCause   = RegInit(0.U(XLEN.W))
         val interruptTarget  = RegInit(0.U(XLEN.W))
-        val interrupt_fire   = interruptPending && !pipe_stall && !has_pipeline_trap && !ret_redirect
-        val interrupt_detect = csr.io.interrupt && !pipe_stall && !has_pipeline_trap && !ret_redirect && !interruptPending
+        val interrupt_fire =
+            interruptPending && !pipe_stall && !has_pipeline_trap && !has_fetch_trap && !ret_redirect
+        val interrupt_detect =
+            csr.io.interrupt && !pipe_stall && !has_pipeline_trap && !has_fetch_trap && !ret_redirect && !interruptPending
+        val interruptResumePc =
+            Mux(alu.io.br_info.valid && alu.io.br_info.redirect, alu.io.br_info.target, pc.io.pc_out)
         when(interrupt_fire) {
             interruptPending := false.B
         }.elsewhen(interrupt_detect) {
             interruptPending := true.B
-            interruptPc      := pc.io.pc_out
+            interruptPc      := interruptResumePc
             interruptCause   := csr.io.interrupt_cause
             interruptTarget  := csr.io.tvec_out
         }
-	    val combined_trap     = has_pipeline_trap || interrupt_fire
+	    val combined_trap     = has_pipeline_trap || has_fetch_trap || interrupt_fire
 	    val redirect_flush    = combined_trap || ret_redirect
         frontend_flush         := redirect_flush || fenceIActive || debugIcachePending
         val pipeline_flush    = frontend_flush
@@ -386,7 +416,7 @@ class Core(
     io.fetch_en      := pc.io.fetch_en
     pc.io.stall      := ifetch.io.fetch_stall || !ifetchQueueReady || fenceIHold || debugHalted || debugCacheHold
 	    pc.io.trap_valid := combined_trap
-    pc.io.trap_pc    := Mux(has_pipeline_trap, csr.io.tvec_out, interruptTarget)
+    pc.io.trap_pc    := Mux(has_pipeline_trap || has_fetch_trap, csr.io.tvec_out, interruptTarget)
     pc.io.trap_ret   := ret_redirect
     pc.io.trap_epc   := csr.io.epc_out
     pc.io.instr_len  := ifetch.io.pc_step_len
@@ -449,8 +479,16 @@ class Core(
     io.debug_commit_wdest := wb.io.reg_wb.rd
     io.debug_commit_wdata := wb.io.reg_wb.data
     io.debug_commit_skip := wb.io.commit_skip
-    val archEventCause = Mux(has_pipeline_trap, lsu.io.trap_info_out.cause, interruptCause)
-    val archEventPc = Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, interruptPc)
+    val archEventCause = Mux(
+        has_pipeline_trap,
+        lsu.io.trap_info_out.cause,
+        Mux(has_fetch_trap, ifetch.io.trap_info.cause, interruptCause)
+    )
+    val archEventPc = Mux(
+        has_pipeline_trap,
+        lsu.io.trap_info_out.pc,
+        Mux(has_fetch_trap, ifetch.io.trap_info.pc, interruptPc)
+    )
     val archEventInstr = Mux(
         has_pipeline_trap && lsu.io.trap_info_out.cause === MCause.IllegalInstr,
         lsu.io.trap_info_out.value(31, 0),
@@ -501,9 +539,21 @@ class Core(
     io.debug_csr_snapshot := csr.io.state_snapshot
     csr.io.trap_valid := combined_trap
     // Exceptions take priority over interrupts for pc/cause
-    csr.io.trap_pc    := Mux(has_pipeline_trap, lsu.io.trap_info_out.pc, interruptPc)
-    csr.io.trap_cause := Mux(has_pipeline_trap, lsu.io.trap_info_out.cause, interruptCause)
-    csr.io.trap_value := Mux(has_pipeline_trap, lsu.io.trap_info_out.value, 0.U)
+    csr.io.trap_pc := Mux(
+        has_pipeline_trap,
+        lsu.io.trap_info_out.pc,
+        Mux(has_fetch_trap, ifetch.io.trap_info.pc, interruptPc)
+    )
+    csr.io.trap_cause := Mux(
+        has_pipeline_trap,
+        lsu.io.trap_info_out.cause,
+        Mux(has_fetch_trap, ifetch.io.trap_info.cause, interruptCause)
+    )
+    csr.io.trap_value := Mux(
+        has_pipeline_trap,
+        lsu.io.trap_info_out.value,
+        Mux(has_fetch_trap, ifetch.io.trap_info.value, 0.U)
+    )
     csr.io.is_ret     := ret_redirect
     csr.io.ret_type   := lsu.io.trap_info_out.ret_type
     csr.io.ie_out     := DontCare
@@ -525,6 +575,7 @@ class Core(
     ifetch.io.stall         := !ifetchQueueReady || debugDcachePending || (debugHalted && !debugIcachePending)
     ifetch.io.pc            := pc.io.pc_out
     ifetch.io.instr_in      := io.instr
+    ifetch.io.mem_cfg       := csr.io.mem_cfg_out
     ifetch.io.pred_taken_in := pc.io.pred_taken
     ifetch.io.pred_target_in := pc.io.pred_target
     ifetch.io.redirect      := pc.io.redirect

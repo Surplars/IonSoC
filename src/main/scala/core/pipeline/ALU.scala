@@ -91,10 +91,10 @@ class ALU(XLEN: Int = 64) extends Module {
         op1         := io.csr_rdata
     }.elsewhen(io.decoded_in.rs1 === 0.U) { // 立即数指令
         op1 := io.decoded_in.op1
-    }.elsewhen(fwdMatch(io.decoded_in.rs1, io.fwd.load_valid, io.fwd.load_rd)) {
-        op1 := io.fwd.load_data
     }.elsewhen(fwdMatch(io.decoded_in.rs1, exBypassValid, exBypassRd)) {
         op1 := exBypassData
+    }.elsewhen(fwdMatch(io.decoded_in.rs1, io.fwd.load_valid, io.fwd.load_rd)) {
+        op1 := io.fwd.load_data
     }.elsewhen(fwdMatch(io.decoded_in.rs1, io.fwd.reg_write, io.fwd.rd)) {
         op1 := io.fwd.alu_result
     }.elsewhen(fwdMatch(io.decoded_in.rs1, io.fwd.prev_reg_write, io.fwd.prev_rd)) {
@@ -110,10 +110,10 @@ class ALU(XLEN: Int = 64) extends Module {
         op2 := Cat(Fill(XLEN - 5, 0.U), io.decoded_in.rs2) // CSR zimm 指令，0扩展
     }.elsewhen(io.decoded_in.rs2 === 0.U) { // 立即数指令
         op2 := io.decoded_in.op2
-    }.elsewhen(fwdMatch(io.decoded_in.rs2, io.fwd.load_valid, io.fwd.load_rd)) {
-        op2 := io.fwd.load_data
     }.elsewhen(fwdMatch(io.decoded_in.rs2, exBypassValid, exBypassRd)) {
         op2 := exBypassData
+    }.elsewhen(fwdMatch(io.decoded_in.rs2, io.fwd.load_valid, io.fwd.load_rd)) {
+        op2 := io.fwd.load_data
     }.elsewhen(fwdMatch(io.decoded_in.rs2, io.fwd.reg_write, io.fwd.rd)) {
         op2 := io.fwd.alu_result
     }.elsewhen(fwdMatch(io.decoded_in.rs2, io.fwd.prev_reg_write, io.fwd.prev_rd)) {
@@ -419,7 +419,6 @@ class ALU(XLEN: Int = 64) extends Module {
     dontTouch(exBypassValid)
     dontTouch(exBypassRd)
     dontTouch(exBypassData)
-
     // Keep redirect metadata in the same pipeline slot as pc_out/alu_out.
     // Driving PC redirect directly from the current decode wires can mix a
     // previous ALU instruction (for example AUIPC) with the next instruction's

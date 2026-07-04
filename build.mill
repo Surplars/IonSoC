@@ -1,14 +1,6 @@
-import os.Path
-// import Mill dependency
-import mill._
-import mill.define.Sources
-import mill.modules.Util
-import mill.scalalib.scalafmt.ScalafmtModule
-import mill.scalalib.TestModule.ScalaTest
-import scalalib._
-// support BSP
-import mill.bsp._
-import $ivy.`org.chipsalliance::firtool-resolver:2.0.1`
+//| mvnDeps: ["org.chipsalliance:firtool-resolver_2.13:2.0.1"]
+
+import mill.*, scalalib.*
 
 // Note: This project requires .mill-jvm-opts file containing:
 //   -Dchisel.project.root=${PWD}
@@ -19,30 +11,30 @@ import $ivy.`org.chipsalliance::firtool-resolver:2.0.1`
 val pwd                 = os.Path(sys.env("MILL_WORKSPACE_ROOT"))
 val defaultScalaVersion = "2.13.17"
 
-object ivys {
+object deps {
     val scala         = defaultScalaVersion
     val chiselVersion = "7.3.0"
 
-    val chisel       = ivy"org.chipsalliance::chisel:$chiselVersion"
-    val chiselPlugin = ivy"org.chipsalliance:::chisel-plugin:$chiselVersion"
-    val scalatest    = ivy"org.scalatest::scalatest:3.2.19"
+    val chisel       = mvn"org.chipsalliance::chisel:$chiselVersion"
+    val chiselPlugin = mvn"org.chipsalliance:::chisel-plugin:$chiselVersion"
+    val scalatest    = mvn"org.scalatest::scalatest:3.2.19"
 }
 
 trait CommonModule extends ScalaModule {
-    override def scalaVersion = T { ivys.scala }
+    override def scalaVersion = deps.scala
 
     override def scalacOptions = Seq("-Ymacro-annotations")
 }
 
 trait HasChisel extends ScalaModule {
-    override def ivyDeps             = T { Agg(ivys.chisel) }
-    override def scalacPluginIvyDeps = T { Agg(ivys.chiselPlugin) }
+    override def mvnDeps             = Seq(deps.chisel)
+    override def scalacPluginMvnDeps = Seq(deps.chiselPlugin)
 }
 
 trait CommonNS extends SbtModule with CommonModule with HasChisel
 
 object DifftestLib extends CommonNS {
-    override def millSourcePath = pwd / "difftest"
+    override def moduleDir = pwd / "difftest"
     override def scalacOptions = Seq(
         "-Ymacro-annotations",
         "-feature",
@@ -51,7 +43,7 @@ object DifftestLib extends CommonNS {
 }
 
 object `IonSoC` extends CommonNS {
-    override def millSourcePath = pwd
+    override def moduleDir = pwd
 
     override def scalacOptions = Seq(
         "-language:reflectiveCalls",
@@ -64,7 +56,7 @@ object `IonSoC` extends CommonNS {
     override def moduleDeps = super.moduleDeps ++ Seq(DifftestLib)
 
     object test extends SbtTests with TestModule.ScalaTest {
-        override def ivyDeps = T { super.ivyDeps() ++ Agg(ivys.scalatest) }
+        override def mvnDeps = super.mvnDeps() ++ Seq(deps.scalatest)
     }
 
 }

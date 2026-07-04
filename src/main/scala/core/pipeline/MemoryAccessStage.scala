@@ -22,7 +22,9 @@ class MemoryAccessStage(XLEN: Int = 64, features: SoCFeatures = Config.features)
     val inSram   = Config.sramRegionFor(features).contains(io.in.vaddr, XLEN)
     val inDevice = Config.deviceRegions.map(inRegion).reduce(_ || _)
 
-    val translateEnabled = io.in.valid && io.cfg.mmu_en && (io.cfg.satp =/= 0.U) && !io.in.attrs.device
+    val satpModeSv39 = io.cfg.satp(63, 60) === 8.U
+    val translateEnabled = io.in.valid && io.cfg.mmu_en && satpModeSv39 &&
+        io.cfg.data_priv =/= PrivilegeLevel.Machine && !io.in.attrs.device
     val isLoad = io.in.op === MemOpType.Load || io.in.op === MemOpType.LR
     val isStore = io.in.op === MemOpType.Store || io.in.op === MemOpType.SC || io.in.op === MemOpType.AMO
 
@@ -70,7 +72,7 @@ class MemoryAccessStage(XLEN: Int = 64, features: SoCFeatures = Config.features)
     val matchedPermOk = pmpPermOk(matchedEntry)
     val matchedLocked = pmpLocked(matchedEntry)
     val pmpFault = io.in.valid && (isLoad || isStore) && Mux(
-        io.cfg.priv === PrivilegeLevel.Machine,
+        io.cfg.data_priv === PrivilegeLevel.Machine,
         pmpAnyMatch && matchedLocked && !matchedPermOk,
         !pmpAnyMatch || !matchedPermOk
     )

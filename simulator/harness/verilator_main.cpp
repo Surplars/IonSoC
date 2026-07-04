@@ -66,6 +66,17 @@ static uint64_t env_u64(const char *name, uint64_t fallback)
 	return end != value ? parsed : fallback;
 }
 
+static bool would_block_errno(int err)
+{
+	if (err == EAGAIN)
+		return true;
+#if EWOULDBLOCK != EAGAIN
+	if (err == EWOULDBLOCK)
+		return true;
+#endif
+	return false;
+}
+
 struct SimOptions
 {
 	std::string elf_path = kPayloadElfPath;
@@ -215,7 +226,7 @@ class UartStdio
 			dut->io_uart_rx_valid = 1;
 			dut->io_uart_rx_byte = ch;
 		}
-		else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+		else if (n < 0 && !would_block_errno(errno))
 		{
 			perror("uart stdin read");
 		}
@@ -359,7 +370,7 @@ class RemoteBitbang
 			client_fd_ = -1;
 			return;
 		}
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
+		if (would_block_errno(errno))
 			return;
 		perror("jtag recv");
 		close(client_fd_);
@@ -384,7 +395,7 @@ class RemoteBitbang
 			set_nonblock(client_fd_);
 			printf("[jtag]: remote-bitbang client connected\n");
 		}
-		else if (errno != EAGAIN && errno != EWOULDBLOCK)
+		else if (!would_block_errno(errno))
 		{
 			perror("jtag accept");
 		}
@@ -524,6 +535,8 @@ class FlashImage
 
 int main(int argc, char **argv, char **env)
 {
+	(void)env;
+	Verilated::commandArgs(argc, argv);
 	printf("\n\n");
 	bool all_pass = true;
 	if (env_enabled("ION_JTAG_ONLY"))
@@ -604,7 +617,8 @@ int main(int argc, char **argv, char **env)
 		opts.sram_size = (size_t)env_u64("ION_SRAM_SIZE", DEFAULT_FIRMWARE_SRAM_SIZE);
 		opts.dtb_addr = env_u64("ION_DTB_ADDR", opts.sram_base + 0x00f00000);
 		opts.require_sram_entry = true;
-		opts.require_payload_entry = true;
+		opts.require_payload_entry = std::getenv("ION_REQUIRE_PAYLOAD_ENTRY") == nullptr ||
+		                             env_enabled("ION_REQUIRE_PAYLOAD_ENTRY");
 		opts.inject_boot_args = true;
 		opts.boot_a0 = env_u64("ION_BOOT_A0", 0);
 		opts.boot_a1 = env_u64("ION_BOOT_A1", opts.dtb_addr);
@@ -1040,6 +1054,18 @@ bool run_sim(const SimOptions &opts)
 
 	sim_time = 0;
 
+	dut->clock = 0;
+	dut->reset = 1;
+	clear_ext_irq_sources(dut);
+	dut->io_uart_rx_valid = 0;
+	dut->io_uart_rx_byte = 0;
+	dut->io_jtag_tms = 1;
+	dut->io_jtag_tck = 0;
+	dut->io_jtag_tdi = 0;
+	// Run Verilator initial blocks before preloading memories; ROM initial
+	// blocks clear their arrays and would otherwise wipe harness-loaded ELFs.
+	dut->eval();
+
 	ram_init(dut, opts.sram_size);
 
 	FlashImage flash;
@@ -1301,7 +1327,6 @@ bool run_sim(const SimOptions &opts)
 				uint64_t a7_trace = dut->rootp->SimTop__DOT__core__DOT__register__DOT__regFile_ext__DOT__Memory[17];
 				printf("[pc-escape %6" PRIu64 "] prev_pc=0x%016" PRIx64 " pc=0x%016" PRIx64
 				       " instr=0x%08x pc_reg=0x%016" PRIx64
-				       " pc_red=%u pc_tgt=0x%016" PRIx64
 				       " alu_br_v=%u alu_br_t=%u alu_br_red=%u alu_br_pc=0x%016" PRIx64 " alu_br_tgt=0x%016" PRIx64
 				       " alu_r_br_v=%u alu_r_br_t=%u alu_r_br_red=%u alu_r_br_pc=0x%016" PRIx64 " alu_r_br_tgt=0x%016" PRIx64
 				       " alu_v=%u alu_pc=0x%016" PRIx64 " alu_rd=%u alu_w=%u alu_res=0x%016" PRIx64
@@ -1315,8 +1340,6 @@ bool run_sim(const SimOptions &opts)
 				       pc_now,
 				       (uint32_t)dut->io_debug_instr,
 				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT__pc__DOT__ProgramCounter,
-				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT____Vcellinp__pc__io_br_info_redirect,
-				       (uint64_t)dut->rootp->SimTop__DOT__core__DOT____Vcellinp__pc__io_br_info_target,
 				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_valid,
 				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_taken,
 				       (uint32_t)dut->rootp->SimTop__DOT__core__DOT___alu_io_br_info_redirect,

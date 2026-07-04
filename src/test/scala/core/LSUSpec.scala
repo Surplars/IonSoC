@@ -9,6 +9,15 @@ import soc.memory.cache.CacheCmd
 
 class LSUSpec extends AnyFunSuite with ChiselSim {
     private val pmpNapotRwx = 0x1f
+    private val V = 1 << 0
+    private val R = 1 << 1
+    private val W = 1 << 2
+    private val A = 1 << 6
+    private val D = 1 << 7
+
+    private def pte(ppn: BigInt, flags: Int): BigInt = (ppn << 10) | BigInt(flags)
+    private def ppn(pa: BigInt): BigInt = pa >> 12
+    private def satp(root: BigInt): BigInt = (BigInt(8) << 60) | (root >> 12)
 
     private def init(dut: LSU): Unit = {
         dut.io.pc_in.poke("h80000000".U)
@@ -22,6 +31,8 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         dut.io.trap_info_in.ret_type.poke(TrapReturnType.None)
 
         dut.io.alu_out.result.poke(0.U)
+        dut.io.alu_out.instr.poke(0.U)
+        dut.io.alu_out.instr_len.poke(0.U)
         dut.io.alu_out.funct3.poke(0.U)
         dut.io.alu_out.rd.poke(0.U)
         dut.io.alu_out.reg_write.poke(false.B)
@@ -47,6 +58,7 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         dut.io.alu_out.mem.attrs.executable.poke(false.B)
 
         dut.io.mem_cfg.priv.poke(3.U)
+        dut.io.mem_cfg.data_priv.poke(3.U)
         dut.io.mem_cfg.mmu_en.poke(false.B)
         dut.io.mem_cfg.satp.poke(0.U)
         dut.io.mem_cfg.pmpcfg0.poke(0.U)
@@ -72,6 +84,7 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
 
     private def driveStore(dut: LSU, addr: BigInt, data: BigInt): Unit = {
         dut.io.valid_in.poke(true.B)
+        dut.io.alu_out.result.poke(data.U)
         dut.io.alu_out.mem.valid.poke(true.B)
         dut.io.alu_out.mem.op.poke(MemOpType.Store)
         dut.io.alu_out.mem.vaddr.poke(addr.U)
@@ -123,6 +136,73 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         dut.io.alu_out.mem.op.poke(MemOpType.None)
         dut.io.alu_out.mem.mask.poke(0.U)
         dut.io.alu_out.mem.wdata.poke(0.U)
+    }
+
+    private def expectDCacheRead(dut: LSU, addr: BigInt, maxCycles: Int = 8): Unit = {
+        var seen = false
+        var cycles = 0
+        while (!seen && cycles < maxCycles) {
+            if (dut.io.dcache.req.valid.peek().litToBoolean) {
+                dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+                dut.io.dcache.req.bits.addr.expect(addr.U)
+                seen = true
+            } else {
+                dut.clock.step()
+                cycles += 1
+            }
+        }
+        if (!seen) {
+            dut.io.dcache.req.valid.expect(true.B)
+        }
+    }
+
+    private def acceptDCacheRead(dut: LSU, data: BigInt, err: Boolean = false): Unit = {
+        dut.clock.step()
+        dut.io.dcache.resp.valid.poke(true.B)
+        dut.io.dcache.resp.bits.rdata.poke(data.U)
+        dut.io.dcache.resp.bits.err.poke(err.B)
+        dut.clock.step()
+        dut.io.dcache.resp.valid.poke(false.B)
+        dut.io.dcache.resp.bits.rdata.poke(0.U)
+        dut.io.dcache.resp.bits.err.poke(false.B)
+    }
+
+    private def expectDCacheWrite(dut: LSU, addr: BigInt, data: BigInt, maxCycles: Int = 8): Unit = {
+        var seen = false
+        var cycles = 0
+        while (!seen && cycles < maxCycles) {
+            if (dut.io.dcache.req.valid.peek().litToBoolean) {
+                dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+                dut.io.dcache.req.bits.addr.expect(addr.U)
+                dut.io.dcache.req.bits.wdata.expect(data.U)
+                seen = true
+            } else {
+                dut.clock.step()
+                cycles += 1
+            }
+        }
+        if (!seen) {
+            dut.io.dcache.req.valid.expect(true.B)
+        }
+    }
+
+    private def expectTrap(dut: LSU, cause: UInt, value: BigInt, pc: BigInt, maxCycles: Int = 8): Unit = {
+        var seen = false
+        var cycles = 0
+        while (!seen && cycles < maxCycles) {
+            if (dut.io.trap_info_out.valid.peek().litToBoolean) {
+                dut.io.trap_info_out.pc.expect(pc.U)
+                dut.io.trap_info_out.cause.expect(cause)
+                dut.io.trap_info_out.value.expect(value.U)
+                seen = true
+            } else {
+                dut.clock.step()
+                cycles += 1
+            }
+        }
+        if (!seen) {
+            dut.io.trap_info_out.valid.expect(true.B)
+        }
     }
 
     test("LSU forwards a load from the newest store buffer entry without DCache access") {
@@ -290,11 +370,398 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("LSU keeps store retire packet coherent when following load hits store buffer") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.pc_in.poke(BigInt("80000056", 16).U)
+            dut.io.alu_out.instr.poke(BigInt("0062b023", 16).U) // sd t1, 0(t0)
+            dut.io.alu_out.instr_len.poke(0.U)
+            dut.io.alu_out.rd.poke(0.U)
+            dut.io.alu_out.reg_write.poke(false.B)
+            driveStore(dut, BigInt("10000000", 16), BigInt("1122334455667788", 16))
+            dut.clock.step()
+
+            dut.io.pc_in.poke(BigInt("8000005a", 16).U)
+            dut.io.alu_out.instr.poke(BigInt("0002b383", 16).U) // ld t2, 0(t0)
+            dut.io.alu_out.instr_len.poke(0.U)
+            dut.io.alu_out.rd.poke(7.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, BigInt("10000000", 16))
+
+            dut.io.valid_out.expect(true.B)
+            dut.io.pc_out.expect(BigInt("80000056", 16).U)
+            dut.io.mem_out.instr.expect(BigInt("0062b023", 16).U)
+            dut.io.mem_out.reg_write.expect(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data_rd.expect(7.U)
+            dut.io.load_data.expect(BigInt("1122334455667788", 16).U)
+        }
+    }
+
+    test("LSU handles cacheable misaligned halfword loads within one beat") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.pc_in.poke(BigInt("80000060", 16).U)
+            dut.io.alu_out.rd.poke(7.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, BigInt("10000001", 16))
+            dut.io.alu_out.mem.size.poke(1.U)
+            dut.io.alu_out.mem.mask.poke("h06".U)
+            dut.io.alu_out.mem.signed.poke(false.B)
+
+            expectDCacheRead(dut, BigInt("10000001", 16))
+            acceptDCacheRead(dut, BigInt("0706050403020100", 16))
+
+            dut.io.trap_info_out.valid.expect(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data_rd.expect(7.U)
+            dut.io.load_data.expect(BigInt("0201", 16).U)
+        }
+    }
+
+    test("LSU handles cacheable misaligned word loads across two beats") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.pc_in.poke(BigInt("80000064", 16).U)
+            dut.io.alu_out.rd.poke(7.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, BigInt("10000006", 16))
+            dut.io.alu_out.mem.size.poke(2.U)
+            dut.io.alu_out.mem.mask.poke("hc0".U)
+            dut.io.alu_out.mem.signed.poke(false.B)
+
+            expectDCacheRead(dut, BigInt("10000000", 16))
+            acceptDCacheRead(dut, BigInt("0706050403020100", 16))
+            expectDCacheRead(dut, BigInt("10000008", 16))
+            acceptDCacheRead(dut, BigInt("0f0e0d0c0b0a0908", 16))
+
+            dut.io.trap_info_out.valid.expect(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data_rd.expect(7.U)
+            dut.io.load_data.expect(BigInt("09080706", 16).U)
+        }
+    }
+
+    test("LSU handles cacheable misaligned halfword stores within one beat") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.pc_in.poke(BigInt("80000068", 16).U)
+            driveStore(dut, BigInt("10000001", 16), BigInt("8180", 16))
+            dut.io.alu_out.mem.size.poke(1.U)
+            dut.io.alu_out.mem.mask.poke("h06".U)
+
+            dut.clock.step()
+            driveNoMem(dut)
+
+            expectDCacheWrite(dut, BigInt("10000001", 16), BigInt("818000", 16))
+            dut.io.dcache.req.bits.mask.expect("h06".U)
+            dut.io.trap_info_out.valid.expect(false.B)
+        }
+    }
+
+    test("LSU splits cacheable misaligned word stores across two beats") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.pc_in.poke(BigInt("8000006c", 16).U)
+            driveStore(dut, BigInt("10000006", 16), BigInt("83828180", 16))
+            dut.io.alu_out.mem.size.poke(2.U)
+            dut.io.alu_out.mem.mask.poke("hc0".U)
+
+            dut.io.stall_req.expect(true.B)
+            dut.clock.step()
+            driveNoMem(dut)
+
+            expectDCacheWrite(dut, BigInt("10000000", 16), BigInt("8180000000000000", 16))
+            dut.io.dcache.req.bits.mask.expect("hc0".U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            expectDCacheWrite(dut, BigInt("10000008", 16), BigInt("8382", 16))
+            dut.io.dcache.req.bits.mask.expect("h03".U)
+            dut.io.trap_info_out.valid.expect(false.B)
+        }
+    }
+
+    test("LSU retires cacheable split stores after both beats are queued") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            val pc = BigInt("80000070", 16)
+            val instr = BigInt("006430a3", 16) // sd t1, 1(s0)
+            val data = BigInt("a3a2a1a09f9e9d9c", 16)
+
+            dut.io.pc_in.poke(pc.U)
+            dut.io.alu_out.instr.poke(instr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+            dut.io.stall_req.expect(true.B)
+
+            dut.clock.step()
+            dut.io.pc_in.poke(pc.U)
+            dut.io.alu_out.instr.poke(instr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+            dut.io.stall_req.expect(true.B)
+
+            dut.clock.step()
+            dut.io.pc_in.poke(pc.U)
+            dut.io.alu_out.instr.poke(instr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+
+            dut.io.valid_out.expect(true.B)
+            dut.io.pc_out.expect(pc.U)
+            dut.io.mem_out.instr.expect(instr.U)
+            dut.io.mem_out.reg_write.expect(false.B)
+        }
+    }
+
+    test("LSU forwards narrow loads from a queued cacheable split store") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            val storePc = BigInt("80000074", 16)
+            val loadPc = BigInt("80000078", 16)
+            val storeInstr = BigInt("006430a3", 16) // sd t1, 1(s0)
+            val loadInstr = BigInt("00740e03", 16) // lb t3, 7(s0)
+            val data = BigInt("b7b6b5b4b3b2b1b0", 16)
+            val loadAddr = BigInt("10000007", 16)
+
+            dut.io.dcache.req.ready.poke(false.B)
+            dut.io.pc_in.poke(storePc.U)
+            dut.io.alu_out.instr.poke(storeInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+            dut.clock.step()
+
+            dut.io.pc_in.poke(storePc.U)
+            dut.io.alu_out.instr.poke(storeInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+            dut.clock.step()
+
+            dut.io.valid_out.expect(true.B)
+            dut.io.pc_out.expect(storePc.U)
+
+            dut.io.pc_in.poke(loadPc.U)
+            dut.io.alu_out.instr.poke(loadInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            dut.io.alu_out.rd.poke(28.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, loadAddr)
+            dut.io.alu_out.result.poke(loadAddr.U)
+            dut.io.alu_out.mem.size.poke(0.U)
+            dut.io.alu_out.mem.mask.poke("h80".U)
+            dut.io.alu_out.mem.signed.poke(true.B)
+            dut.clock.step()
+
+            dut.io.valid_out.expect(true.B)
+            dut.io.pc_out.expect(loadPc.U)
+            dut.io.mem_out.rd.expect(28.U)
+            dut.io.mem_out.reg_write.expect(true.B)
+            dut.io.mem_out.result.expect(BigInt("ffffffffffffffb6", 16).U)
+        }
+    }
+
+    test("LSU forwards narrow loads while a split store starts draining") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            val storePc = BigInt("80000084", 16)
+            val loadPc = BigInt("80000088", 16)
+            val storeInstr = BigInt("006430a3", 16) // sd t1, 1(s0)
+            val loadInstr = BigInt("00740e03", 16) // lb t3, 7(s0)
+            val data = BigInt("b7b6b5b4b3b2b1b0", 16)
+            val loadAddr = BigInt("10000007", 16)
+
+            dut.io.pc_in.poke(storePc.U)
+            dut.io.alu_out.instr.poke(storeInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+            dut.clock.step()
+
+            dut.io.pc_in.poke(storePc.U)
+            dut.io.alu_out.instr.poke(storeInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+            dut.clock.step()
+
+            dut.io.valid_out.expect(true.B)
+            dut.io.pc_out.expect(storePc.U)
+            dut.io.pc_in.poke(loadPc.U)
+            dut.io.alu_out.instr.poke(loadInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            dut.io.alu_out.rd.poke(28.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, loadAddr)
+            dut.io.alu_out.result.poke(loadAddr.U)
+            dut.io.alu_out.mem.size.poke(0.U)
+            dut.io.alu_out.mem.mask.poke("h80".U)
+            dut.io.alu_out.mem.signed.poke(true.B)
+            dut.clock.step()
+
+            dut.io.valid_out.expect(true.B)
+            dut.io.pc_out.expect(loadPc.U)
+            dut.io.mem_out.rd.expect(28.U)
+            dut.io.mem_out.reg_write.expect(true.B)
+            dut.io.mem_out.result.expect(BigInt("ffffffffffffffb6", 16).U)
+        }
+    }
+
+    test("LSU does not retire a stalled load with its address after split store drain") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            val storePc = BigInt("8000007c", 16)
+            val loadPc = BigInt("80000080", 16)
+            val storeInstr = BigInt("006430a3", 16) // sd t1, 1(s0)
+            val loadInstr = BigInt("00740e03", 16) // lb t3, 7(s0)
+            val data = BigInt("b7b6b5b4b3b2b1b0", 16)
+            val loadAddr = BigInt("10000007", 16)
+
+            dut.io.pc_in.poke(storePc.U)
+            dut.io.alu_out.instr.poke(storeInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+            dut.clock.step()
+
+            dut.io.pc_in.poke(storePc.U)
+            dut.io.alu_out.instr.poke(storeInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            driveStore(dut, BigInt("10000001", 16), data)
+            dut.clock.step()
+
+            driveNoMem(dut)
+            dut.clock.step()
+
+            dut.io.pc_in.poke(loadPc.U)
+            dut.io.alu_out.instr.poke(loadInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            dut.io.alu_out.rd.poke(28.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, loadAddr)
+            dut.io.alu_out.result.poke(loadAddr.U)
+            dut.io.alu_out.mem.size.poke(0.U)
+            dut.io.alu_out.mem.mask.poke("h80".U)
+            dut.io.alu_out.mem.signed.poke(true.B)
+            dut.io.stall_req.expect(true.B)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            dut.io.pc_in.poke(loadPc.U)
+            dut.io.alu_out.instr.poke(loadInstr.U)
+            dut.io.alu_out.instr_len.poke(0.U)
+            dut.io.alu_out.rd.poke(28.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, loadAddr)
+            dut.io.alu_out.result.poke(loadAddr.U)
+            dut.io.alu_out.mem.size.poke(0.U)
+            dut.io.alu_out.mem.mask.poke("h80".U)
+            dut.io.alu_out.mem.signed.poke(true.B)
+
+            var sawRead = false
+            var cycles = 0
+            while (!sawRead && cycles < 8) {
+                dut.io.valid_out.expect(false.B)
+                if (dut.io.dcache.req.valid.peek().litToBoolean) {
+                    val isWrite = dut.io.dcache.req.bits.cmd.peek().litValue == CacheCmd.Write.litValue
+                    if (isWrite) {
+                        dut.clock.step()
+                        dut.io.dcache.resp.valid.poke(true.B)
+                        dut.clock.step()
+                        dut.io.dcache.resp.valid.poke(false.B)
+                    } else {
+                        dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+                        dut.io.dcache.req.bits.addr.expect(loadAddr.U)
+                        sawRead = true
+                    }
+                } else {
+                    dut.clock.step()
+                }
+                cycles += 1
+            }
+            assert(sawRead, "expected stalled load to issue a DCache read after split store drains")
+        }
+    }
+
+    test("LSU does not retire a load with its address after waiting for store drain") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            val storePc = BigInt("8000008c", 16)
+            val loadPc = BigInt("80000090", 16)
+            val loadAddr = BigInt("10000008", 16)
+
+            dut.io.pc_in.poke(storePc.U)
+            driveStore(dut, BigInt("10000000", 16), BigInt("1122334455667788", 16))
+            dut.clock.step()
+
+            driveNoMem(dut)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.clock.step()
+
+            dut.io.pc_in.poke(loadPc.U)
+            dut.io.alu_out.rd.poke(7.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, loadAddr)
+            dut.io.alu_out.result.poke(loadAddr.U)
+            dut.io.stall_req.expect(true.B)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            dut.io.pc_in.poke(loadPc.U)
+            dut.io.alu_out.rd.poke(7.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, loadAddr)
+            dut.io.alu_out.result.poke(loadAddr.U)
+
+            dut.io.valid_out.expect(false.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.io.dcache.req.bits.addr.expect(loadAddr.U)
+        }
+    }
+
+    test("LSU stalls cache loads while an unrelated store remains queued") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            dut.io.dcache.req.ready.poke(false.B)
+            driveStore(dut, BigInt("10000000", 16), BigInt("1122334455667788", 16))
+            dut.clock.step()
+
+            dut.io.pc_in.poke(BigInt("80000094", 16).U)
+            dut.io.alu_out.rd.poke(7.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, BigInt("10000008", 16))
+            dut.io.alu_out.result.poke(BigInt("10000008", 16).U)
+
+            dut.io.stall_req.expect(true.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+        }
+    }
+
     test("LSU blocks supervisor memory access without a matching PMP entry") {
         simulate(new LSU(64)) { dut =>
             init(dut)
 
             dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
             dut.io.pc_in.poke("h80000100".U)
             driveLoad(dut, BigInt("10000000", 16))
             dut.io.dcache.req.valid.expect(false.B)
@@ -313,6 +780,7 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             init(dut)
 
             dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
             dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
             driveLoad(dut, BigInt("10000008", 16))
@@ -325,11 +793,292 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("LSU translates supervisor cache loads through Sv39 before issuing the data request") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val l1 = BigInt("40001000", 16)
+            val l0 = BigInt("40002000", 16)
+            val leafPa = BigInt("40003000", 16)
+            val va = BigInt("0000000012345678", 16)
+            val vpn0 = (va >> 12) & 0x1ff
+            val vpn1 = (va >> 21) & 0x1ff
+            val vpn2 = (va >> 30) & 0x1ff
+            val expectedPa = leafPa | (va & 0xfff)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
+            dut.io.pc_in.poke("h80000300".U)
+            dut.io.alu_out.rd.poke(6.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, va)
+
+            expectDCacheRead(dut, root + vpn2 * 8)
+            acceptDCacheRead(dut, pte(ppn(l1), V))
+            expectDCacheRead(dut, l1 + vpn1 * 8)
+            acceptDCacheRead(dut, pte(ppn(l0), V))
+            expectDCacheRead(dut, l0 + vpn0 * 8)
+            acceptDCacheRead(dut, pte(ppn(leafPa), V | R | W | A | D))
+
+            expectDCacheRead(dut, expectedPa)
+            dut.io.dcache.req.bits.vaddr.expect(va.U)
+            acceptDCacheRead(dut, BigInt("1122334455667788", 16))
+
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data_rd.expect(6.U)
+            dut.io.load_data.expect(BigInt("1122334455667788", 16))
+            dut.io.valid_out.expect(true.B)
+            dut.io.mem_out.rd.expect(6.U)
+            dut.io.mem_out.reg_write.expect(true.B)
+            dut.io.mem_out.result.expect(BigInt("1122334455667788", 16).U)
+        }
+    }
+
+    test("LSU bypasses Sv39 translation for machine-mode cache loads even when satp is active") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val addr = BigInt("10000048", 16)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Machine)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Machine)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.pc_in.poke("h80000340".U)
+            driveLoad(dut, addr)
+
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.io.dcache.req.bits.addr.expect(addr.U)
+        }
+    }
+
+    test("LSU translates MPRV machine-mode loads with supervisor data privilege") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val l1 = BigInt("40001000", 16)
+            val l0 = BigInt("40002000", 16)
+            val leafPa = BigInt("10005000", 16)
+            val va = BigInt("0000000040005000", 16)
+            val vpn0 = (va >> 12) & 0x1ff
+            val vpn1 = (va >> 21) & 0x1ff
+            val vpn2 = (va >> 30) & 0x1ff
+            val data = BigInt("0102030405060708", 16)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Machine)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mprv.poke(true.B)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
+            dut.io.pc_in.poke("h80000360".U)
+            dut.io.alu_out.rd.poke(8.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, va)
+
+            expectDCacheRead(dut, root + vpn2 * 8)
+            acceptDCacheRead(dut, pte(ppn(l1), V))
+            expectDCacheRead(dut, l1 + vpn1 * 8)
+            acceptDCacheRead(dut, pte(ppn(l0), V))
+            expectDCacheRead(dut, l0 + vpn0 * 8)
+            acceptDCacheRead(dut, pte(ppn(leafPa), V | R | W | A | D))
+
+            expectDCacheRead(dut, leafPa)
+            dut.io.dcache.req.bits.vaddr.expect(va.U)
+            acceptDCacheRead(dut, data)
+
+            dut.io.valid_out.expect(true.B)
+            dut.io.mem_out.rd.expect(8.U)
+            dut.io.mem_out.reg_write.expect(true.B)
+            dut.io.mem_out.result.expect(data.U)
+        }
+    }
+
+    test("LSU translates supervisor cache stores through Sv39 before draining to DCache") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val l1 = BigInt("40001000", 16)
+            val l0 = BigInt("40002000", 16)
+            val leafPa = BigInt("40003000", 16)
+            val va = BigInt("0000000012345678", 16)
+            val vpn0 = (va >> 12) & 0x1ff
+            val vpn1 = (va >> 21) & 0x1ff
+            val vpn2 = (va >> 30) & 0x1ff
+            val expectedPa = leafPa | (va & 0xfff)
+            val data = BigInt("cafebabedeadbeef", 16)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
+            dut.io.pc_in.poke("h80000380".U)
+            driveStore(dut, va, data)
+
+            expectDCacheRead(dut, root + vpn2 * 8)
+            acceptDCacheRead(dut, pte(ppn(l1), V))
+            expectDCacheRead(dut, l1 + vpn1 * 8)
+            acceptDCacheRead(dut, pte(ppn(l0), V))
+            expectDCacheRead(dut, l0 + vpn0 * 8)
+            acceptDCacheRead(dut, pte(ppn(leafPa), V | R | W | A | D))
+
+            expectDCacheWrite(dut, expectedPa, data)
+            dut.io.dcache.req.bits.vaddr.expect(va.U)
+        }
+    }
+
+    test("LSU commits a translated load after a translated store with response data") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val l1 = BigInt("40001000", 16)
+            val l0 = BigInt("40002000", 16)
+            val leafPa = BigInt("10004000", 16)
+            val va = BigInt("0000000040004000", 16)
+            val vpn0 = (va >> 12) & 0x1ff
+            val vpn1 = (va >> 21) & 0x1ff
+            val vpn2 = (va >> 30) & 0x1ff
+            val data = BigInt("8877665544332211", 16)
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
+
+            dut.io.pc_in.poke("h0000200160".U)
+            driveStore(dut, va, data)
+            expectDCacheRead(dut, root + vpn2 * 8)
+            acceptDCacheRead(dut, pte(ppn(l1), V))
+            expectDCacheRead(dut, l1 + vpn1 * 8)
+            acceptDCacheRead(dut, pte(ppn(l0), V))
+            expectDCacheRead(dut, l0 + vpn0 * 8)
+            acceptDCacheRead(dut, pte(ppn(leafPa), V | R | W | A | D))
+            expectDCacheWrite(dut, leafPa, data)
+            driveNoMem(dut)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            dut.io.pc_in.poke("h0000200164".U)
+            dut.io.alu_out.rd.poke(29.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, va)
+            expectDCacheRead(dut, root + vpn2 * 8)
+            acceptDCacheRead(dut, pte(ppn(l1), V))
+            expectDCacheRead(dut, l1 + vpn1 * 8)
+            acceptDCacheRead(dut, pte(ppn(l0), V))
+            expectDCacheRead(dut, l0 + vpn0 * 8)
+            acceptDCacheRead(dut, pte(ppn(leafPa), V | R | W | A | D))
+            expectDCacheRead(dut, leafPa)
+            acceptDCacheRead(dut, data)
+
+            dut.io.valid_out.expect(true.B)
+            dut.io.mem_out.rd.expect(29.U)
+            dut.io.mem_out.reg_write.expect(true.B)
+            dut.io.mem_out.result.expect(data.U)
+        }
+    }
+
+    test("LSU reports Sv39 load page faults without issuing the data cache request") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val va = BigInt("0000000012345678", 16)
+            val vpn2 = (va >> 30) & 0x1ff
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
+            dut.io.pc_in.poke("h800003c0".U)
+            driveLoad(dut, va)
+
+            expectDCacheRead(dut, root + vpn2 * 8)
+            acceptDCacheRead(dut, pte(0x1000, V | W | A | D))
+
+            dut.io.dcache.req.valid.expect(false.B)
+            expectTrap(dut, MCause.LoadPageFault, va, BigInt("800003c0", 16))
+        }
+    }
+
+    test("LSU holds Sv39 translation behind an outstanding store drain") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val va = BigInt("0000000012345678", 16)
+            val vpn2 = (va >> 30) & 0x1ff
+
+            driveStore(dut, BigInt("10000040", 16), BigInt("abcdef0123456789", 16))
+            dut.clock.step()
+
+            driveNoMem(dut)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.clock.step()
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
+            driveLoad(dut, va)
+            dut.clock.step()
+
+            dut.io.dcache.req.valid.expect(false.B)
+            dut.io.stall_req.expect(true.B)
+            dut.io.stall_load.expect(true.B)
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+
+            expectDCacheRead(dut, root + vpn2 * 8)
+        }
+    }
+
+    test("LSU stalls translated loads while a store is queued but not yet draining") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val va = BigInt("0000000040004000", 16)
+
+            driveStore(dut, BigInt("10000040", 16), BigInt("abcdef0123456789", 16))
+            dut.clock.step()
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
+            driveLoad(dut, va)
+
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.io.stall_req.expect(true.B)
+            dut.io.stall_load.expect(true.B)
+        }
+    }
+
     test("LSU reports supervisor store PMP denials as StoreAccessFault without enqueuing") {
         simulate(new LSU(64)) { dut =>
             init(dut)
 
             dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.pmpcfg0.poke(0x19.U) // NAPOT, read-only
             dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
             dut.io.pc_in.poke("h80000140".U)
@@ -353,6 +1102,7 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             init(dut)
 
             dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
             dut.io.mem_cfg.pmpcfg0.poke(BigInt("090f00", 16).U) // entry1 RWX TOR, entry2 R-only TOR
             dut.io.mem_cfg.pmpaddr(1).poke((BigInt("40000000", 16) >> 2).U)
             dut.io.mem_cfg.pmpaddr(2).poke((BigInt("40010000", 16) >> 2).U)

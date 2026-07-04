@@ -23,8 +23,8 @@ endif
 # and bring-up diagnostics. Keep those symbols public independently of VCD
 # tracing, so default builds avoid trace code but retain harness visibility.
 VERILATOR_PUBLIC_FLAGS = --public-flat-rw
-PAYLOAD_MARCH = rv$(WORD_LEN)imazicsr
-PAYLOAD_MABI = lp$(WORD_LEN)
+PAYLOAD_MARCH ?= rv$(WORD_LEN)imac_zicsr
+PAYLOAD_MABI ?= lp$(WORD_LEN)
 
 SIMULATOR_DIR = simulator
 BUILD_DIR = $(SIMULATOR_DIR)/build
@@ -42,7 +42,7 @@ SIM_HARNESS_DIR = $(SIMULATOR_DIR)/harness
 SIM_RTL_DIR = $(SIMULATOR_DIR)/rtl
 PAYLOAD_SRC_DIR = $(SIMULATOR_DIR)/payloads
 FIRMWARE_DIR = $(SIMULATOR_DIR)/firmware
-RUSTSBI_DIR = $(FIRMWARE_DIR)/rustsbi
+RUSTSBI_DIR ?= $(FIRMWARE_DIR)/rustsbi
 OPENSBI_DIR ?= $(FIRMWARE_DIR)/opensbi
 FILE_LIST = $(SYSTEM_VERILOG_DIR)/filelist.f
 MCU_FILE_LIST = $(MCU_SYSTEM_VERILOG_DIR)/filelist.f
@@ -92,8 +92,9 @@ ICACHE_VSOC_BIN = $(ICACHE_VERILATOR_OBJ_DIR)/VSoc
 FIRMWARE_VSOC_BIN = $(FIRMWARE_VERILATOR_OBJ_DIR)/VSoc
 IONSOC_DTB = $(BUILD_DIR)/ionsoc.dtb
 RUSTSBI_TARGET_DIR = $(RUSTSBI_DIR)/target/riscv64gc-unknown-none-elf/release
-RUSTSBI_FW_ELF = $(RUSTSBI_TARGET_DIR)/rustsbi-prototyper-jump.elf
-RUSTSBI_CONFIG = prototyper/prototyper/config/ionsoc.toml
+DEFAULT_RUSTSBI_FW_ELF = $(RUSTSBI_TARGET_DIR)/rustsbi-prototyper-jump.elf
+RUSTSBI_FW_ELF ?= $(DEFAULT_RUSTSBI_FW_ELF)
+RUSTSBI_CONFIG ?= prototyper/prototyper/config/ionsoc.toml
 OPENSBI_FW_JUMP_ELF ?= $(OPENSBI_DIR)/build/platform/generic/firmware/fw_jump.elf
 OPENSBI_PLATFORM ?= generic
 OPENSBI_CROSS_COMPILE ?= $(COMPILER)
@@ -105,18 +106,42 @@ RTL_SCALA_SOURCES = $(shell find src/main/scala -name '*.scala') src/test/scala/
 
 RUN_ARGS := $(filter-out verilator verilator-jtag,$(MAKECMDGOALS))
 
-NEMU_HOME = ${HOME}/NEMU
+NEMU_HOME ?= $(CURDIR)/NEMU
 NOOP_HOME ?= $(CURDIR)
+DIFFTEST_EMU ?= $(NOOP_HOME)/build/emu
 NEMU_SO ?= $(NEMU_HOME)/build/riscv64-nemu-interpreter-so
 NEMU_DEFCONFIG ?= riscv64-ionsoc-ref_defconfig
 NEMU_LOCAL_DEFCONFIG ?= $(SIMULATOR_DIR)/difftest/$(NEMU_DEFCONFIG)
+NEMU_LDFLAGS ?= -rdynamic -shared -fPIC -Wl,--no-undefined -lz -Wl,--gc-sections -Wl,--exclude-libs,ALL
+DIFFTEST_PMEM_BASE ?= 0x10000000UL
+DIFFTEST_FIRST_INST_ADDRESS ?= 0x80000000UL
 DIFFTEST_MAX_CYCLES ?= 1000000
 DIFFTEST_MAX_INSTR ?= 100000
 DIFFTEST_BUILD_JOBS ?= $(NPROC)
+DIFFTEST_REGRESS_PAYLOADS ?= basic timer clint32 tlerror amo muldiv loadstore_widths compressed_mix hazard pipeline_reissue load_stall_bypass bswap ldaddr misalign_ld perf bitmanip plic plic_s uart_irq sv39
+DIFFTEST_REGRESS_LOG_DIR ?= $(BUILD_DIR)/difftest-matrix
 DIFFTEST_SIM_VFLAGS ?= +define+DIFFTEST +define+ENABLE_INITIAL_MEM_
+DIFFTEST_PGO_CFLAGS ?= -Wno-error -DDIFFTEST_PMEM_BASE=$(DIFFTEST_PMEM_BASE) -DDIFFTEST_FIRST_INST_ADDRESS=$(DIFFTEST_FIRST_INST_ADDRESS)
 DIFFTEST_MAKE_ARGS = WITH_CHISELDB=0 WITH_CONSTANTIN=0 NO_ZSTD_COMPRESSION=1 \
 	NEMU_HOME=$(NEMU_HOME) NOOP_HOME=$(NOOP_HOME) RTL_DIR=$(abspath $(DIFFTEST_SYSTEM_VERILOG_DIR)) \
-	VERILATOR_BUILD_JOBS=$(DIFFTEST_BUILD_JOBS) SIM_VFLAGS="$(DIFFTEST_SIM_VFLAGS) $(SIM_VFLAGS)"
+	VERILATOR_BUILD_JOBS=$(DIFFTEST_BUILD_JOBS) SIM_VFLAGS="$(DIFFTEST_SIM_VFLAGS) $(SIM_VFLAGS)" \
+	PGO_CFLAGS="$(DIFFTEST_PGO_CFLAGS)" LLVM_BOLT=
+RISCV_TESTS_ISA_DIR ?= riscv-tests/isa
+RISCV_TEST ?= rv64ui-p-simple
+RISCV_TESTS ?= rv64ui-p-simple rv64ui-p-add rv64ui-p-addi rv64ui-p-lw rv64ui-p-ld rv64ui-p-sd rv64um-p-mul rv64um-p-div rv64ua-p-amoadd_w rv64ua-p-lrsc rv64uc-p-rvc
+RISCV_TESTS_ALL_DIRS = rv64ui rv64um rv64ua rv64uc
+RISCV_TESTS_ALL = $(sort $(foreach d,$(RISCV_TESTS_ALL_DIRS),$(patsubst $(RISCV_TESTS_ISA_DIR)/$(d)/%.S,$(d)-p-%,$(wildcard $(RISCV_TESTS_ISA_DIR)/$(d)/*.S))))
+RISCV_TESTS_BUILD_DIR ?= $(BUILD_DIR)/riscv-tests
+RISCV_TESTS_LOG_DIR ?= $(BUILD_DIR)/riscv-tests-matrix
+RISCV_TEST_ELF = $(RISCV_TESTS_BUILD_DIR)/elf/$(RISCV_TEST)
+RISCV_TEST_ROM_LO_HEX = $(RISCV_TESTS_BUILD_DIR)/$(RISCV_TEST)-rom-lo.hex
+RISCV_TEST_ROM_HI_HEX = $(RISCV_TESTS_BUILD_DIR)/$(RISCV_TEST)-rom-hi.hex
+RISCV_TEST_SRAM_HEX = $(RISCV_TESTS_BUILD_DIR)/$(RISCV_TEST)-sram.hex
+RISCV_TEST_GCC_OPTS ?= -static -mcmodel=medany -fvisibility=hidden -nostdlib -nostartfiles
+RISCV_TEST_MARCH ?= rv$(WORD_LEN)imac_zicsr_zifencei
+RISCV_TEST_MABI ?= lp$(WORD_LEN)
+RISCV_TEST_LDS ?= $(PAYLOAD_SRC_DIR)/riscv_tests.ld
+RISCV_TEST_TRAMPOLINE ?= $(PAYLOAD_SRC_DIR)/riscv_tests_trampoline.S
 SIM_TOP = sim.TopMain
 
 # Scala test groups are deliberately split so edit loops can target the block
@@ -136,11 +161,16 @@ SCALA_SLOW_TESTS = system.IonSoCSpec debug.JtagTapSpec
 
 all: clean emu
 
-emu: payload sim-verilog-difftest
+emu: payload-rom-hex payload-sram-hex sim-verilog-difftest
 	@$(MAKE) -C difftest emu $(DIFFTEST_MAKE_ARGS)
 
 difftest-emu: sim-verilog-difftest
 	@$(MAKE) -C difftest emu $(DIFFTEST_MAKE_ARGS)
+	@touch $(DIFFTEST_EMU)
+
+$(DIFFTEST_EMU): $(DIFFTEST_RTL_STAMP) Makefile
+	@$(MAKE) -C difftest emu $(DIFFTEST_MAKE_ARGS)
+	@touch $(DIFFTEST_EMU)
 
 # Build the NEMU shared-object reference used by OpenXiangShan DiffTest. The
 # default config matches the expected output name in $(NEMU_SO).
@@ -149,12 +179,113 @@ nemu-so: $(NEMU_SO)
 $(NEMU_SO): $(NEMU_LOCAL_DEFCONFIG)
 	cp $(NEMU_LOCAL_DEFCONFIG) $(NEMU_HOME)/configs/$(NEMU_DEFCONFIG)
 	NEMU_HOME=$(NEMU_HOME) $(MAKE) -C $(NEMU_HOME) $(NEMU_DEFCONFIG)
-	NEMU_HOME=$(NEMU_HOME) $(MAKE) -C $(NEMU_HOME) -j$(NPROC)
+	NEMU_HOME=$(NEMU_HOME) $(MAKE) -C $(NEMU_HOME) -j$(NPROC) LDFLAGS="$(NEMU_LDFLAGS)"
 
-difftest-run-payload: difftest-emu payload-rom-hex payload-sram-hex nemu-so
-	$(NOOP_HOME)/build/emu --diff=$(NEMU_SO) --image=$(PAYLOAD_ELF) --max-instr=$(DIFFTEST_MAX_INSTR) --max-cycles=$(DIFFTEST_MAX_CYCLES) -- +ion_rom_lo=$(PAYLOAD_ROM_LO_HEX) +ion_rom_hi=$(PAYLOAD_ROM_HI_HEX)
+difftest-run-payload: payload-rom-hex payload-sram-hex $(DIFFTEST_EMU) nemu-so
+	$(DIFFTEST_EMU) --diff=$(NEMU_SO) --image=$(PAYLOAD_ELF) --max-instr=$(DIFFTEST_MAX_INSTR) --max-cycles=$(DIFFTEST_MAX_CYCLES) -- +ion_rom_lo=$(PAYLOAD_ROM_LO_HEX) +ion_rom_hi=$(PAYLOAD_ROM_HI_HEX)
 
-$(RTL_STAMP): $(RTL_SCALA_SOURCES) build.mill
+difftest-regress: $(DIFFTEST_EMU) nemu-so
+	@mkdir -p $(DIFFTEST_REGRESS_LOG_DIR)
+	@set -e; \
+	for p in $(DIFFTEST_REGRESS_PAYLOADS); do \
+		log="$(DIFFTEST_REGRESS_LOG_DIR)/$$p.log"; \
+		echo "[DIFFTEST] $$p -> $$log"; \
+		$(MAKE) --no-print-directory difftest-run-payload PAYLOAD_SRC="$(PAYLOAD_SRC_DIR)/$$p.S" \
+			DIFFTEST_MAX_CYCLES=$(DIFFTEST_MAX_CYCLES) DIFFTEST_MAX_INSTR=$(DIFFTEST_MAX_INSTR) > "$$log" 2>&1 || { \
+				status=$$?; \
+				tail -n 220 "$$log"; \
+				exit $$status; \
+			}; \
+		grep -E "HIT GOOD TRAP|ABORT|instrCnt|cycleCnt|Core 0:" "$$log" | tail -n 8; \
+	done
+
+difftest-run-matrix: difftest-regress
+
+.PRECIOUS: $(RISCV_TESTS_BUILD_DIR)/elf/rv64ui-p-%
+.PRECIOUS: $(RISCV_TESTS_BUILD_DIR)/elf/rv64um-p-%
+.PRECIOUS: $(RISCV_TESTS_BUILD_DIR)/elf/rv64ua-p-%
+.PRECIOUS: $(RISCV_TESTS_BUILD_DIR)/elf/rv64uc-p-%
+
+$(RISCV_TESTS_BUILD_DIR)/elf/rv64ui-p-%: $(RISCV_TESTS_ISA_DIR)/rv64ui/%.S $(RISCV_TEST_LDS) $(RISCV_TEST_TRAMPOLINE)
+	@mkdir -p $(RISCV_TESTS_BUILD_DIR)/elf
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) $(RISCV_TEST_GCC_OPTS) -D_start=__riscv_test_start -I$(RISCV_TESTS_ISA_DIR)/../env/p -I$(RISCV_TESTS_ISA_DIR)/macros/scalar -c $< -o $@.test.o
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) -nostdlib -nostartfiles -c $(RISCV_TEST_TRAMPOLINE) -o $@.boot.o
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) $(RISCV_TEST_GCC_OPTS) -T$(RISCV_TEST_LDS) $@.boot.o $@.test.o -o $@
+
+$(RISCV_TESTS_BUILD_DIR)/elf/rv64um-p-%: $(RISCV_TESTS_ISA_DIR)/rv64um/%.S $(RISCV_TEST_LDS) $(RISCV_TEST_TRAMPOLINE)
+	@mkdir -p $(RISCV_TESTS_BUILD_DIR)/elf
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) $(RISCV_TEST_GCC_OPTS) -D_start=__riscv_test_start -I$(RISCV_TESTS_ISA_DIR)/../env/p -I$(RISCV_TESTS_ISA_DIR)/macros/scalar -c $< -o $@.test.o
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) -nostdlib -nostartfiles -c $(RISCV_TEST_TRAMPOLINE) -o $@.boot.o
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) $(RISCV_TEST_GCC_OPTS) -T$(RISCV_TEST_LDS) $@.boot.o $@.test.o -o $@
+
+$(RISCV_TESTS_BUILD_DIR)/elf/rv64ua-p-%: $(RISCV_TESTS_ISA_DIR)/rv64ua/%.S $(RISCV_TEST_LDS) $(RISCV_TEST_TRAMPOLINE)
+	@mkdir -p $(RISCV_TESTS_BUILD_DIR)/elf
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) $(RISCV_TEST_GCC_OPTS) -D_start=__riscv_test_start -I$(RISCV_TESTS_ISA_DIR)/../env/p -I$(RISCV_TESTS_ISA_DIR)/macros/scalar -c $< -o $@.test.o
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) -nostdlib -nostartfiles -c $(RISCV_TEST_TRAMPOLINE) -o $@.boot.o
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) $(RISCV_TEST_GCC_OPTS) -T$(RISCV_TEST_LDS) $@.boot.o $@.test.o -o $@
+
+$(RISCV_TESTS_BUILD_DIR)/elf/rv64uc-p-%: $(RISCV_TESTS_ISA_DIR)/rv64uc/%.S $(RISCV_TEST_LDS) $(RISCV_TEST_TRAMPOLINE)
+	@mkdir -p $(RISCV_TESTS_BUILD_DIR)/elf
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) $(RISCV_TEST_GCC_OPTS) -D_start=__riscv_test_start -I$(RISCV_TESTS_ISA_DIR)/../env/p -I$(RISCV_TESTS_ISA_DIR)/macros/scalar -c $< -o $@.test.o
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) -nostdlib -nostartfiles -c $(RISCV_TEST_TRAMPOLINE) -o $@.boot.o
+	$(CC) -march=$(RISCV_TEST_MARCH) -mabi=$(RISCV_TEST_MABI) $(RISCV_TEST_GCC_OPTS) -T$(RISCV_TEST_LDS) $@.boot.o $@.test.o -o $@
+
+$(RISCV_TESTS_BUILD_DIR)/%-rom-lo.hex $(RISCV_TESTS_BUILD_DIR)/%-rom-hi.hex &: $(RISCV_TESTS_BUILD_DIR)/elf/%
+	@mkdir -p $(RISCV_TESTS_BUILD_DIR)
+	$(OBJCOPY) -O binary --only-section=.text.boot $< $(RISCV_TESTS_BUILD_DIR)/$*.bin
+	@od -An -v -tx4 -w4 $(RISCV_TESTS_BUILD_DIR)/$*.bin | awk '{ print $$1 }' > $(RISCV_TESTS_BUILD_DIR)/$*-rom-lo.hex
+	@cp $(RISCV_TESTS_BUILD_DIR)/$*-rom-lo.hex $(RISCV_TESTS_BUILD_DIR)/$*-rom-hi.hex
+
+$(RISCV_TESTS_BUILD_DIR)/%-sram.hex: $(RISCV_TESTS_BUILD_DIR)/elf/%
+	@mkdir -p $(RISCV_TESTS_BUILD_DIR)
+	$(OBJCOPY) -O binary --only-section=.tohost --only-section=.text.init --only-section=.text --only-section=.data --only-section=.sdata --only-section=.rodata $< $(RISCV_TESTS_BUILD_DIR)/$*-sram.bin
+	@od -An -v -tx1 $(RISCV_TESTS_BUILD_DIR)/$*-sram.bin | awk ' \
+	    { for (i = 1; i <= NF; i++) bytes[n++] = $$i } \
+	    END { \
+	        for (w = 0; w < 8192; w++) { \
+	            line = ""; \
+	            for (b = 7; b >= 0; b--) { \
+	                idx = w * 8 + b; \
+	                line = line (idx in bytes ? bytes[idx] : "00"); \
+	            } \
+	            print line; \
+	        } \
+	    }' > $@
+
+difftest-run-riscv-test: $(RISCV_TEST_ROM_LO_HEX) $(RISCV_TEST_ROM_HI_HEX) $(RISCV_TEST_SRAM_HEX) $(DIFFTEST_EMU) nemu-so
+	@mkdir -p $(PAYLOAD_BUILD_DIR)
+	@backup="$(PAYLOAD_SRAM_HEX).bak"; \
+	had_sram=0; \
+	if [ -f "$(PAYLOAD_SRAM_HEX)" ]; then cp "$(PAYLOAD_SRAM_HEX)" "$$backup"; had_sram=1; fi; \
+	cp "$(RISCV_TEST_SRAM_HEX)" "$(PAYLOAD_SRAM_HEX)"; \
+	set +e; \
+	$(DIFFTEST_EMU) --diff=$(NEMU_SO) --image=$(RISCV_TEST_ELF) --max-instr=$(DIFFTEST_MAX_INSTR) --max-cycles=$(DIFFTEST_MAX_CYCLES) -- +ion_rom_lo=$(RISCV_TEST_ROM_LO_HEX) +ion_rom_hi=$(RISCV_TEST_ROM_HI_HEX); \
+	status=$$?; \
+	if [ "$$had_sram" -eq 1 ]; then mv "$$backup" "$(PAYLOAD_SRAM_HEX)"; else rm -f "$(PAYLOAD_SRAM_HEX)" "$$backup"; fi; \
+	exit $$status
+
+difftest-riscv-tests: $(DIFFTEST_EMU) nemu-so
+	@mkdir -p $(RISCV_TESTS_LOG_DIR)
+	@set -e; \
+	for t in $(RISCV_TESTS); do \
+		log="$(RISCV_TESTS_LOG_DIR)/$$t.log"; \
+		echo "[RISCV-TEST] $$t -> $$log"; \
+		$(MAKE) --no-print-directory difftest-run-riscv-test RISCV_TEST=$$t \
+			DIFFTEST_MAX_CYCLES=$(DIFFTEST_MAX_CYCLES) DIFFTEST_MAX_INSTR=$(DIFFTEST_MAX_INSTR) > "$$log" 2>&1 || { \
+				status=$$?; \
+				tail -n 220 "$$log"; \
+				exit $$status; \
+			}; \
+		grep -E "HIT GOOD TRAP|ABORT|instrCnt|cycleCnt|Core 0:" "$$log" | tail -n 8; \
+	done
+
+difftest-riscv-tests-all:
+	@$(MAKE) --no-print-directory difftest-riscv-tests RISCV_TESTS="$(RISCV_TESTS_ALL)"
+
+print-riscv-tests-all:
+	@printf '%s\n' $(RISCV_TESTS_ALL)
+
+$(RTL_STAMP) $(FILE_LIST) &: $(RTL_SCALA_SOURCES) build.mill
 	mill -i IonSoC.test.runMain $(SIM_TOP)
 	@touch $(RTL_STAMP)
 
@@ -162,19 +293,19 @@ sim-verilog: $(RTL_STAMP)
 
 # The MCU RTL is the default platform contract made explicit: RV64IMAC(+small B
 # subset), no MMU, CLINT+PLIC+UART, and default 64 KiB SRAM.
-$(MCU_RTL_STAMP): $(RTL_SCALA_SOURCES) build.mill
+$(MCU_RTL_STAMP) $(MCU_FILE_LIST) &: $(RTL_SCALA_SOURCES) build.mill
 	mill -i IonSoC.test.runMain sim.McuTopMain
 	@touch $(MCU_RTL_STAMP)
 
 sim-verilog-mcu: $(MCU_RTL_STAMP)
 
-$(ICACHE_RTL_STAMP): $(RTL_SCALA_SOURCES) build.mill
+$(ICACHE_RTL_STAMP) $(ICACHE_FILE_LIST) &: $(RTL_SCALA_SOURCES) build.mill
 	mill -i IonSoC.test.runMain sim.ICacheTopMain
 	@touch $(ICACHE_RTL_STAMP)
 
 sim-verilog-icache: $(ICACHE_RTL_STAMP)
 
-$(FIRMWARE_RTL_STAMP): $(RTL_SCALA_SOURCES) build.mill
+$(FIRMWARE_RTL_STAMP) $(FIRMWARE_FILE_LIST) &: $(RTL_SCALA_SOURCES) build.mill
 	mill -i IonSoC.test.runMain sim.FirmwareTopMain
 	@touch $(FIRMWARE_RTL_STAMP)
 
@@ -183,7 +314,7 @@ sim-verilog-firmware: $(FIRMWARE_RTL_STAMP)
 # DiffTest RTL generation emits the official OpenXiangShan probe wrappers and
 # generated C++ state headers under build/generated-src. Keep it separate from
 # normal Verilator flows so ordinary bring-up does not require NEMU/libdifftest.
-$(DIFFTEST_RTL_STAMP): $(RTL_SCALA_SOURCES) build.mill
+$(DIFFTEST_RTL_STAMP) $(DIFFTEST_FILE_LIST) &: $(RTL_SCALA_SOURCES) build.mill
 	NOOP_HOME=$(NOOP_HOME) mill -i IonSoC.test.runMain sim.DifftestTopMain
 	@touch $(DIFFTEST_RTL_STAMP)
 
@@ -233,12 +364,16 @@ payload:
 	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $(PAYLOAD_ELF) $(PAYLOAD_SRC)
 	$(OBJCOPY) -O binary --only-section=.text $(PAYLOAD_ELF) $(PAYLOAD)
 
-payload-rom-hex: payload
+payload-rom-hex: $(PAYLOAD_ROM_LO_HEX) $(PAYLOAD_ROM_HI_HEX)
+
+$(PAYLOAD_ROM_LO_HEX) $(PAYLOAD_ROM_HI_HEX) &: payload
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	@od -An -v -tx4 -w4 $(PAYLOAD) | awk '{ print $$1 }' > $(PAYLOAD_ROM_LO_HEX)
 	@cp $(PAYLOAD_ROM_LO_HEX) $(PAYLOAD_ROM_HI_HEX)
 
-payload-sram-hex: payload
+payload-sram-hex: $(PAYLOAD_SRAM_HEX)
+
+$(PAYLOAD_SRAM_HEX): payload
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	$(OBJCOPY) -O binary --only-section=.data $(PAYLOAD_ELF) $(PAYLOAD_SRAM_BIN)
 	@od -An -v -tx1 $(PAYLOAD_SRAM_BIN) | awk ' \
@@ -338,7 +473,22 @@ $(IONSOC_DTB): $(FIRMWARE_DIR)/ionsoc.dts
 	@mkdir -p $(BUILD_DIR)
 	dtc -I dts -O dtb -o $@ $<
 
-$(RUSTSBI_FW_ELF): $(IONSOC_DTB) $(RUSTSBI_DIR)/$(RUSTSBI_CONFIG)
+$(RUSTSBI_FW_ELF): $(IONSOC_DTB)
+	@if [ "$@" != "$(DEFAULT_RUSTSBI_FW_ELF)" ]; then \
+		echo "RustSBI prebuilt ELF not found at $@."; \
+		echo "Provide an existing RUSTSBI_FW_ELF path, or use the default RustSBI source tree at $(RUSTSBI_DIR)."; \
+		exit 1; \
+	fi
+	@if [ ! -d "$(RUSTSBI_DIR)" ]; then \
+		echo "RustSBI source not found at $(RUSTSBI_DIR)."; \
+		echo "Clone or copy RustSBI there, or run with RUSTSBI_FW_ELF=/path/to/rustsbi-prototyper-jump.elf."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(RUSTSBI_DIR)/$(RUSTSBI_CONFIG)" ]; then \
+		echo "RustSBI IonSoC config not found at $(RUSTSBI_DIR)/$(RUSTSBI_CONFIG)."; \
+		echo "Set RUSTSBI_CONFIG=relative/path/to/ionsoc.toml or RUSTSBI_FW_ELF=/path/to/prebuilt.elf."; \
+		exit 1; \
+	fi
 	cd $(RUSTSBI_DIR) && PROTOTYPER_LINK_START_ADDRESS=0x40000000 PROTOTYPER_PAYLOAD_START_ADDRESS=0x40100000 cargo prototyper --jump -c $(RUSTSBI_CONFIG) --fdt ../../build/ionsoc.dtb
 
 $(OPENSBI_FW_JUMP_ELF):
@@ -461,7 +611,7 @@ verilator-run-opensbi: $(OPENSBI_FW_JUMP_ELF) $(SBI_SMOKE_ELF) $(FIRMWARE_TRAMPO
 opensbi-smoke: verilator-run-opensbi
 
 verilator-run-firmware-probe: $(FIRMWARE_PROBE_ELF) $(SBI_SMOKE_ELF) $(FIRMWARE_TRAMPOLINE_ELF) $(IONSOC_DTB) $(FIRMWARE_VSOC_BIN)
-	ION_EXPECT_UART="IonSoC firmware probe" ION_TRACE_BOOT=1 ION_SRAM_BASE=0x40000000 ION_SRAM_SIZE=0x01000000 ION_DTB_ADDR=0x40f00000 ION_BOOT_A1=0x40f00000 ION_BOOT_A2=0x40100000 ION_MAX_CYCLES=200000 ./$(FIRMWARE_VSOC_BIN) --rustsbi $(FIRMWARE_TRAMPOLINE_ELF) $(FIRMWARE_PROBE_ELF) $(SBI_SMOKE_ELF) $(IONSOC_DTB)
+	ION_EXPECT_UART="IonSoC firmware probe" ION_REQUIRE_PAYLOAD_ENTRY=0 ION_TRACE_BOOT=1 ION_SRAM_BASE=0x40000000 ION_SRAM_SIZE=0x01000000 ION_DTB_ADDR=0x40f00000 ION_BOOT_A1=0x40f00000 ION_BOOT_A2=0x40100000 ION_MAX_CYCLES=200000 ./$(FIRMWARE_VSOC_BIN) --rustsbi $(FIRMWARE_TRAMPOLINE_ELF) $(FIRMWARE_PROBE_ELF) $(SBI_SMOKE_ELF) $(IONSOC_DTB)
 
 verilator-clint32: verilator-run-clint32
 

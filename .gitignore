@@ -342,4 +342,5 @@ hs_err_pid*
 .bloop/
 .metals/
 .claude/
-simulator/firmware/
+simulator/firmware/*
+!simulator/firmware/ionsoc.dts

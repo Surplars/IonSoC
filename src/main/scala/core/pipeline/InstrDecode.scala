@@ -115,12 +115,14 @@ class InstrDecode(XLEN: Int = 64, enabledExt: Set[Extension.Value] = Config.enab
     val csr_op      = CSROps.safe(ctrlSignals(7).asUInt)._1
     val branch_type = BranchType.safe(ctrlSignals(8).asUInt)._1
     val illegal     = io.valid_in && (ctrlSignals(0) === false.B || branch_type === BranchType.ECALL)
+    val isSfenceVma = opcode === Opcode.SYSTEM && funct3 === 0.U && funct7 === "b0001001".U && rd === 0.U
 
     ctrl.alu_op      := alu_op
     ctrl.reg_write   := reg_write
     ctrl.mem_read    := mem_read
     ctrl.mem_write   := mem_write
-    ctrl.mem_fence   := valid && ctrlSignals(0) === true.B && opcode === Opcode.MISC_MEM && funct3 === 0.U
+    ctrl.mem_fence   := valid && ctrlSignals(0) === true.B &&
+        ((opcode === Opcode.MISC_MEM && funct3 === 0.U) || isSfenceVma)
     ctrl.mem_fence_i := valid && ctrlSignals(0) === true.B && opcode === Opcode.MISC_MEM && funct3 === "b001".U
     ctrl.mem_atomic  := valid && ctrlSignals(0) === true.B && opcode === Opcode.AMO
     ctrl.csr_op      := csr_op

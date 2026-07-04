@@ -3,9 +3,19 @@ package core
 import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
-import soc.core.pipeline.InstrFetch
+import soc.core.pipeline._
+import soc.isa.{MCause, PrivilegeLevel}
 
 class InstrFetchSpec extends AnyFunSuite with ChiselSim {
+    private val V = 1 << 0
+    private val R = 1 << 1
+    private val X = 1 << 3
+    private val A = 1 << 6
+
+    private def pte(ppn: BigInt, flags: Int): BigInt = (ppn << 10) | BigInt(flags)
+    private def ppn(pa: BigInt): BigInt = pa >> 12
+    private def satp(root: BigInt): BigInt = (BigInt(8) << 60) | (root >> 12)
+
     private def init(dut: InstrFetch): Unit = {
         dut.io.pc.poke("h80000000".U)
         dut.io.instr_in.poke("h0000000000000013".U)
@@ -18,6 +28,66 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         dut.io.cache.resp.valid.poke(false.B)
         dut.io.cache.resp.bits.rdata.poke(0.U)
         dut.io.cache.resp.bits.err.poke(false.B)
+        dut.io.mem_cfg.priv.poke(PrivilegeLevel.Machine)
+        dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Machine)
+        dut.io.mem_cfg.mmu_en.poke(false.B)
+        dut.io.mem_cfg.satp.poke(0.U)
+        dut.io.mem_cfg.pmpcfg0.poke(0.U)
+        for (i <- 0 until 8) {
+            dut.io.mem_cfg.pmpaddr(i).poke(0.U)
+        }
+        dut.io.mem_cfg.mxr.poke(false.B)
+        dut.io.mem_cfg.sum.poke(false.B)
+        dut.io.mem_cfg.mprv.poke(false.B)
+        dut.io.trap_info.valid.expect(false.B)
+    }
+
+    private def acceptCacheRead(dut: InstrFetch, data: BigInt, err: Boolean = false): Unit = {
+        dut.clock.step()
+        dut.io.cache.resp.valid.poke(true.B)
+        dut.io.cache.resp.bits.rdata.poke(data.U)
+        dut.io.cache.resp.bits.err.poke(err.B)
+        dut.clock.step()
+        dut.io.cache.resp.valid.poke(false.B)
+        dut.io.cache.resp.bits.rdata.poke(0.U)
+        dut.io.cache.resp.bits.err.poke(false.B)
+    }
+
+    private def expectCacheRead(dut: InstrFetch, addr: BigInt, vaddr: Option[BigInt] = None, maxCycles: Int = 8): Unit = {
+        var seen = false
+        var cycles = 0
+        while (!seen && cycles < maxCycles) {
+            if (dut.io.cache.req.valid.peek().litToBoolean) {
+                dut.io.cache.req.bits.addr.expect(addr.U)
+                vaddr.foreach(expected => dut.io.cache.req.bits.vaddr.expect(expected.U))
+                seen = true
+            } else {
+                dut.clock.step()
+                cycles += 1
+            }
+        }
+        if (!seen) {
+            dut.io.cache.req.valid.expect(true.B)
+        }
+    }
+
+    private def expectFetchTrap(dut: InstrFetch, cause: UInt, value: BigInt, pc: BigInt, maxCycles: Int = 8): Unit = {
+        var seen = false
+        var cycles = 0
+        while (!seen && cycles < maxCycles) {
+            if (dut.io.trap_info.valid.peek().litToBoolean) {
+                dut.io.trap_info.pc.expect(pc.U)
+                dut.io.trap_info.cause.expect(cause)
+                dut.io.trap_info.value.expect(value.U)
+                seen = true
+            } else {
+                dut.clock.step()
+                cycles += 1
+            }
+        }
+        if (!seen) {
+            dut.io.trap_info.valid.expect(true.B)
+        }
     }
 
     test("InstrFetch expands compressed low and high halfwords") {
@@ -249,6 +319,67 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
             dut.clock.step()
             dut.io.instr_len.expect(2.U)
             dut.io.instr_out.expect("h00000000".U)
+        }
+    }
+
+    test("InstrFetch translates supervisor cache fetches through Sv39 before issuing ICache request") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+            val root = BigInt("10000000", 16)
+            val l1 = BigInt("10001000", 16)
+            val l0 = BigInt("10002000", 16)
+            val leafPa = BigInt("80004000", 16)
+            val va = BigInt("40000000", 16)
+            val vpn0 = (va >> 12) & 0x1ff
+            val vpn1 = (va >> 21) & 0x1ff
+            val vpn2 = (va >> 30) & 0x1ff
+
+            dut.io.pc.poke(va.U)
+            dut.io.cache.req.ready.poke(true.B)
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+
+            expectCacheRead(dut, root + vpn2 * 8, Some(root + vpn2 * 8))
+            acceptCacheRead(dut, pte(ppn(l1), V))
+
+            expectCacheRead(dut, l1 + vpn1 * 8)
+            acceptCacheRead(dut, pte(ppn(l0), V))
+
+            expectCacheRead(dut, l0 + vpn0 * 8)
+            acceptCacheRead(dut, pte(ppn(leafPa), V | R | X | A))
+
+            expectCacheRead(dut, leafPa, Some(va))
+            acceptCacheRead(dut, BigInt("0000000000500113", 16))
+
+            dut.io.valid.expect(true.B)
+            dut.io.pc_out.expect(va.U)
+            dut.io.instr_out.expect("h00500113".U)
+            dut.io.trap_info.valid.expect(false.B)
+        }
+    }
+
+    test("InstrFetch reports Sv39 instruction page faults without issuing ICache fetch") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+            val root = BigInt("10000000", 16)
+            val va = BigInt("40000000", 16)
+            val vpn2 = (va >> 30) & 0x1ff
+
+            dut.io.pc.poke(va.U)
+            dut.io.cache.req.ready.poke(true.B)
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+
+            expectCacheRead(dut, root + vpn2 * 8)
+            acceptCacheRead(dut, pte(0x1000, V | R | A))
+
+            expectFetchTrap(dut, MCause.InstrPageFault, va, va)
+            dut.io.cache.req.valid.expect(false.B)
+            dut.io.valid.expect(false.B)
         }
     }
 }

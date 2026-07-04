@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util._
 import soc.isa.Common
 import soc.isa.Compressed
+import soc.isa.PrivilegeLevel
 import soc.memory.CacheReq
 import soc.memory.CacheResp
 import soc.memory.cache.CacheCmd
@@ -17,6 +18,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val redirect      = Input(Bool())
         val trap_valid    = Input(Bool())
         val stall         = Input(Bool())
+        val mem_cfg       = Input(new MemorySystemConfig(XLEN))
 
         val valid          = Output(Bool())
         val pc_out         = Output(UInt(XLEN.W))
@@ -27,6 +29,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val pred_target_out = Output(UInt(XLEN.W))
         val fetch_stall    = Output(Bool())
         val cache_busy     = Output(Bool())
+        val trap_info      = Output(new TrapInfo(XLEN))
 
         val cache = new Bundle {
             val req  = Decoupled(new CacheReq(XLEN, XLEN))
@@ -50,6 +53,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
     io.cache.req.bits.cacheable := true.B
     io.cache.req.bits.device    := false.B
     io.cache.resp.ready         := true.B
+    io.trap_info                := 0.U.asTypeOf(io.trap_info)
 
     val directUpdate = !io.stall
     private def selectAndExpand(raw: UInt, pc: UInt, byteOffset: UInt): (UInt, UInt) = {
@@ -85,6 +89,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val sIdle :: sFirstReq :: sFirstWait :: sSecondReq :: sSecondWait :: sPrefetchWait :: Nil = Enum(6)
         val state = RegInit(sIdle)
         val reqPc = RegInit(0.U(XLEN.W))
+        val reqPhysPc = RegInit(0.U(XLEN.W))
         val prefetchPc = RegInit(0.U(XLEN.W))
         val reqPredTaken = RegInit(false.B)
         val reqPredTarget = RegInit(0.U(XLEN.W))
@@ -100,6 +105,19 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val beatBufferAddr = Reg(Vec(beatBufferEntries, UInt((XLEN - beatOffsetBits).W)))
         val beatBufferData = Reg(Vec(beatBufferEntries, UInt(XLEN.W)))
 
+        val ptw = Module(new Sv39PageTableWalker(XLEN))
+        val xlatePending = RegInit(false.B)
+        val xlateDone = RegInit(false.B)
+        val xlateVaddr = RegInit(0.U(XLEN.W))
+        val xlatePaddr = RegInit(0.U(XLEN.W))
+        val xlatePredTaken = RegInit(false.B)
+        val xlatePredTarget = RegInit(0.U(XLEN.W))
+        val fetchTrap = RegInit(0.U.asTypeOf(new TrapInfo(XLEN)))
+
+        io.trap_info := fetchTrap
+
+        val satpModeSv39 = io.mem_cfg.satp(63, 60) === 8.U
+        val translateFetch = io.mem_cfg.mmu_en && satpModeSv39 && io.mem_cfg.priv =/= PrivilegeLevel.Machine
         val flush = io.redirect || io.trap_valid
         val pcBeatAddr = io.pc(XLEN - 1, beatOffsetBits)
         val pcBufferIdx = pcBeatAddr(beatBufferIndexBits - 1, 0)
@@ -113,7 +131,6 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
             false.B
         }
         val canServeBuffered = state === sIdle && !io.stall && !flush && beatBufferHit && !bufferedNeedsCrossBeat
-        val canIssue = state === sIdle && !io.stall && !flush && !canServeBuffered
         val bufferedStepBytes = Mux(bufferedExpanded._2 === 2.U, 2.U(XLEN.W), 4.U(XLEN.W))
         val bufferedNextPc = io.pc + bufferedStepBytes
         val bufferedNextBeatAddr = bufferedNextPc(XLEN - 1, beatOffsetBits)
@@ -124,17 +141,61 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         // Keep the local beat buffer for same-beat reuse; a future prefetcher
         // should tag responses and fill the buffer without driving io.valid.
         val canPrefetchNextBeat = false.B
+        val translatedReady = xlateDone && xlateVaddr === io.pc
+        val issueBase = state === sIdle && !io.stall && !flush && !fetchTrap.valid && !canServeBuffered
+        val startTranslation = issueBase && translateFetch && !translatedReady && !xlatePending
+        val canIssue = issueBase && (!translateFetch || translatedReady)
+
+        ptw.io.req.valid := xlatePending || startTranslation
+        ptw.io.req.bits.vaddr := Mux(startTranslation, io.pc, xlateVaddr)
+        ptw.io.req.bits.satp := io.mem_cfg.satp
+        ptw.io.req.bits.access := Sv39AccessType.Fetch
+        ptw.io.req.bits.priv := io.mem_cfg.priv
+        ptw.io.req.bits.mxr := io.mem_cfg.mxr
+        ptw.io.req.bits.sum := io.mem_cfg.sum
+        ptw.io.resp.ready := true.B
+
+        when(startTranslation) {
+            xlatePending := true.B
+            xlateDone := false.B
+            xlateVaddr := io.pc
+            xlatePaddr := 0.U
+            xlatePredTaken := io.pred_taken_in
+            xlatePredTarget := io.pred_target_in
+        }.elsewhen(xlatePending && ptw.io.resp.fire) {
+            xlatePending := false.B
+            when(ptw.io.resp.bits.fault.valid) {
+                fetchTrap.valid := true.B
+                fetchTrap.pc := xlateVaddr
+                fetchTrap.cause := ptw.io.resp.bits.fault.cause
+                fetchTrap.value := ptw.io.resp.bits.fault.value
+                fetchTrap.is_ret := false.B
+                fetchTrap.ret_type := TrapReturnType.None
+            }.otherwise {
+                xlateDone := true.B
+                xlatePaddr := ptw.io.resp.bits.paddr
+            }
+        }.elsewhen(xlateDone && (flush || io.pc =/= xlateVaddr)) {
+            xlateDone := false.B
+        }
 
         when(io.trap_valid) {
             beatBufferValid := VecInit(Seq.fill(beatBufferEntries)(false.B))
+            fetchTrap.valid := false.B
+            xlatePending := false.B
+            xlateDone := false.B
         }
 
         when(canIssue) {
             reqPc := io.pc
-            reqPredTaken := io.pred_taken_in
-            reqPredTarget := io.pred_target_in
+            reqPhysPc := Mux(translatedReady, xlatePaddr, io.pc)
+            reqPredTaken := Mux(translatedReady, xlatePredTaken, io.pred_taken_in)
+            reqPredTarget := Mux(translatedReady, xlatePredTarget, io.pred_target_in)
             dropResp := false.B
             state := Mux(io.cache.req.ready, sFirstWait, sFirstReq)
+            when(translatedReady) {
+                xlateDone := false.B
+            }
         }
 
         when(canPrefetchNextBeat && io.cache.req.ready) {
@@ -151,19 +212,46 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         // removes a fixed frontend bubble without assuming combinational cache
         // data: the L1 still performs a registered SyncReadMem lookup before
         // responding.
-        io.cache.req.valid := (canIssue || canPrefetchNextBeat || state === sFirstReq || state === sSecondReq) && !flush
+        val normalFetchReqValid = (canIssue || canPrefetchNextBeat || state === sFirstReq || state === sSecondReq) && !flush
         val secondReqPc = ((reqPc >> beatOffsetBits.U) + 1.U) << beatOffsetBits.U
-        val cacheReqPc = Mux(
+        val secondReqPhysPc = ((reqPhysPc >> beatOffsetBits.U) + 1.U) << beatOffsetBits.U
+        val cacheReqPaddr = Mux(
+            canPrefetchNextBeat,
+            bufferedNextPc,
+            Mux(
+                state === sSecondReq,
+                secondReqPhysPc,
+                Mux(canIssue, Mux(translatedReady, xlatePaddr, io.pc), reqPhysPc)
+            )
+        )
+        val cacheReqVaddr = Mux(
             canPrefetchNextBeat,
             bufferedNextPc,
             Mux(state === sSecondReq, secondReqPc, Mux(canIssue, io.pc, reqPc))
         )
-        io.cache.req.bits.addr := cacheReqPc
-        io.cache.req.bits.vaddr := cacheReqPc
+        val normalCacheReqBits = WireInit(0.U.asTypeOf(io.cache.req.bits))
+        normalCacheReqBits.addr := cacheReqPaddr
+        normalCacheReqBits.vaddr := cacheReqVaddr
+        normalCacheReqBits.cmd := CacheCmd.Read
+        normalCacheReqBits.wdata := 0.U
+        normalCacheReqBits.mask := Fill(XLEN / 8, 1.U(1.W))
+        normalCacheReqBits.size := beatOffsetBits.U
+        normalCacheReqBits.signed := false.B
+        normalCacheReqBits.fence := false.B
+        normalCacheReqBits.fencei := false.B
+        normalCacheReqBits.atomic := false.B
+        normalCacheReqBits.cacheable := true.B
+        normalCacheReqBits.device := false.B
+        io.cache.req.valid := Mux(xlatePending, ptw.io.mem.req.valid, normalFetchReqValid)
+        io.cache.req.bits := Mux(xlatePending, ptw.io.mem.req.bits, normalCacheReqBits)
+        ptw.io.mem.req.ready := xlatePending && io.cache.req.ready
         // Keep the response channel drainable even after a frontend flush has
         // cancelled the matching fetch. Otherwise a late cache response can
         // leave the I-cache in its response state and block fence.i invalidation.
-        io.cache.resp.ready := !io.stall || flush
+        val normalRespReady = !io.stall || flush
+        io.cache.resp.ready := Mux(xlatePending, ptw.io.mem.resp.ready, normalRespReady)
+        ptw.io.mem.resp.valid := xlatePending && io.cache.resp.valid
+        ptw.io.mem.resp.bits := io.cache.resp.bits
 
         when((state === sFirstReq || state === sSecondReq) && flush) {
             dropResp := false.B
@@ -258,8 +346,9 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         }
 
         val responseAdvancesPc = acceptResp && !io.stall
-        io.fetch_stall := canIssue || ((state =/= sIdle) && !responseAdvancesPc)
-        io.cache_busy := state =/= sIdle || canIssue
+        io.fetch_stall :=
+            canIssue || ((state =/= sIdle) && !responseAdvancesPc) || startTranslation || xlatePending || fetchTrap.valid
+        io.cache_busy := state =/= sIdle || canIssue || xlatePending
         // The PC consumes the step length in the same cycle that a cache
         // response is accepted. Use the just-decoded length instead of the
         // registered previous instruction length, otherwise a 16-bit

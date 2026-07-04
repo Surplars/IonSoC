@@ -143,8 +143,16 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
                 state := sProbeLookup
             }.elsewhen(io.invalidate.fire) {
                 respErrReg := false.B
-                flushIdx := 0.U
-                state := sFlushRead
+                refillReg := 0.U
+                when(io.invalidate.bits) {
+                    validArray := VecInit(Seq.fill(nSets)(false.B))
+                    dirtyArray := VecInit(Seq.fill(nSets)(false.B))
+                    hitBufferValid := false.B
+                    state := sResp
+                }.otherwise {
+                    flushIdx := 0.U
+                    state := sFlushRead
+                }
             }.elsewhen(io.cpu.req.valid && !hitBufferReadHit) {
                 reqReg := io.cpu.req.bits
                 respErrReg := false.B
@@ -154,9 +162,16 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
                     hitBufferData := hitBufferWriteData
                 }
                 when(io.cpu.req.bits.fence || io.cpu.req.bits.fencei) {
-                    flushIdx := 0.U
                     refillReg := 0.U
-                    state := sFlushRead
+                    when(io.cpu.req.bits.fencei && !io.cpu.req.bits.fence) {
+                        validArray := VecInit(Seq.fill(nSets)(false.B))
+                        dirtyArray := VecInit(Seq.fill(nSets)(false.B))
+                        hitBufferValid := false.B
+                        state := sResp
+                    }.otherwise {
+                        flushIdx := 0.U
+                        state := sFlushRead
+                    }
                 }.otherwise {
                     state := sCompare
                 }

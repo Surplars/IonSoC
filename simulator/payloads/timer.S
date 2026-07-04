@@ -34,6 +34,7 @@ spin:
     j    spin
 
 # === Trap Handler ===
+.balign 4
 trap_handler:
     # Decrement counter in mscratch
     csrr t0, mscratch

@@ -26,7 +26,8 @@ import soc.core.csr.CsrStateSnapshot
 class IonSoC(
     features: SoCFeatures = Config.features,
     enabledExt: Set[Extension.Value] = Config.enabledExt,
-    sramInitFile: String = ""
+    sramInitFile: String = "",
+    difftestHarness: Boolean = false
 ) extends Module {
     private val tlParams = TLParams()
     private val dbusParams = tlParams.copy(sourceBits = tlParams.sourceBits + 2)
@@ -108,15 +109,31 @@ class IonSoC(
     debugModule.io.csr_writable := core.io.debug_csr_writable
     debugModule.io.cache <> core.io.debug_cache
 
+    val effectiveExtIrqSources = Wire(Vec(Config.plicSources + 1, Bool()))
+    effectiveExtIrqSources := io.ext_irq_sources
+    val effectiveUartRxValid = WireDefault(io.uart_rx_valid)
+    val effectiveUartRxByte = WireDefault(io.uart_rx_byte)
+    if (difftestHarness) {
+        if (Config.plicSources >= 2) {
+            effectiveExtIrqSources(2) := true.B
+        }
+        val uartInjected = RegInit(false.B)
+        effectiveUartRxValid := !uartInjected
+        effectiveUartRxByte := "h5a".U
+        when(!uartInjected) {
+            uartInjected := true.B
+        }
+    }
+
     uart.foreach { device =>
-        device.io.rx_valid := io.uart_rx_valid
-        device.io.rx_byte  := io.uart_rx_byte
+        device.io.rx_valid := effectiveUartRxValid
+        device.io.rx_byte  := effectiveUartRxByte
     }
 
     plic.foreach { device =>
-        device.io.sources := io.ext_irq_sources
+        device.io.sources := effectiveExtIrqSources
         uart.foreach { uartDevice =>
-            device.io.sources(Config.UartPlicSource) := io.ext_irq_sources(Config.UartPlicSource) || uartDevice.io.irq
+            device.io.sources(Config.UartPlicSource) := effectiveExtIrqSources(Config.UartPlicSource) || uartDevice.io.irq
         }
     }
 
@@ -188,7 +205,7 @@ class IonSoCDifftest(
     features: SoCFeatures = Config.features,
     enabledExt: Set[Extension.Value] = Config.enabledExt,
     sramInitFile: String = ""
-) extends IonSoC(features, enabledExt, sramInitFile) with HasDiffTestInterfaces {
+) extends IonSoC(features, enabledExt, sramInitFile, difftestHarness = true) with HasDiffTestInterfaces {
     override def cpuName: Option[String] = Some("IonSoC")
 
     private val archEvent = DifftestModule(new DiffArchEvent, dontCare = true)
@@ -281,8 +298,6 @@ class IonSoCDifftest(
     gpr.value := io.debug_gpr_snapshot
 
     override def connectTopIOs(difftest: DifftestTopIO): Unit = {
-        io.uart_rx_valid := difftest.uart.in.valid
-        io.uart_rx_byte := difftest.uart.in.ch
         difftest.uart.out.valid := io.uart_tx
         difftest.uart.out.ch := io.uart_byte
     }

@@ -21,6 +21,7 @@ _start:
     li   t0, 0x40000000
     jr   t0
 
+.balign 4
 early_trap:
     csrr s0, mcause
     csrr s1, mepc

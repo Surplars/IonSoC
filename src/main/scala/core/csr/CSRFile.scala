@@ -16,6 +16,9 @@ object MStatus {
 	    val MIE  = 3
 	    val MPIE = 7
 	    val MPP  = 11
+        val MPRV = 17
+        val SUM  = 18
+        val MXR  = 19
 
 	    def setMIE(mstatus: UInt, enable: Bool): UInt = {
 	        val mask = (BigInt(1) << MIE).U(mstatus.getWidth.W)
@@ -36,6 +39,8 @@ object SStatus {
     val SIE  = 1
     val SPIE = 5
     val SPP  = 8
+    val SUM  = 18
+    val MXR  = 19
 
     def setSIE(mstatus: UInt, enable: Bool): UInt = {
         val mask = (BigInt(1) << SIE).U(mstatus.getWidth.W)
@@ -254,6 +259,11 @@ class CSRFile(
         val code = cause(XLEN - 2, 0)
         Mux(cause(XLEN - 1) && mode === 1.U, base + (code << 2), base)
     }
+    private def legalizeTrapVector(value: UInt): UInt = {
+        val base = value & ~3.U(XLEN.W)
+        val mode = Mux(value(1, 0) === 1.U, 1.U(XLEN.W), 0.U(XLEN.W))
+        base | mode
+    }
 
     val supervisorInterruptMask =
         bitMask(InterruptCauseCode.SupervisorSoft) |
@@ -403,7 +413,8 @@ class CSRFile(
                 mstatus := writeData
             }
             is(CSR.SSTATUS) {
-                val sMask = bitMask(SStatus.SIE) | bitMask(SStatus.SPIE) | bitMask(SStatus.SPP)
+                val sMask = bitMask(SStatus.SIE) | bitMask(SStatus.SPIE) | bitMask(SStatus.SPP) |
+                    bitMask(SStatus.SUM) | bitMask(SStatus.MXR)
                 mstatus := (mstatus & ~sMask) | (writeData & sMask)
             }
             is(CSR.MEDELEG) {
@@ -419,7 +430,7 @@ class CSRFile(
                 mie := (mie & ~(mideleg & supervisorInterruptMask)) | (writeData & mideleg & supervisorInterruptMask)
             }
             is(CSR.MTVEC) {
-                mtvec := writeData
+                mtvec := legalizeTrapVector(writeData)
             }
             is(CSR.MCOUNTEREN) {
                 mcounteren := writeData
@@ -440,7 +451,7 @@ class CSRFile(
                 minstret := writeData
             }
             is(CSR.STVEC) {
-                stvec := writeData
+                stvec := legalizeTrapVector(writeData)
             }
             is(CSR.MEPC) {
                 mepc := writeData
@@ -575,14 +586,20 @@ class CSRFile(
     io.interrupt_cause := selectedInterruptCause
     io.ie_out   := mstatus(MStatus.MIE)
     io.interrupt := machineInterrupt || supervisorInterrupt
+    val effectiveDataPriv = Mux(
+        mstatus(MStatus.MPRV) && CurrentPrivLevel === PrivilegeLevel.Machine,
+        MStatus.getMPP(mstatus),
+        CurrentPrivLevel
+    )
     io.mem_cfg_out.priv := CurrentPrivLevel
+    io.mem_cfg_out.data_priv := effectiveDataPriv
     io.mem_cfg_out.mmu_en := features.mmu.B
     io.mem_cfg_out.satp := satp
     io.mem_cfg_out.pmpcfg0 := pmpcfg0
     io.mem_cfg_out.pmpaddr := pmpaddr
-    io.mem_cfg_out.mxr := false.B
-    io.mem_cfg_out.sum := false.B
-    io.mem_cfg_out.mprv := false.B
+    io.mem_cfg_out.mxr := mstatus(MStatus.MXR)
+    io.mem_cfg_out.sum := mstatus(MStatus.SUM)
+    io.mem_cfg_out.mprv := mstatus(MStatus.MPRV)
 
     val snapshotSret = io.is_ret && io.ret_type === TrapReturnType.SRET && supervisorEnabled
     val snapshotMstatus = Mux(

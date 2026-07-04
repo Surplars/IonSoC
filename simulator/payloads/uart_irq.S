@@ -41,6 +41,7 @@ _start:
 wait_irq:
     j    wait_irq
 
+.balign 4
 trap_handler:
     csrr t0, mcause
     li   t1, 1
