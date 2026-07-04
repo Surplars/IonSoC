@@ -11,6 +11,7 @@ object InterruptControllerKind extends Enumeration {
 object MemorySizes {
     val DefaultSramSize: Int = 0x10000
     val FirmwareSramSize: Int = 0x01000000
+    val LinuxBootSramSize: Int = 0x08000000
 }
 
 object MemoryBases {
@@ -96,9 +97,15 @@ object SoCProfiles {
         interruptController = InterruptControllerKind.PLIC
     )
 
-    val ModernAIA: SoCFeatures = LinuxCapablePLIC.copy(interruptController = InterruptControllerKind.AIA)
+    // Linux boot profile keeps the same device contract as firmware smoke, but
+    // uses enough RAM for a small kernel/initramfs bring-up path.
+    val LinuxBootPLIC: SoCFeatures = LinuxCapablePLIC.copy(
+        sramSizeBytes = MemorySizes.LinuxBootSramSize
+    )
 
-    val CoherentMulticorePreview: SoCFeatures = LinuxCapablePLIC.copy(coherentCaches = true)
+    val ModernAIA: SoCFeatures = LinuxBootPLIC.copy(interruptController = InterruptControllerKind.AIA)
+
+    val CoherentMulticorePreview: SoCFeatures = LinuxBootPLIC.copy(coherentCaches = true)
 }
 
 case class AddressRegion(name: String, base: BigInt, size: BigInt) {
@@ -121,6 +128,7 @@ object Config {
     val SramBase: BigInt  = MemoryBases.DefaultSramBase
     val DefaultSramSize: Int = MemorySizes.DefaultSramSize  // 64 KB
     val FirmwareSramSize: Int = MemorySizes.FirmwareSramSize // 16 MB, enough for SBI firmware + payload smoke tests.
+    val LinuxBootSramSize: Int = MemorySizes.LinuxBootSramSize // 128 MB, enough for small Linux bring-up images.
     val SramSize: BigInt  = DefaultSramSize
     val UartBase: BigInt  = 0x10010000L // after SRAM region
     val UartSize: BigInt  = 0x1000L

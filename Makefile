@@ -32,12 +32,14 @@ SYSTEM_VERILOG_DIR = $(BUILD_DIR)/../../build/rtl
 MCU_SYSTEM_VERILOG_DIR = $(BUILD_DIR)/../../build/rtl-mcu
 ICACHE_SYSTEM_VERILOG_DIR = $(BUILD_DIR)/../../build/rtl-icache
 FIRMWARE_SYSTEM_VERILOG_DIR = $(BUILD_DIR)/../../build/rtl-firmware
+LINUX_SYSTEM_VERILOG_DIR = $(BUILD_DIR)/../../build/rtl-linux
 DIFFTEST_SYSTEM_VERILOG_DIR = $(BUILD_DIR)/../../build/rtl-difftest
 PAYLOAD_BUILD_DIR = $(BUILD_DIR)/payload
 VERILATOR_OBJ_DIR = $(BUILD_DIR)/obj$(VERILATOR_OBJ_SUFFIX)
 MCU_VERILATOR_OBJ_DIR = $(BUILD_DIR)/obj-mcu$(VERILATOR_OBJ_SUFFIX)
 ICACHE_VERILATOR_OBJ_DIR = $(BUILD_DIR)/obj-icache$(VERILATOR_OBJ_SUFFIX)
 FIRMWARE_VERILATOR_OBJ_DIR = $(BUILD_DIR)/obj-firmware$(VERILATOR_OBJ_SUFFIX)
+LINUX_VERILATOR_OBJ_DIR = $(BUILD_DIR)/obj-linux$(VERILATOR_OBJ_SUFFIX)
 SIM_HARNESS_DIR = $(SIMULATOR_DIR)/harness
 SIM_RTL_DIR = $(SIMULATOR_DIR)/rtl
 PAYLOAD_SRC_DIR = $(SIMULATOR_DIR)/payloads
@@ -48,11 +50,13 @@ FILE_LIST = $(SYSTEM_VERILOG_DIR)/filelist.f
 MCU_FILE_LIST = $(MCU_SYSTEM_VERILOG_DIR)/filelist.f
 ICACHE_FILE_LIST = $(ICACHE_SYSTEM_VERILOG_DIR)/filelist.f
 FIRMWARE_FILE_LIST = $(FIRMWARE_SYSTEM_VERILOG_DIR)/filelist.f
+LINUX_FILE_LIST = $(LINUX_SYSTEM_VERILOG_DIR)/filelist.f
 DIFFTEST_FILE_LIST = $(DIFFTEST_SYSTEM_VERILOG_DIR)/filelist.f
 RTL_STAMP = $(SYSTEM_VERILOG_DIR)/.generated.stamp
 MCU_RTL_STAMP = $(MCU_SYSTEM_VERILOG_DIR)/.generated.stamp
 ICACHE_RTL_STAMP = $(ICACHE_SYSTEM_VERILOG_DIR)/.generated.stamp
 FIRMWARE_RTL_STAMP = $(FIRMWARE_SYSTEM_VERILOG_DIR)/.generated.stamp
+LINUX_RTL_STAMP = $(LINUX_SYSTEM_VERILOG_DIR)/.generated.stamp
 DIFFTEST_RTL_STAMP = $(DIFFTEST_SYSTEM_VERILOG_DIR)/.generated.stamp
 TB = $(SIM_HARNESS_DIR)/verilator_main.cpp
 PAYLOAD_SRC ?= $(PAYLOAD_SRC_DIR)/timer.S
@@ -90,13 +94,24 @@ VSOC_BIN = $(VERILATOR_OBJ_DIR)/VSoc
 MCU_VSOC_BIN = $(MCU_VERILATOR_OBJ_DIR)/VSoc
 ICACHE_VSOC_BIN = $(ICACHE_VERILATOR_OBJ_DIR)/VSoc
 FIRMWARE_VSOC_BIN = $(FIRMWARE_VERILATOR_OBJ_DIR)/VSoc
+LINUX_VSOC_BIN = $(LINUX_VERILATOR_OBJ_DIR)/VSoc
 IONSOC_DTS ?= $(BUILD_DIR)/ionsoc.dts
 IONSOC_DTB ?= $(BUILD_DIR)/ionsoc.dtb
+LINUX_DTS ?= $(BUILD_DIR)/ionsoc-linux.dts
+LINUX_DTB ?= $(BUILD_DIR)/ionsoc-linux.dtb
+LINUX_SRAM_BASE ?= 0x40000000
+LINUX_SRAM_SIZE ?= 0x08000000
+LINUX_DTB_ADDR ?= 0x47f00000
+LINUX_KERNEL_ADDR ?= 0x40200000
+LINUX_KERNEL_ELF ?=
 RUSTSBI_TARGET_DIR = $(RUSTSBI_DIR)/target/riscv64gc-unknown-none-elf/release
 DEFAULT_RUSTSBI_FW_ELF = $(RUSTSBI_TARGET_DIR)/rustsbi-prototyper-jump.elf
 RUSTSBI_FW_ELF ?= $(DEFAULT_RUSTSBI_FW_ELF)
 RUSTSBI_CONFIG ?= prototyper/prototyper/config/ionsoc.toml
 OPENSBI_FW_JUMP_ELF ?= $(OPENSBI_DIR)/build/platform/generic/firmware/fw_jump.elf
+OPENSBI_FW_JUMP_ADDR ?= 0x40100000
+LINUX_OPENSBI_BUILD_DIR ?= $(OPENSBI_DIR)/build-ionsoc-linux
+LINUX_OPENSBI_FW_JUMP_ELF ?= $(LINUX_OPENSBI_BUILD_DIR)/platform/generic/firmware/fw_jump.elf
 OPENSBI_PLATFORM ?= generic
 OPENSBI_CROSS_COMPILE ?= $(COMPILER)
 # Keep OpenSBI within the hardware ISA profile. Generic OpenSBI defaults to
@@ -312,6 +327,12 @@ $(FIRMWARE_RTL_STAMP) $(FIRMWARE_FILE_LIST) &: $(RTL_SCALA_SOURCES) build.mill
 
 sim-verilog-firmware: $(FIRMWARE_RTL_STAMP)
 
+$(LINUX_RTL_STAMP) $(LINUX_FILE_LIST) &: $(RTL_SCALA_SOURCES) build.mill
+	mill -i IonSoC.test.runMain sim.LinuxTopMain
+	@touch $(LINUX_RTL_STAMP)
+
+sim-verilog-linux: $(LINUX_RTL_STAMP)
+
 # DiffTest RTL generation emits the official OpenXiangShan probe wrappers and
 # generated C++ state headers under build/generated-src. Keep it separate from
 # normal Verilator flows so ordinary bring-up does not require NEMU/libdifftest.
@@ -472,7 +493,7 @@ $(FIRMWARE_TRAMPOLINE_ELF): $(PAYLOAD_SRC_DIR)/firmware_trampoline.S
 
 $(IONSOC_DTS): $(RTL_SCALA_SOURCES) build.mill
 	@mkdir -p $(dir $@)
-	mill -i IonSoC.test.runMain sim.DeviceTreeMain $@
+	mill -i IonSoC.test.runMain sim.DeviceTreeMain $@ firmware
 
 $(IONSOC_DTB): $(IONSOC_DTS)
 	@mkdir -p $(BUILD_DIR)
@@ -481,6 +502,18 @@ $(IONSOC_DTB): $(IONSOC_DTS)
 sim-dts: $(IONSOC_DTS)
 
 sim-dtb: $(IONSOC_DTB)
+
+$(LINUX_DTS): $(RTL_SCALA_SOURCES) build.mill
+	@mkdir -p $(dir $@)
+	mill -i IonSoC.test.runMain sim.DeviceTreeMain $@ linux
+
+$(LINUX_DTB): $(LINUX_DTS)
+	@mkdir -p $(BUILD_DIR)
+	dtc -I dts -O dtb -o $@ $<
+
+sim-dts-linux: $(LINUX_DTS)
+
+sim-dtb-linux: $(LINUX_DTB)
 
 $(RUSTSBI_FW_ELF): $(IONSOC_DTB)
 	@if [ "$@" != "$(DEFAULT_RUSTSBI_FW_ELF)" ]; then \
@@ -506,7 +539,15 @@ $(OPENSBI_FW_JUMP_ELF):
 		echo "Clone or copy OpenSBI there, or run with OPENSBI_FW_JUMP_ELF=/path/to/fw_jump.elf."; \
 		exit 1; \
 	fi
-	$(MAKE) -C $(OPENSBI_DIR) PLATFORM=$(OPENSBI_PLATFORM) CROSS_COMPILE=$(OPENSBI_CROSS_COMPILE) PLATFORM_RISCV_ISA=$(OPENSBI_PLATFORM_RISCV_ISA) FW_TEXT_START=0x40000000 FW_JUMP_ADDR=0x40100000 FW_OPTIONS=0
+	$(MAKE) -C $(OPENSBI_DIR) PLATFORM=$(OPENSBI_PLATFORM) CROSS_COMPILE=$(OPENSBI_CROSS_COMPILE) PLATFORM_RISCV_ISA=$(OPENSBI_PLATFORM_RISCV_ISA) FW_TEXT_START=0x40000000 FW_JUMP_ADDR=$(OPENSBI_FW_JUMP_ADDR) FW_OPTIONS=0
+
+$(LINUX_OPENSBI_FW_JUMP_ELF):
+	@if [ ! -d "$(OPENSBI_DIR)" ]; then \
+		echo "OpenSBI source not found at $(OPENSBI_DIR)."; \
+		echo "Clone or copy OpenSBI there, or run with LINUX_OPENSBI_FW_JUMP_ELF=/path/to/fw_jump.elf."; \
+		exit 1; \
+	fi
+	$(MAKE) -C $(OPENSBI_DIR) O=$(abspath $(LINUX_OPENSBI_BUILD_DIR)) PLATFORM=$(OPENSBI_PLATFORM) CROSS_COMPILE=$(OPENSBI_CROSS_COMPILE) PLATFORM_RISCV_ISA=$(OPENSBI_PLATFORM_RISCV_ISA) FW_TEXT_START=0x40000000 FW_JUMP_ADDR=$(LINUX_KERNEL_ADDR) FW_OPTIONS=0
 
 $(VSOC_BIN): $(RTL_STAMP) $(TB) $(FILE_LIST) $(SIM_RTL_DIR)/filelist.f Makefile
 	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(SYSTEM_VERILOG_DIR) -f $(FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) $(VERILATOR_PUBLIC_FLAGS) $(VERILATOR_TRACE_FLAGS) --Mdir $(VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
@@ -524,6 +565,10 @@ $(FIRMWARE_VSOC_BIN): $(FIRMWARE_RTL_STAMP) $(TB) $(FIRMWARE_FILE_LIST) $(SIM_RT
 	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(FIRMWARE_SYSTEM_VERILOG_DIR) -f $(FIRMWARE_FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) $(VERILATOR_PUBLIC_FLAGS) $(VERILATOR_TRACE_FLAGS) --Mdir $(FIRMWARE_VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
 	@$(MAKE) -C $(FIRMWARE_VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j $(NPROC)
 
+$(LINUX_VSOC_BIN): $(LINUX_RTL_STAMP) $(TB) $(LINUX_FILE_LIST) $(SIM_RTL_DIR)/filelist.f Makefile
+	$(VERILATOR) --cc -I$(SIM_RTL_DIR) -I$(LINUX_SYSTEM_VERILOG_DIR) -f $(LINUX_FILE_LIST) -f $(SIM_RTL_DIR)/filelist.f --exe $(TB) $(VERILATOR_PUBLIC_FLAGS) $(VERILATOR_TRACE_FLAGS) --Mdir $(LINUX_VERILATOR_OBJ_DIR) --top-module SimTop --prefix VSoc
+	@$(MAKE) -C $(LINUX_VERILATOR_OBJ_DIR) -f VSoc.mk VSoc -j $(NPROC)
+
 verilator-build: $(VSOC_BIN)
 
 verilator-build-mcu: $(MCU_VSOC_BIN)
@@ -531,6 +576,8 @@ verilator-build-mcu: $(MCU_VSOC_BIN)
 verilator-build-icache: $(ICACHE_VSOC_BIN)
 
 verilator-build-firmware: $(FIRMWARE_VSOC_BIN)
+
+verilator-build-linux: $(LINUX_VSOC_BIN)
 
 verilator: payload $(VSOC_BIN)
 	./$(VSOC_BIN) $(RUN_ARGS)
@@ -621,6 +668,21 @@ opensbi-smoke: verilator-run-opensbi
 
 verilator-run-firmware-probe: $(FIRMWARE_PROBE_ELF) $(SBI_SMOKE_ELF) $(FIRMWARE_TRAMPOLINE_ELF) $(IONSOC_DTB) $(FIRMWARE_VSOC_BIN)
 	ION_EXPECT_UART="IonSoC firmware probe" ION_REQUIRE_PAYLOAD_ENTRY=0 ION_TRACE_BOOT=1 ION_SRAM_BASE=0x40000000 ION_SRAM_SIZE=0x01000000 ION_DTB_ADDR=0x40f00000 ION_BOOT_A1=0x40f00000 ION_BOOT_A2=0x40100000 ION_MAX_CYCLES=200000 ./$(FIRMWARE_VSOC_BIN) --rustsbi $(FIRMWARE_TRAMPOLINE_ELF) $(FIRMWARE_PROBE_ELF) $(SBI_SMOKE_ELF) $(IONSOC_DTB)
+
+verilator-run-linux-profile-probe: $(FIRMWARE_PROBE_ELF) $(SBI_SMOKE_ELF) $(FIRMWARE_TRAMPOLINE_ELF) $(LINUX_DTB) $(LINUX_VSOC_BIN)
+	ION_EXPECT_UART="IonSoC firmware probe" ION_REQUIRE_PAYLOAD_ENTRY=0 ION_TRACE_BOOT=1 ION_SRAM_BASE=$(LINUX_SRAM_BASE) ION_SRAM_SIZE=$(LINUX_SRAM_SIZE) ION_DTB_ADDR=$(LINUX_DTB_ADDR) ION_BOOT_A1=$(LINUX_DTB_ADDR) ION_BOOT_A2=0x40100000 ION_MAX_CYCLES=200000 ./$(LINUX_VSOC_BIN) --rustsbi $(FIRMWARE_TRAMPOLINE_ELF) $(FIRMWARE_PROBE_ELF) $(SBI_SMOKE_ELF) $(LINUX_DTB)
+
+verilator-run-linux:
+	@if [ -z "$(LINUX_KERNEL_ELF)" ]; then \
+		echo "Set LINUX_KERNEL_ELF=/path/to/riscv64 Linux ELF before running this target."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(LINUX_KERNEL_ELF)" ]; then \
+		echo "Linux kernel ELF not found: $(LINUX_KERNEL_ELF)"; \
+		exit 1; \
+	fi
+	@$(MAKE) --no-print-directory $(LINUX_OPENSBI_FW_JUMP_ELF) $(FIRMWARE_TRAMPOLINE_ELF) $(LINUX_DTB) $(LINUX_VSOC_BIN)
+	ION_REQUIRE_PAYLOAD_ENTRY=1 ION_TRACE_BOOT=1 ION_SRAM_BASE=$(LINUX_SRAM_BASE) ION_SRAM_SIZE=$(LINUX_SRAM_SIZE) ION_DTB_ADDR=$(LINUX_DTB_ADDR) ION_BOOT_A1=$(LINUX_DTB_ADDR) ION_BOOT_A2=$(LINUX_KERNEL_ADDR) ION_MAX_CYCLES=50000000 ./$(LINUX_VSOC_BIN) --sbi-firmware $(FIRMWARE_TRAMPOLINE_ELF) $(LINUX_OPENSBI_FW_JUMP_ELF) $(LINUX_KERNEL_ELF) $(LINUX_DTB)
 
 verilator-clint32: verilator-run-clint32
 

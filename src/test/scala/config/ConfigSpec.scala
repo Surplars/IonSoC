@@ -37,6 +37,11 @@ class ConfigSpec extends AnyFunSuite {
         assert(SoCProfiles.LinuxCapablePLIC.uart)
         assert(SoCProfiles.LinuxCapablePLIC.clint)
         assert(SoCProfiles.LinuxCapablePLIC.interruptController == InterruptControllerKind.PLIC)
+        assert(SoCProfiles.LinuxBootPLIC.sramBase == MemoryBases.FirmwareSramBase)
+        assert(SoCProfiles.LinuxBootPLIC.sramSizeBytes == MemorySizes.LinuxBootSramSize)
+        assert(SoCProfiles.LinuxBootPLIC.mmu)
+        assert(SoCProfiles.LinuxBootPLIC.iCache)
+        assert(SoCProfiles.LinuxBootPLIC.dCache)
         assert(!Config.mmioRegionsFor(SoCProfiles.ModernAIA).map(_.name).contains("plic"))
         assert(SoCProfiles.ModernAIA.mmu)
     }
@@ -52,6 +57,15 @@ class ConfigSpec extends AnyFunSuite {
         assert(dts.contains("clint@2000000"))
         assert(dts.contains("interrupt-controller@c000000"))
         assert(dts.contains("riscv,ndev = <31>;"))
+    }
+
+    test("Linux boot profile exposes a larger DTB-visible memory map") {
+        val dts = DeviceTree.linuxBootDts()
+
+        assert(dts.contains("memory@40000000"))
+        assert(dts.contains("reg = <0x00000000 0x40000000 0x00000000 0x08000000>;"))
+        assert(dts.contains("""mmu-type = "riscv,sv39";"""))
+        assert(dts.contains("interrupt-controller@c000000"))
     }
 
     test("ISA profiles keep the MCU baseline at RV64IMAC plus privileged support") {

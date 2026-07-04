@@ -25,6 +25,9 @@ class SimTopICache extends IonSoC(SoCFeatures(iCache = true)) {
 class SimTopFirmware extends IonSoC(SoCProfiles.LinuxCapablePLIC, ISAProfiles.RV64IMACB) {
     override def desiredName: String = "SimTop"
 }
+class SimTopLinux extends IonSoC(SoCProfiles.LinuxBootPLIC, ISAProfiles.RV64IMACB) {
+    override def desiredName: String = "SimTop"
+}
 
 object EmitHelper {
     def emit(top: => RawModule, targetDir: String = "build/rtl"): Unit = {
@@ -52,10 +55,20 @@ object FirmwareTopMain extends App {
     EmitHelper.emit(new SimTopFirmware, "build/rtl-firmware")
 }
 
+object LinuxTopMain extends App {
+    EmitHelper.emit(new SimTopLinux, "build/rtl-linux")
+}
+
 object DeviceTreeMain extends App {
     val output = Path.of(args.headOption.getOrElse("simulator/build/ionsoc.dts"))
+    val profile = args.lift(1).getOrElse("firmware")
+    val dts = profile match {
+        case "firmware" => DeviceTree.linuxCapableDts()
+        case "linux"    => DeviceTree.linuxBootDts()
+        case other      => throw new IllegalArgumentException(s"unknown device-tree profile: $other")
+    }
     Option(output.getParent).foreach(Files.createDirectories(_))
-    Files.writeString(output, DeviceTree.linuxCapableDts())
+    Files.writeString(output, dts)
 }
 
 object DifftestTopMain extends App {

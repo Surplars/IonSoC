@@ -14,6 +14,9 @@ object DeviceTree {
     def linuxCapableDts(): String =
         dts(SoCProfiles.LinuxCapablePLIC, ISAProfiles.RV64IMACB)
 
+    def linuxBootDts(): String =
+        dts(SoCProfiles.LinuxBootPLIC, ISAProfiles.RV64IMACB)
+
     def dts(
         features: SoCFeatures,
         enabledExt: Set[Extension.Value] = ISAProfiles.RV64IMACB,
