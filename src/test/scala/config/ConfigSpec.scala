@@ -1,7 +1,7 @@
 package config
 
 import org.scalatest.funsuite.AnyFunSuite
-import soc.config.{Config, ISAProfiles, InterruptControllerKind, SoCFeatures, SoCProfiles}
+import soc.config.{Config, DeviceTree, ISAProfiles, InterruptControllerKind, MemoryBases, MemorySizes, SoCFeatures, SoCProfiles}
 
 class ConfigSpec extends AnyFunSuite {
     test("default MMIO region order matches IonSoC slave connection order") {
@@ -29,8 +29,29 @@ class ConfigSpec extends AnyFunSuite {
         assert(SoCProfiles.BareMetalMCU.iCache)
         assert(SoCProfiles.BareMetalMCU.dCache)
         assert(Config.mmioRegionsFor(SoCProfiles.LinuxCapablePLIC).map(_.name).contains("plic"))
+        assert(SoCProfiles.LinuxCapablePLIC.mmu)
+        assert(SoCProfiles.LinuxCapablePLIC.iCache)
+        assert(SoCProfiles.LinuxCapablePLIC.dCache)
+        assert(SoCProfiles.LinuxCapablePLIC.sramBase == MemoryBases.FirmwareSramBase)
+        assert(SoCProfiles.LinuxCapablePLIC.sramSizeBytes == MemorySizes.FirmwareSramSize)
+        assert(SoCProfiles.LinuxCapablePLIC.uart)
+        assert(SoCProfiles.LinuxCapablePLIC.clint)
+        assert(SoCProfiles.LinuxCapablePLIC.interruptController == InterruptControllerKind.PLIC)
         assert(!Config.mmioRegionsFor(SoCProfiles.ModernAIA).map(_.name).contains("plic"))
         assert(SoCProfiles.ModernAIA.mmu)
+    }
+
+    test("Linux-capable device tree is generated from the SoC profile contract") {
+        val dts = DeviceTree.linuxCapableDts()
+
+        assert(dts.contains("""riscv,isa = "rv64imac_zicsr_zifencei_zba_zbb_zbs";"""))
+        assert(dts.contains("""mmu-type = "riscv,sv39";"""))
+        assert(dts.contains("memory@40000000"))
+        assert(dts.contains("reg = <0x00000000 0x40000000 0x00000000 0x01000000>;"))
+        assert(dts.contains("uart@10010000"))
+        assert(dts.contains("clint@2000000"))
+        assert(dts.contains("interrupt-controller@c000000"))
+        assert(dts.contains("riscv,ndev = <31>;"))
     }
 
     test("ISA profiles keep the MCU baseline at RV64IMAC plus privileged support") {

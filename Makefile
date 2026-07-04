@@ -90,7 +90,8 @@ VSOC_BIN = $(VERILATOR_OBJ_DIR)/VSoc
 MCU_VSOC_BIN = $(MCU_VERILATOR_OBJ_DIR)/VSoc
 ICACHE_VSOC_BIN = $(ICACHE_VERILATOR_OBJ_DIR)/VSoc
 FIRMWARE_VSOC_BIN = $(FIRMWARE_VERILATOR_OBJ_DIR)/VSoc
-IONSOC_DTB = $(BUILD_DIR)/ionsoc.dtb
+IONSOC_DTS ?= $(BUILD_DIR)/ionsoc.dts
+IONSOC_DTB ?= $(BUILD_DIR)/ionsoc.dtb
 RUSTSBI_TARGET_DIR = $(RUSTSBI_DIR)/target/riscv64gc-unknown-none-elf/release
 DEFAULT_RUSTSBI_FW_ELF = $(RUSTSBI_TARGET_DIR)/rustsbi-prototyper-jump.elf
 RUSTSBI_FW_ELF ?= $(DEFAULT_RUSTSBI_FW_ELF)
@@ -469,9 +470,17 @@ $(FIRMWARE_TRAMPOLINE_ELF): $(PAYLOAD_SRC_DIR)/firmware_trampoline.S
 	@mkdir -p $(PAYLOAD_BUILD_DIR)
 	$(CC) -march=$(PAYLOAD_MARCH) -mabi=$(PAYLOAD_MABI) -nostdlib -nostartfiles -T$(PAYLOAD_LDS) -o $@ $<
 
-$(IONSOC_DTB): $(FIRMWARE_DIR)/ionsoc.dts
+$(IONSOC_DTS): $(RTL_SCALA_SOURCES) build.mill
+	@mkdir -p $(dir $@)
+	mill -i IonSoC.test.runMain sim.DeviceTreeMain $@
+
+$(IONSOC_DTB): $(IONSOC_DTS)
 	@mkdir -p $(BUILD_DIR)
 	dtc -I dts -O dtb -o $@ $<
+
+sim-dts: $(IONSOC_DTS)
+
+sim-dtb: $(IONSOC_DTB)
 
 $(RUSTSBI_FW_ELF): $(IONSOC_DTB)
 	@if [ "$@" != "$(DEFAULT_RUSTSBI_FW_ELF)" ]; then \

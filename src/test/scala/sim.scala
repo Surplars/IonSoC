@@ -1,9 +1,13 @@
 package sim
 
+import java.nio.file.Files
+import java.nio.file.Path
+
 import chisel3._
 import _root_.circt.stage.ChiselStage
 import difftest.DifftestModule
 import soc._
+import soc.config.DeviceTree
 import soc.config.ISAProfiles
 import soc.config.SoCFeatures
 import soc.config.SoCProfiles
@@ -18,7 +22,7 @@ class SimTopMCU extends IonSoC(SoCProfiles.BareMetalMCU, ISAProfiles.RV64IMACB) 
 class SimTopICache extends IonSoC(SoCFeatures(iCache = true)) {
     override def desiredName: String = "SimTop"
 }
-class SimTopFirmware extends IonSoC(SoCProfiles.LinuxCapablePLIC.copy(mmu = false)) {
+class SimTopFirmware extends IonSoC(SoCProfiles.LinuxCapablePLIC, ISAProfiles.RV64IMACB) {
     override def desiredName: String = "SimTop"
 }
 
@@ -46,6 +50,12 @@ object ICacheTopMain extends App {
 
 object FirmwareTopMain extends App {
     EmitHelper.emit(new SimTopFirmware, "build/rtl-firmware")
+}
+
+object DeviceTreeMain extends App {
+    val output = Path.of(args.headOption.getOrElse("simulator/build/ionsoc.dts"))
+    Option(output.getParent).foreach(Files.createDirectories(_))
+    Files.writeString(output, DeviceTree.linuxCapableDts())
 }
 
 object DifftestTopMain extends App {

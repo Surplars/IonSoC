@@ -83,8 +83,8 @@ object SoCProfiles {
         interruptController = InterruptControllerKind.PLIC
     )
 
-    // Large-SRAM firmware profile. MMU is represented in the feature contract,
-    // but current FirmwareTopMain overrides it off until Sv39/TLB lands.
+    // Large-SRAM firmware profile for SBI/Linux bring-up: Sv39 MMU, caches,
+    // CLINT, PLIC, UART, and a larger SRAM window for firmware plus payload.
     val LinuxCapablePLIC: SoCFeatures = SoCFeatures(
         mmu = true,
         iCache = true,
