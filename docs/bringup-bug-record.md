@@ -399,10 +399,72 @@ make openocd-smoke
 
 这让 bring-up 同时保留“快速裸机测试”和“接近真实 firmware 链路”两种入口。
 
-## 12. 当前剩余风险
+## 12. Linux Sv39 text patch fixmap fault
 
+### 症状
+
+Linux 已能通过 `make verilator-run-linux` 从 ROM trampoline、OpenSBI 进入 S-mode kernel，并打印到 `Initmem setup node 0`。这证明 OpenSBI -> Linux handoff、DTB、early console 和早期内存初始化链路已经走通。
+
+继续把期望点推到 `Memory:` 时仍失败：
+
+```bash
+env LINUX_EXPECT_UART='Memory:' LINUX_MAX_CYCLES=120000000 make verilator-run-linux
+```
+
+当前日志显示：
+
+```text
+Unable to handle kernel paging request at virtual address fffffffffebfa030
+Current swapper pgtable: 4K pagesize, 39-bit VAs, pgdp=0x00000000403cb000
+[fffffffffebfa030] pgd=0000000000000000, p4d=0000000000000000, pud=0000000000000000
+epc : 0xffffffff8000771e
+ra  : 0xffffffff80007888
+status: 0000000000000100 badaddr: fffffffffebfa030 cause: 000000000000000d
+```
+
+`epc` 落在 `patch_unmap` 跳入 `__set_fixmap` 附近，`ra` 落在 `patch_insn_write`。进入 fault 前的 boot trace 显示 `a3=0xfffffffffebfa000`，即 Linux text patch 使用的 `FIX_TEXT_POKE0` fixmap page。
+
+### 已确认事实
+
+- Linux 此时已在 Sv39：`satp = 0x80000000000403cb`。
+- `swapper_pg_dir` 符号地址为 `0xffffffff801cb000`，物理页为 `0x403cb000`。
+- fault VA `0xfffffffffebfa030` 的 Sv39 PGD index 是 511，对应根页表项地址 `0x403cbff8`。
+- LSU/PTW trace 显示 PTW 请求 `0x403cbff8`，最终返回 `0x0000000000000000`，于是报 store page fault。
+- `patch_insn_write` 通过 `FIX_TEXT_POKE0` 调用 `__set_fixmap` 后，再对返回的 fixmap VA 调用 `copy_to_kernel_nofault()`。
+- `__set_fixmap` 按运行时 `pgtable_l5_enabled/pgtable_l4_enabled` 和 `kernel_map.page_offset` 计算 fixmap VA 与 `fixmap_pte` 下标。
+- `setup_vm_final()` 会用 `create_pgd_mapping(swapper_pg_dir, FIXADDR_START, __pa_symbol(fixmap_pgd_next), PGDIR_SIZE, PAGE_TABLE)` 建 final fixmap 顶层映射。
+
+### 已排除/收窄
+
+项目内基础 `sv39` payload 已通过：
+
+```bash
+make regress
+# simulator/build/difftest-matrix/sv39.log: HIT GOOD TRAP
+```
+
+另外新增 `simulator/payloads/sv39_fixmap.S` 作为定向诊断。它显式建立高半区 fixmap 映射：
+
+```text
+root[511] -> l1[501] -> l0[506] -> 0xfffffffffebfa000
+```
+
+并在启用 Sv39 后通过该 VA store/load。Linux profile binary 下运行结果为 `test passed`。这说明当前故障不像是“硬件完全不能访问 Sv39 高半区 fixmap VA”，更可能是 Linux final fixmap 页表建立、运行时 VA layout 或相关初始化顺序没有把 `swapper_pg_dir[511]` 建好。
+
+### 下一步
+
+需要继续追踪：
+
+- `setup_vm_final()` 实际传给 `create_pgd_mapping()` 的 `FIXADDR_START` 在 Sv39 下对应哪个 PGD slot。
+- `patch_insn_write()` 中 `FIX_TEXT_POKE0` 计算出的 fixmap VA 为什么落在 slot 511。
+- `pgtable_l4_enabled/pgtable_l5_enabled/kernel_map.page_offset` 在 `setup_vm_final()` 和 `patch_insn_write()` 两处是否一致。
+- 是否需要修 SoC 的页表/缓存一致性，还是需要调整 Linux 配置、DTB/bootarg 或内核 VA layout。
+
+## 13. 当前剩余风险
+
+- Linux 仍只是 early boot 里程碑通过，还未到 `Memory:`，更未证明 rootfs/userspace 完整启动。
 - CSR PMU 事件号目前是 IonSoC 平台定义，尚未做更完整的 RISC-V Sscofpmf/overflow 语义。
-- MMU 尚未实现页表 walk/TLB。
+- Sv39 页表 walk 已接入 IF/LSU；TLB、ASID、accessed/dirty 自动更新和完整 Linux 后续压力仍需继续补齐。
 - PLIC 已有 level gateway busy/complete 语义；edge/configurable gateway 和 AIA 未实现。
 - Cache line 太小，直接映射，性能有限。
 - Atomic reservation 只适合单 hart。

@@ -21,6 +21,7 @@ make verilator
 make regress
 make regress-icache
 make verilator-run-rustsbi
+make verilator-run-linux
 ```
 
 依赖：
@@ -104,6 +105,8 @@ make test-slow
 - `firmware_trampoline.S`: ROM 到 firmware SRAM 的 trampoline。
 - `firmware_probe.S`: firmware bring-up probe。
 - `sbi_smoke.S`: RustSBI 跳入 S-mode 后的 SBI console smoke。
+- `sv39.S`: 基础 Sv39 页表 walk smoke。
+- `sv39_fixmap.S`: 高半区 fixmap VA 定向诊断，用来验证 Linux text poke 使用的 `0xfffffffffebfa000` 附近地址。
 
 Linker scripts：
 
@@ -136,11 +139,18 @@ Linker scripts：
 | `ION_TRACE_BOOT=1` | 打印 ROM/SRAM/payload/trap/cache boot trace |
 | `ION_TRACE_CPU=1` | 打印 CPU trace |
 | `ION_TRACE_PC_START/END` | 限制 CPU trace PC 范围 |
+| `ION_TRACE_LSU_PTW=1` | 打印 LSU/PTW translation trace |
+| `ION_TRACE_LSU_PTW_VADDR` | 限制 LSU/PTW trace 到指定 VA |
+| `ION_TRACE_DMEM=1` | 打印 D-memory/arbiter trace |
+| `ION_TRACE_DMEM_ADDR` | 限制 D-memory trace 到指定地址 |
+| `ION_TRACE_DMEM_PC_START/END` | 按 PC 范围限制 D-memory trace |
 | `ION_TRACE_IRQ=1` | 打印中断状态 |
 | `ION_TRACE_DMI=1` | 打印 DMI/JTAG debug 状态 |
 | `ION_PERF=1` | 打印 cycles、retired、IPC 和 stall 分解 |
 | `ION_TRACE_WAVE=1` | 生成 `simulator/build/wave.vcd`；默认关闭，长仿真不要打开 |
 | `ION_EXPECT_UART` | UART 预期字符串 |
+| `ION_ACCEPT_UART_MATCH=1` | UART 命中 `ION_EXPECT_UART` 即可作为仿真通过条件，适合不会写 `a7=93/a0=0` 退出哨兵的 OS |
+| `ION_STOP_ON_UART_MATCH=1` | UART 命中 `ION_EXPECT_UART` 后立即停止仿真 |
 | `ION_SRAM_BASE/SIZE` | 覆盖 SRAM 地址/大小 |
 | `ION_DTB_ADDR` | DTB 加载地址 |
 | `ION_BOOT_A0/A1/A2` | 注入启动寄存器 |
@@ -215,6 +225,65 @@ Redirecting hart 0 to 0x00000040100000 in Supervisor mode.
 IonSoC SBI smoke
 [rustsbi]: gp=0, a7=93, a0=0, test passed
 ```
+
+## OpenSBI / Linux Flow
+
+Linux profile 使用独立 RTL/Verilator 输出目录：
+
+- RTL: `build/rtl-linux`
+- Verilator obj: `simulator/build/obj-linux`
+- SRAM: `0x40000000..0x47ffffff`
+- OpenSBI `fw_jump`: `0x40000000`
+- Linux `Image` ELF wrapper: `0x40200000`
+- DTB: `0x47f00000`
+
+常用目标：
+
+```bash
+make sim-verilog-linux
+make verilator-build-linux
+make sim-dtb-linux
+make linux-image-elf
+make verilator-run-linux
+```
+
+默认 Linux 目标使用：
+
+```bash
+LINUX_EXPECT_UART='Initmem setup node 0'
+LINUX_MAX_CYCLES=50000000
+```
+
+这只是 early boot 里程碑。继续追完整启动时使用更深预期点：
+
+```bash
+env LINUX_EXPECT_UART='Memory:' LINUX_MAX_CYCLES=120000000 make verilator-run-linux
+```
+
+截至当前记录，该命令仍会在 Linux text patch 阶段 fault：
+
+```text
+Unable to handle kernel paging request at virtual address fffffffffebfa030
+Current swapper pgtable: 4K pagesize, 39-bit VAs, pgdp=0x00000000403cb000
+[fffffffffebfa030] pgd=0000000000000000
+epc : 0xffffffff8000771e
+ra  : 0xffffffff80007888
+```
+
+对应路径是 `patch_insn_write` 通过 `FIX_TEXT_POKE0` 临时映射内核 text page 后调用 `copy_to_kernel_nofault()`；PTW 访问 `swapper_pg_dir[511]` 的物理地址 `0x403cbff8`，最终读出 0。当前 `satp` 已是 Sv39，值为 `0x80000000000403cb`。
+
+针对该 fault 额外保留了一个高半区 fixmap 诊断 payload：
+
+```bash
+riscv64-unknown-elf-gcc -march=rv64imac_zicsr -mabi=lp64 -nostdlib -nostartfiles \
+  -Tsimulator/payloads/firmware_bswap.ld \
+  -o simulator/build/payload/sv39_fixmap.elf simulator/payloads/sv39_fixmap.S
+
+ION_SRAM_BASE=0x40000000 ION_SRAM_SIZE=0x08000000 ION_MAX_CYCLES=200000 \
+  ./simulator/build/obj-linux/VSoc --payload sv39_fixmap '' simulator/build/payload/sv39_fixmap.elf
+```
+
+该 payload 显式建立 Sv39 `root[511] -> l1[501] -> l0[506]`，在启用 MMU 后写入并读回 `0xfffffffffebfa000`，当前结果为 `test passed`。这说明“高半区 fixmap VA 的硬件 PTW/load/store 路径”有定向通过证据，Linux 当前失败更可能在 final fixmap 页表建立、运行时 VA layout 或相关初始化顺序上。
 
 ## UART 模拟
 
