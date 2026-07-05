@@ -884,6 +884,56 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("LSU reclassifies translated UART loads as MMIO instead of DCache requests") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+            val root = BigInt("40000000", 16)
+            val l1 = BigInt("40001000", 16)
+            val l0 = BigInt("40002000", 16)
+            val uartPa = BigInt("10010005", 16)
+            val va = BigInt("ffffffc4febf9005", 16)
+            val vpn0 = (va >> 12) & 0x1ff
+            val vpn1 = (va >> 21) & 0x1ff
+            val vpn2 = (va >> 30) & 0x1ff
+
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+            dut.io.mem_cfg.pmpcfg0.poke(pmpNapotRwx.U)
+            dut.io.mem_cfg.pmpaddr(0).poke(BigInt("ffffffffffffffff", 16).U)
+            dut.io.pc_in.poke("h80000320".U)
+            dut.io.alu_out.rd.poke(15.U)
+            dut.io.alu_out.reg_write.poke(true.B)
+            driveLoad(dut, va)
+            dut.io.alu_out.mem.size.poke(0.U)
+            dut.io.alu_out.mem.mask.poke(1.U)
+
+            expectDCacheRead(dut, root + vpn2 * 8)
+            acceptDCacheRead(dut, pte(ppn(l1), V))
+            expectDCacheRead(dut, l1 + vpn1 * 8)
+            acceptDCacheRead(dut, pte(ppn(l0), V))
+            expectDCacheRead(dut, l0 + vpn0 * 8)
+            acceptDCacheRead(dut, pte(ppn(uartPa & ~BigInt("fff", 16)), V | R | W | A | D))
+
+            var sawMmio = false
+            for (_ <- 0 until 4 if !sawMmio) {
+                dut.io.dcache.req.valid.expect(false.B)
+                if (dut.io.mmio.req_valid.peek().litToBoolean) {
+                    sawMmio = true
+                } else {
+                    dut.clock.step()
+                }
+            }
+            if (!sawMmio) {
+                dut.io.mmio.req_valid.expect(true.B)
+            }
+            dut.io.mmio.req_addr.expect(uartPa.U)
+            dut.io.mmio.req_cmd.expect(4.U) // TL Get
+            dut.io.mmio.req_size.expect(0.U)
+        }
+    }
+
     test("LSU bypasses Sv39 translation for machine-mode cache loads even when satp is active") {
         simulate(new LSU(64)) { dut =>
             init(dut)
@@ -1246,6 +1296,39 @@ class LSUSpec extends AnyFunSuite with ChiselSim {
             dut.io.dcache.resp.valid.poke(false.B)
             dut.io.load_data_valid.expect(true.B)
             dut.io.load_data.expect(7.U)
+        }
+    }
+
+    test("LSU performs AMOXOR.D and returns the old value") {
+        simulate(new LSU(64)) { dut =>
+            init(dut)
+
+            driveAtomic(
+                dut,
+                MemOpType.AMO,
+                AtomicOpType.Xor,
+                BigInt("10000010", 16),
+                BigInt("0000000000000001", 16)
+            )
+            dut.clock.step()
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Read)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.io.dcache.resp.bits.rdata.poke(BigInt("0000000000000005", 16).U)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.dcache.req.valid.expect(true.B)
+            dut.io.dcache.req.bits.cmd.expect(CacheCmd.Write)
+            dut.io.dcache.req.bits.wdata.expect(BigInt("0000000000000004", 16).U)
+            dut.clock.step()
+
+            dut.io.dcache.resp.valid.poke(true.B)
+            dut.clock.step()
+            dut.io.dcache.resp.valid.poke(false.B)
+            dut.io.load_data_valid.expect(true.B)
+            dut.io.load_data.expect(BigInt("0000000000000005", 16).U)
         }
     }
 

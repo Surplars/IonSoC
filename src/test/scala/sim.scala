@@ -62,9 +62,10 @@ object LinuxTopMain extends App {
 object DeviceTreeMain extends App {
     val output = Path.of(args.headOption.getOrElse("simulator/build/ionsoc.dts"))
     val profile = args.lift(1).getOrElse("firmware")
+    val extraBootargs = args.lift(2).getOrElse("")
     val dts = profile match {
         case "firmware" => DeviceTree.linuxCapableDts()
-        case "linux"    => DeviceTree.linuxBootDts()
+        case "linux"    => DeviceTree.linuxBootDts(extraBootargs)
         case other      => throw new IllegalArgumentException(s"unknown device-tree profile: $other")
     }
     Option(output.getParent).foreach(Files.createDirectories(_))

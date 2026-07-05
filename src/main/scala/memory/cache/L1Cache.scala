@@ -120,7 +120,7 @@ class L1Cache(val params: TLParams, val nSets: Int = 512, val useTLCoherence: Bo
     val compareHitResp = WireDefault(false.B)
     io.cpu.resp.valid := compareHitResp || hitBufferReadHit
     io.cpu.resp.bits.rdata := Mux(hitBufferReadHit, hitBufferData, Mux(compareHitResp, compareHitReadData, refillReg))
-    io.cpu.resp.bits.err   := respErrReg
+    io.cpu.resp.bits.err   := Mux(compareHitResp || hitBufferReadHit, false.B, respErrReg)
     // ready/fire only accepts the maintenance request. Completion is reported
     // later through cpu.resp, after all dirty writebacks and valid-bit clears.
     io.invalidate.ready := state === sIdle

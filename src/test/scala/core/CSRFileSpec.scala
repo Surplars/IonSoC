@@ -3,6 +3,7 @@ package core
 import chisel3._
 import chisel3.simulator.scalatest.ChiselSim
 import org.scalatest.funsuite.AnyFunSuite
+import soc.config.SoCProfiles
 import soc.core.csr.{CSRFile, HpmEventId}
 import soc.core.pipeline.{CSROps, TrapReturnType}
 import soc.isa.{CSR, MCause, PrivilegeLevel}
@@ -118,6 +119,33 @@ class CSRFileSpec extends AnyFunSuite with ChiselSim {
             writeCsr(dut, CSR.MTVEC, BigInt("80000101", 16))
             dut.io.addr.poke(CSR.MTVEC)
             dut.io.rdata.expect(BigInt("80000101", 16))
+        }
+    }
+
+    test("CSRFile WARL-filters satp to Bare and Sv39 modes") {
+        simulate(new CSRFile(xlen, hartID = 0, features = SoCProfiles.LinuxCapablePLIC)) { dut =>
+            init(dut)
+
+            val sv39 = BigInt(8) << 60
+            val sv48 = BigInt(9) << 60
+            val sv57 = BigInt(10) << 60
+            val root = BigInt("403cb", 16)
+
+            writeCsr(dut, CSR.SATP, sv48 | root)
+            dut.io.addr.poke(CSR.SATP)
+            dut.io.rdata.expect(0.U)
+
+            writeCsr(dut, CSR.SATP, sv39 | root)
+            dut.io.addr.poke(CSR.SATP)
+            dut.io.rdata.expect((sv39 | root).U)
+
+            writeCsr(dut, CSR.SATP, sv57 | root)
+            dut.io.addr.poke(CSR.SATP)
+            dut.io.rdata.expect((sv39 | root).U)
+
+            writeCsr(dut, CSR.SATP, 0)
+            dut.io.addr.poke(CSR.SATP)
+            dut.io.rdata.expect(0.U)
         }
     }
 

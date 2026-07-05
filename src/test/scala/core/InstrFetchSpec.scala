@@ -169,6 +169,47 @@ class InstrFetchSpec extends AnyFunSuite with ChiselSim {
         }
     }
 
+    test("InstrFetch drains an in-flight PTW walk cancelled by a trap") {
+        simulate(new InstrFetch(64, useCache = true, useCompressed = true)) { dut =>
+            init(dut)
+            val root = BigInt("10000000", 16)
+            val l1 = BigInt("10001000", 16)
+            val leafPa = BigInt("80004000", 16)
+            val oldVa = BigInt("40000000", 16)
+            val newVa = BigInt("40001000", 16)
+            val oldVpn2 = (oldVa >> 30) & 0x1ff
+            val oldVpn1 = (oldVa >> 21) & 0x1ff
+            val newVpn2 = (newVa >> 30) & 0x1ff
+
+            dut.io.pc.poke(oldVa.U)
+            dut.io.ptw.req.ready.poke(true.B)
+            dut.io.mem_cfg.priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.data_priv.poke(PrivilegeLevel.Supervisor)
+            dut.io.mem_cfg.mmu_en.poke(true.B)
+            dut.io.mem_cfg.satp.poke(satp(root).U)
+
+            expectPtwRead(dut, root + oldVpn2 * 8)
+            acceptPtwRead(dut, pte(ppn(l1), V))
+
+            expectPtwRead(dut, l1 + oldVpn1 * 8)
+            dut.io.trap_valid.poke(true.B)
+            dut.io.ptw.req.valid.expect(true.B)
+            dut.io.ptw.req.ready.expect(true.B)
+            dut.clock.step()
+
+            dut.io.trap_valid.poke(false.B)
+            dut.io.ptw.resp.valid.poke(true.B)
+            dut.io.ptw.resp.bits.rdata.poke(pte(ppn(leafPa), V | R | X | A).U)
+            dut.io.ptw.resp.bits.err.poke(false.B)
+            dut.io.ptw.resp.ready.expect(true.B)
+            dut.clock.step()
+
+            dut.io.ptw.resp.valid.poke(false.B)
+            dut.io.pc.poke(newVa.U)
+            expectPtwRead(dut, root + newVpn2 * 8)
+        }
+    }
+
     test("InstrFetch assembles a 32-bit instruction starting at a high halfword") {
         simulate(new InstrFetch(64, useCompressed = true)) { dut =>
             init(dut)

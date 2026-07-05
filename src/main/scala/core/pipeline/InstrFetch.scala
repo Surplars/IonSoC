@@ -114,6 +114,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
 
         val ptw = Module(new Sv39PageTableWalker(XLEN))
         val xlatePending = RegInit(false.B)
+        val xlateDrainPending = RegInit(false.B)
         val xlateDone = RegInit(false.B)
         val xlateVaddr = RegInit(0.U(XLEN.W))
         val xlatePaddr = RegInit(0.U(XLEN.W))
@@ -150,7 +151,7 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         val canPrefetchNextBeat = false.B
         val translatedReady = xlateDone && xlateVaddr === io.pc
         val issueBase = state === sIdle && !io.stall && !flush && !fetchTrap.valid && !canServeBuffered
-        val startTranslation = issueBase && translateFetch && !translatedReady && !xlatePending
+        val startTranslation = issueBase && translateFetch && !translatedReady && !xlatePending && !xlateDrainPending
         val canIssue = issueBase && (!translateFetch || translatedReady)
 
         ptw.io.req.valid := xlatePending || startTranslation
@@ -184,6 +185,13 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
             }
         }.elsewhen(xlateDone && (flush || io.pc =/= xlateVaddr)) {
             xlateDone := false.B
+        }
+
+        val cancelTranslation = flush && xlatePending
+        when(cancelTranslation && !ptw.io.resp.fire) {
+            xlateDrainPending := true.B
+        }.elsewhen(xlateDrainPending && ptw.io.resp.fire) {
+            xlateDrainPending := false.B
         }
 
         when(io.trap_valid) {
@@ -251,9 +259,10 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         normalCacheReqBits.device := false.B
         io.cache.req.valid := normalFetchReqValid
         io.cache.req.bits := normalCacheReqBits
-        io.ptw.req.valid := xlatePending && ptw.io.mem.req.valid
+        val ptwDrainActive = xlatePending || xlateDrainPending
+        io.ptw.req.valid := ptwDrainActive && ptw.io.mem.req.valid
         io.ptw.req.bits := ptw.io.mem.req.bits
-        ptw.io.mem.req.ready := xlatePending && io.ptw.req.ready
+        ptw.io.mem.req.ready := ptwDrainActive && io.ptw.req.ready
         // Keep the response channel drainable even after a frontend flush has
         // cancelled the matching fetch. Otherwise a late cache response can
         // leave the I-cache in its response state and block fence.i invalidation.
@@ -262,8 +271,8 @@ class InstrFetch(XLEN: Int, useCache: Boolean = false, useCompressed: Boolean = 
         // A redirect/trap can cancel the frontend translation while the shared
         // D-cache response is still in flight. Drain that stale response so the
         // D-cache/PTW arbiter cannot stay permanently owned by IFetch.
-        io.ptw.resp.ready := !xlatePending || ptw.io.mem.resp.ready
-        ptw.io.mem.resp.valid := xlatePending && io.ptw.resp.valid
+        io.ptw.resp.ready := !ptwDrainActive || ptw.io.mem.resp.ready
+        ptw.io.mem.resp.valid := ptwDrainActive && io.ptw.resp.valid
         ptw.io.mem.resp.bits := io.ptw.resp.bits
 
         when((state === sFirstReq || state === sSecondReq) && flush) {

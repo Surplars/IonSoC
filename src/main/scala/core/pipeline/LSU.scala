@@ -41,6 +41,7 @@ class LSU(XLEN: Int = 64, features: SoCFeatures = Config.features) extends Modul
         val stall_mmio      = Output(Bool())
         val stall_atomic    = Output(Bool())
         val stall_fence     = Output(Bool())
+        val memory_idle     = Output(Bool())
         val load_data_valid = Output(Bool())
         val load_data_rd    = Output(UInt(5.W))
         val load_data       = Output(UInt(XLEN.W))
@@ -148,6 +149,15 @@ class LSU(XLEN: Int = 64, features: SoCFeatures = Config.features) extends Modul
 
     val rawMemAccess  = accessStage.io.out
     val rawStageFault = accessStage.io.fault
+
+    private def inPaddrRegion(addr: UInt, region: soc.config.AddressRegion): Bool =
+        region.contains(addr, XLEN)
+    private def paddrInSram(addr: UInt): Bool =
+        Config.sramRegionFor(features).contains(addr, XLEN)
+    private def paddrInDevice(addr: UInt): Bool =
+        Config.deviceRegions.map(region => inPaddrRegion(addr, region)).reduce(_ || _)
+    private def paddrInRom(addr: UInt): Bool =
+        Config.RomRegion.contains(addr, XLEN)
 
     val ptw = Module(new Sv39PageTableWalker(XLEN))
     val xlatePending = RegInit(false.B)
@@ -405,6 +415,7 @@ class LSU(XLEN: Int = 64, features: SoCFeatures = Config.features) extends Modul
     val atomicRespErr = RegInit(false.B)
 
     val memoryOpsIdle = !sb_has_data && !storeDrainPending && !cacheLoadPending && !mmioPending && !atomicPending
+    io.memory_idle := memoryOpsIdle && !splitStorePending && !xlatePending && !xlateDone && !pending_mem_trap
     val startTranslation = rawNeedsTranslation && !sameTranslatedInput && !xlatePending && !xlateDone &&
         !rawStageFault.valid && memoryOpsIdle && !pending_mem_trap
     val translationBusy = startTranslation || xlatePending
@@ -432,10 +443,17 @@ class LSU(XLEN: Int = 64, features: SoCFeatures = Config.features) extends Modul
         xlateRd := io.alu_out.rd
         xlateAtomic := rawMemAccess.atomic
     }.elsewhen(xlatePending && ptw.io.resp.fire) {
+        val translatedPaddr = ptw.io.resp.bits.paddr
+        val translatedInSram = paddrInSram(translatedPaddr)
         xlatePending := false.B
         xlateDone := true.B
-        xlateAccess.paddr := ptw.io.resp.bits.paddr
+        xlateAccess.paddr := translatedPaddr
+        xlateAccess.attrs.cacheable := translatedInSram
+        xlateAccess.attrs.device := paddrInDevice(translatedPaddr)
+        xlateAccess.attrs.bufferable := translatedInSram
+        xlateAccess.attrs.allocate := translatedInSram
         xlateAccess.attrs.translate := false.B
+        xlateAccess.attrs.executable := paddrInRom(translatedPaddr)
         xlateFault := ptw.io.resp.bits.fault
     }.elsewhen(xlateDone && !sameTranslatedInput) {
         xlateDone := false.B

@@ -72,6 +72,12 @@ class ConfigSpec extends AnyFunSuite {
         assert(dts.contains("interrupt-controller@c000000"))
     }
 
+    test("Linux boot device tree can append extra bootargs") {
+        val dts = DeviceTree.linuxBootDts("mem=32M")
+
+        assert(dts.contains("""bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10010000 mem=32M";"""))
+    }
+
     test("ISA profiles keep the MCU baseline at RV64IMAC plus privileged support") {
         assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.RV64I))
         assert(ISAProfiles.RV64IMAC.contains(soc.isa.Extension.RV64M))

@@ -16,15 +16,18 @@ object DeviceTree {
     def linuxCapableDts(): String =
         dts(SoCProfiles.LinuxCapablePLIC, ISAProfiles.RV64IMACB)
 
-    def linuxBootDts(): String =
+    def linuxBootDts(extraBootargs: String = ""): String = {
+        val defaultBootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x10010000"
+        val bootargs = Seq(defaultBootargs, extraBootargs.trim).filter(_.nonEmpty).mkString(" ")
         dts(
             SoCProfiles.LinuxBootPLIC,
             ISAProfiles.RV64IMACB,
             DeviceTreeOptions(
-                bootargs = Some("console=ttyS0,115200 earlycon=uart8250,mmio,0x10010000"),
+                bootargs = Some(bootargs),
                 uartNs16550Fallback = true
             )
         )
+    }
 
     def dts(
         features: SoCFeatures,

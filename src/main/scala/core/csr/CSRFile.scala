@@ -266,6 +266,17 @@ class CSRFile(
         val mode = Mux(value(1, 0) === 1.U, 1.U(XLEN.W), 0.U(XLEN.W))
         base | mode
     }
+    private def legalizeSatp(value: UInt, current: UInt): UInt = {
+        if (XLEN == 64) {
+            val mode = value(63, 60)
+            val supportedMode = mode === 0.U || (features.mmu.B && mode === 8.U)
+            Mux(supportedMode, value, current)
+        } else {
+            val mode = value(31)
+            val supportedMode = mode === 0.U || features.mmu.B
+            Mux(supportedMode, value, current)
+        }
+    }
 
     val supervisorInterruptMask =
         bitMask(InterruptCauseCode.SupervisorSoft) |
@@ -424,6 +435,8 @@ class CSRFile(
 
     val writeAddr = Mux(io.debug_write, io.debug_addr, io.waddr)
     val writeData = Mux(io.debug_write, io.debug_wdata, wdata_final)
+    val satpWriteData = legalizeSatp(writeData, satp)
+    val visibleWriteData = Mux(writeAddr === CSR.SATP, satpWriteData, writeData)
     val writeEnable = io.debug_write || do_write
     val directWriteBypass =
         writeEnable && writeAddr === io.addr &&
@@ -437,7 +450,7 @@ class CSRFile(
                 writeAddr === CSR.SATP || writeAddr === CSR.MNSCRATCH ||
                 writeAddr === CSR.MNSTATUS)
 
-    io.rdata := Mux(directWriteBypass, writeData, rdata_pre)
+    io.rdata := Mux(directWriteBypass, visibleWriteData, rdata_pre)
     io.debug_rdata := debug_rdata_pre
     io.debug_valid := debug_addr_valid
     io.debug_writable := debug_addr_valid && !debugCsrReadOnly
@@ -528,7 +541,7 @@ class CSRFile(
                 mnstatus := writeData
             }
             is(CSR.SATP) {
-                satp := writeData
+                satp := satpWriteData
             }
         }
         when(isPmpAddr(writeAddr)) {

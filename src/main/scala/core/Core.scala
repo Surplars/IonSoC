@@ -112,6 +112,7 @@ class Core(
     val alu     = Module(new ALU(XLEN))
     val lsu     = Module(new LSU(XLEN, features))
     val wb      = Module(new WirteBack(XLEN))
+    val satpBarrier = Module(new SatpWriteBarrier(XLEN))
 
     // Global stall includes both memory-stage backpressure and optional
     // instruction-cache fetch backpressure.
@@ -200,39 +201,20 @@ class Core(
     dontTouch(fenceIActive)
     dontTouch(fenceIHold)
 
-    val dcacheRespOwnerPtw = RegInit(false.B)
-    val dcacheRespPending = RegInit(false.B)
+    val dcacheArbiter = Module(new DcachePtwArbiter(tlParams))
     val dcacheMaintRespPending = fenceIDcacheIssued || debugDcacheIssued
-    val dcacheRespOutstanding = dcacheRespPending && !dcache.io.cpu.req.ready
-    val ifetchPtwReqSelected = ifetch.io.ptw.req.valid && !lsu.io.dcache.req.valid && !dcacheRespOutstanding &&
-        !dcacheMaintRespPending
-    dcache.io.cpu.req.valid := !dcacheMaintRespPending &&
-        Mux(ifetchPtwReqSelected, ifetch.io.ptw.req.valid, lsu.io.dcache.req.valid)
-    dcache.io.cpu.req.bits := Mux(ifetchPtwReqSelected, ifetch.io.ptw.req.bits, lsu.io.dcache.req.bits)
-    ifetch.io.ptw.req.ready := ifetchPtwReqSelected && dcache.io.cpu.req.ready
-    lsu.io.dcache.req.ready := !dcacheMaintRespPending && !ifetchPtwReqSelected && dcache.io.cpu.req.ready
+    dcacheArbiter.io.ifetchPtwReq <> ifetch.io.ptw.req
+    ifetch.io.ptw.resp <> dcacheArbiter.io.ifetchPtwResp
+    dcacheArbiter.io.lsuReq <> lsu.io.dcache.req
+    lsu.io.dcache.resp <> dcacheArbiter.io.lsuResp
+    dcache.io.cpu.req <> dcacheArbiter.io.cacheReq
+    dcacheArbiter.io.cacheResp <> dcache.io.cpu.resp
+    dcacheArbiter.io.maintPending := dcacheMaintRespPending
 
-    val dcacheCpuReqFire = dcache.io.cpu.req.fire
-    val dcacheCpuRespOwnerPtw = Mux(dcacheCpuReqFire, ifetchPtwReqSelected, dcacheRespOwnerPtw)
-    ifetch.io.ptw.resp.valid := dcache.io.cpu.resp.valid && !dcacheMaintRespPending && dcacheCpuRespOwnerPtw
-    ifetch.io.ptw.resp.bits := dcache.io.cpu.resp.bits
-    lsu.io.dcache.resp.valid := dcache.io.cpu.resp.valid && !dcacheMaintRespPending && !dcacheCpuRespOwnerPtw
-    lsu.io.dcache.resp.bits := dcache.io.cpu.resp.bits
-    dcache.io.cpu.resp.ready := Mux(
-        dcacheMaintRespPending,
-        true.B,
-        Mux(dcacheCpuRespOwnerPtw, ifetch.io.ptw.resp.ready, lsu.io.dcache.resp.ready)
-    )
-    val dcacheCpuRespAnyFire = dcache.io.cpu.resp.fire
-    val dcacheCpuRespFire = dcacheCpuRespAnyFire && !dcacheMaintRespPending
-    when(dcacheCpuReqFire && !dcacheCpuRespAnyFire) {
-        dcacheRespPending := true.B
-        dcacheRespOwnerPtw := ifetchPtwReqSelected
-    }.elsewhen(dcacheCpuRespAnyFire && !dcacheCpuReqFire) {
-        dcacheRespPending := false.B
-    }.elsewhen(dcacheRespPending && dcache.io.cpu.req.ready && !dcache.io.cpu.resp.valid) {
-        dcacheRespPending := false.B
-    }
+    val dcacheRespPending = dcacheArbiter.io.respPending
+    val dcacheRespOwnerPtw = dcacheArbiter.io.respOwnerPtw
+    val dcacheCpuReqFire = dcacheArbiter.io.cacheReqFire
+    val dcacheCpuRespAnyFire = dcacheArbiter.io.cacheRespFire
 
     val debugDcacheInvalidateValid = debugDcachePending && !debugDcacheIssued && !dcacheRespPending
     fenceIDcacheFlushValid := hasDCache.B && fenceIPending && !fenceIDcacheDone && !fenceIDcacheIssued &&
@@ -323,61 +305,57 @@ class Core(
     def isLoadLikeOp(op: MemOpType.Type): Bool =
         op === MemOpType.Load || op === MemOpType.LR || op === MemOpType.SC || op === MemOpType.AMO
 
-    def usesRd(rs1: UInt, rs2: UInt, rd: UInt): Bool =
-        rd =/= 0.U && ((rs1 === rd && rs1 =/= 0.U) || (rs2 === rd && rs2 =/= 0.U))
-
-    val loadLikePending = RegInit(false.B)
-    val loadLikePendingRd = RegInit(0.U(5.W))
-    val loadLikeIssued = RegInit(false.B)
-    val loadLikeIssuedPc = RegInit(0.U(XLEN.W))
-    val loadLikeIssuedRd = RegInit(0.U(5.W))
+    val loadScoreboardFlush = Wire(Bool())
     val aluLoadLike = alu.io.valid_out && alu.io.alu_out.reg_write && alu.io.alu_out.rd =/= 0.U &&
         isLoadLikeOp(aluMemOp)
-    // ALU/LSU can hold the same load-like instruction valid while a cache/MMIO
-    // access is completing. Register each dynamic load once; otherwise a
-    // completed load may be re-marked pending and falsely stall later users.
-    val newAluLoadLike = aluLoadLike &&
-        (!loadLikeIssued || loadLikeIssuedPc =/= alu.io.pc_out || loadLikeIssuedRd =/= alu.io.alu_out.rd)
-    val lsuCompletesPending =
-        lsu.io.load_data_valid && lsu.io.load_data_rd === loadLikePendingRd
-    val wbCompletesPending =
-        wb.io.reg_wb.reg_write && wb.io.reg_wb.rd === loadLikePendingRd
-    val loadLikeComplete = loadLikePending && (lsuCompletesPending || wbCompletesPending)
-    val newAluLoadLikeComplete =
-        newAluLoadLike && lsu.io.load_data_valid && lsu.io.load_data_rd === alu.io.alu_out.rd
-    val decodeUsesPendingReg =
-        loadLikePending && !loadLikeComplete && idecode.io.valid_out &&
-            usesRd(idecode.io.decoded_out.rs1, idecode.io.decoded_out.rs2, loadLikePendingRd)
-    val decodeUsesAluLoadLike =
-        newAluLoadLike && idecode.io.valid_out &&
-            usesRd(idecode.io.decoded_out.rs1, idecode.io.decoded_out.rs2, alu.io.alu_out.rd)
-    val decodeUsesPending = decodeUsesPendingReg || decodeUsesAluLoadLike
+    val loadScoreboard = Module(new LoadUseScoreboard(XLEN))
+    loadScoreboard.io.flush := loadScoreboardFlush
+    loadScoreboard.io.aluValid := alu.io.valid_out
+    loadScoreboard.io.aluRegWrite := alu.io.alu_out.reg_write
+    loadScoreboard.io.aluRd := alu.io.alu_out.rd
+    loadScoreboard.io.aluPc := alu.io.pc_out
+    loadScoreboard.io.aluMemOp := aluMemOp
+    loadScoreboard.io.lsuLoadDataValid := lsu.io.load_data_valid
+    loadScoreboard.io.lsuLoadDataRd := lsu.io.load_data_rd
+    loadScoreboard.io.wbRegWrite := wb.io.reg_wb.reg_write
+    loadScoreboard.io.wbRd := wb.io.reg_wb.rd
+    loadScoreboard.io.decodeValid := idecode.io.valid_out
+    loadScoreboard.io.decodeRs1 := idecode.io.decoded_out.rs1
+    loadScoreboard.io.decodeRs2 := idecode.io.decoded_out.rs2
+
+    val loadLikePending = loadScoreboard.io.pending
+    val loadLikePendingRd = loadScoreboard.io.pendingRd
+    val newAluLoadLike = loadScoreboard.io.newLoadLike
+    val loadLikeComplete = loadScoreboard.io.complete
+    val loadLikeIssued = loadScoreboard.io.issued
+    val loadLikeIssuedRd = loadScoreboard.io.issuedRd
+    val decodeUsesPending = loadScoreboard.io.decodeUsesPending
+    dontTouch(loadLikePending)
+    dontTouch(loadLikePendingRd)
+    dontTouch(newAluLoadLike)
+    dontTouch(loadLikeComplete)
+    dontTouch(loadLikeIssued)
+    dontTouch(loadLikeIssuedRd)
     // A decoded consumer must be held in ID while the producer load is still
     // outstanding. Only gating ALU valid lets ID overwrite its operand fields
     // with stale register-file data, which breaks load-to-branch sequences such
     // as `lbu; beqz` in firmware string loops.
-    val decodeStall = pipe_stall || decodeUsesPending || debugHalted
-    when(loadLikeComplete) {
-        // A new load-like instruction can enter ALU in the same cycle that the
-        // previous load completes. Preserve the new dependency instead of
-        // clearing the scoreboard and letting the next consumer see stale data.
-        // If that new load also returns immediately, do not leave a stale
-        // dependency behind.
-        loadLikePending := newAluLoadLike && !newAluLoadLikeComplete
-        loadLikePendingRd := Mux(newAluLoadLike && !newAluLoadLikeComplete, alu.io.alu_out.rd, 0.U)
-    }.elsewhen(newAluLoadLike) {
-        loadLikePending := !newAluLoadLikeComplete
-        loadLikePendingRd := Mux(newAluLoadLikeComplete, 0.U, alu.io.alu_out.rd)
-    }
-    when(aluLoadLike) {
-        loadLikeIssued := true.B
-        loadLikeIssuedPc := alu.io.pc_out
-        loadLikeIssuedRd := alu.io.alu_out.rd
-    }.otherwise {
-        loadLikeIssued := false.B
-        loadLikeIssuedPc := 0.U
-        loadLikeIssuedRd := 0.U
-    }
+    val decodeCsrOp = idecode.io.decoded_out.ctrl.csr_op
+    val decodeCsrWrite = decodeCsrOp =/= CSROps.None &&
+        !((decodeCsrOp === CSROps.RS || decodeCsrOp === CSROps.RC) && idecode.io.decoded_out.rs2 === 0.U) &&
+        !((decodeCsrOp === CSROps.RSI || decodeCsrOp === CSROps.RCI) && idecode.io.decoded_out.rs2 === 0.U)
+
+    satpBarrier.io.decodeValid := idecode.io.valid_out
+    satpBarrier.io.decodeCsrWrite := decodeCsrWrite
+    satpBarrier.io.decodeCsrAddr := idecode.io.decoded_out.instr(31, 20)
+    satpBarrier.io.lsuMemoryIdle := lsu.io.memory_idle
+    satpBarrier.io.commitValid := alu.io.csr_commit_valid
+    satpBarrier.io.commitCsrWrite := alu.io.csr_commit_write
+    satpBarrier.io.commitCsrAddr := alu.io.csr_commit_addr
+    satpBarrier.io.commitPc := alu.io.pc_out
+    satpBarrier.io.commitInstrLen := alu.io.instr_len_out
+
+    val decodeStall = pipe_stall || decodeUsesPending || satpBarrier.io.holdDecode || debugHalted
 
     pipe_stall := lsu.io.stall_req
     when(io.debug_resumereq) {
@@ -439,7 +417,7 @@ class Core(
         }
 	    val combined_trap     = has_pipeline_trap || has_fetch_trap || interrupt_fire
 	    val redirect_flush    = combined_trap || ret_redirect
-        frontend_flush         := redirect_flush || fenceIActive || debugIcachePending
+        frontend_flush         := redirect_flush || fenceIActive || satpBarrier.io.frontendFlush || debugIcachePending
         val pipeline_flush    = frontend_flush
         dontTouch(pipeline_flush)
         dontTouch(frontendQueueFlush)
@@ -455,7 +433,9 @@ class Core(
     pc.io.trap_epc   := csr.io.epc_out
     pc.io.instr_len  := ifetch.io.pc_step_len
     val pcBrInfo = WireInit(alu.io.br_info)
-    when(fenceIStart) {
+    when(satpBarrier.io.redirect.valid) {
+        pcBrInfo := satpBarrier.io.redirect
+    }.elsewhen(fenceIStart) {
         val fenceStep = Mux(alu.io.instr_len_out === 2.U, 2.U(XLEN.W), 4.U(XLEN.W))
         pcBrInfo.valid := false.B
         pcBrInfo.is_branch := false.B
@@ -465,6 +445,7 @@ class Core(
     }
     pc.io.br_info <> pcBrInfo
     frontendQueueFlush := frontend_flush || pc.io.redirect
+    loadScoreboardFlush := redirect_flush || frontendQueueFlush
     val aluResultFwdValid = RegInit(false.B)
     val aluResultFwdRd = RegInit(0.U(5.W))
     val aluResultFwdData = RegInit(0.U(XLEN.W))
@@ -707,7 +688,7 @@ class Core(
     // then the one-shot gate would suppress the real issue when the load/store
     // path becomes ready.
     val exIssueReady = !pipe_stall && !debugHalted
-    val idIssueReady = !decodeUsesPending && exIssueReady
+    val idIssueReady = !decodeUsesPending && !satpBarrier.io.holdDecode && exIssueReady
     val issueIdToAlu = idecode.io.valid_out && idIssueReady && !idAlreadyIssued
     when(frontendQueueFlush || redirect_flush || !idecode.io.valid_out) {
         idIssuedValid := false.B

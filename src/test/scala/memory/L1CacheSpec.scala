@@ -8,6 +8,29 @@ import soc.bus.tilelink.{TLCoherenceHub, TLParams, TLPermissions, TLRAM, TLOpcod
 import soc.device.TLError
 import soc.memory.cache.{CacheCmd, L1Cache, UncachedTileLinkBridge}
 
+class CacheMappedRamHarness(params: TLParams) extends Module {
+    val io = IO(new Bundle {
+        val req  = Flipped(Decoupled(new soc.memory.CacheReq(params.addrWidth, params.dataWidth)))
+        val resp = Decoupled(new soc.memory.CacheResp(params.dataWidth))
+    })
+
+    val cache = Module(new L1Cache(params, nSets = 4, useTLCoherence = false))
+    val xbar = Module(new soc.bus.tilelink.TLXbar(
+        params,
+        nMasters = 1,
+        nSlaves = 1,
+        addrMap = Seq(addr => addr < 0x1000.U)
+    ))
+    val ram = Module(new TLRAM(params, sizeBytes = 4096))
+
+    cache.io.cpu.req <> io.req
+    io.resp <> cache.io.cpu.resp
+    cache.io.invalidate.valid := false.B
+    cache.io.invalidate.bits := false.B
+    xbar.io.masters(0) <> cache.io.bus
+    ram.io.tl <> xbar.io.slaves(0)
+}
+
 class CacheDeniedHarness(params: TLParams) extends Module {
     val io = IO(new Bundle {
         val req  = Flipped(Decoupled(new soc.memory.CacheReq(params.addrWidth, params.dataWidth)))
@@ -500,6 +523,43 @@ class L1CacheSpec extends AnyFunSuite with ChiselSim {
             dut.io.resp.bits.rdata.expect("hfeedfacecafebeef".U)
             dut.clock.step()
             dut.io.resp.valid.expect(false.B)
+        }
+    }
+
+    test("Cache hit responses clear stale denied error state") {
+        simulate(new CacheMappedRamHarness(params)) { dut =>
+            dut.io.req.valid.poke(false.B)
+            dut.io.resp.ready.poke(true.B)
+
+            pokeCacheReq(dut.io.req, addr = 0x188, cmd = CacheCmd.Write, data = BigInt("feedfacecafebeef", 16))
+            issueCacheReq(dut.io.req, dut.clock)
+            waitCacheResp(dut.io.resp, dut.clock, maxCycles = 40, label = "initial cache fill")
+
+            pokeCacheReq(dut.io.req, addr = 0x188, cmd = CacheCmd.Read)
+            issueCacheReq(dut.io.req, dut.clock)
+            waitCacheResp(dut.io.resp, dut.clock, maxCycles = 8, label = "initial hit-buffer fill")
+
+            pokeCacheReq(dut.io.req, addr = 0x2000, cmd = CacheCmd.Read)
+            issueCacheReq(dut.io.req, dut.clock)
+
+            var sawDenied = false
+            for (_ <- 0 until 30 if !sawDenied) {
+                if (dut.io.resp.valid.peek().litToBoolean) {
+                    dut.io.resp.bits.err.expect(true.B)
+                    sawDenied = true
+                }
+                dut.clock.step()
+            }
+            assert(sawDenied, "cache denied miss response was not observed")
+
+            pokeCacheReq(dut.io.req, addr = 0x188, cmd = CacheCmd.Read)
+            dut.io.req.valid.poke(true.B)
+            dut.io.req.ready.expect(true.B)
+            dut.io.resp.valid.expect(true.B)
+            dut.io.resp.bits.err.expect(false.B)
+            dut.io.resp.bits.rdata.expect("hfeedfacecafebeef".U)
+            dut.io.req.valid.poke(false.B)
+            dut.clock.step()
         }
     }
 
